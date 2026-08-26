@@ -164,7 +164,16 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 }
 .entry-form .row-actions { grid-column: 1 / -1; }
 .ledger details.edit { display: inline; }
-.ledger details.edit > summary { display: inline-block; list-style: none; cursor: pointer; }
+/* the summary toggle is styled to match the mini ghost buttons beside it (button.mini/.ghost
+   are scoped to <button>, so a <summary> needs the box styles restated here) */
+.ledger details.edit > summary {
+  display: inline-block; list-style: none; cursor: pointer;
+  padding: 3px 10px; font-size: 12px; font-weight: 600; line-height: 1.4;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.ledger details.edit > summary:hover { filter: brightness(1.08); }
+.ledger details.edit[open] > summary { color: var(--fg); border-color: var(--accent); }
 .ledger details.edit > summary::-webkit-details-marker { display: none; }
 .ledger details.edit[open] > form {
   position: absolute; z-index: 10; margin-top: 6px; width: 460px; max-width: 90vw;
@@ -177,7 +186,7 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 .chart-legend .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: middle; margin-right: 5px; }
 .chart-legend .sw.down { background: var(--accent); }
 .chart-legend .sw.up { background: var(--warn); }
-.chart-bars { display: flex; align-items: flex-end; gap: 3px; height: 180px; overflow-x: auto; padding-top: 6px; }
+.chart-bars { display: flex; align-items: flex-end; gap: 3px; height: 206px; overflow-x: auto; padding-top: 6px; padding-bottom: 26px; }
 .bar-col { display: flex; flex-direction: column; align-items: center; min-width: 14px; flex: 1; height: 100%; }
 .bar-stack { display: flex; flex-direction: column; justify-content: flex-end; width: 100%; height: 160px; }
 .bar { width: 100%; border-radius: 2px 2px 0 0; min-height: 0; }
@@ -212,7 +221,7 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 .remaining-sub { font-size: 12px; margin-top: 6px; }
 
 /* --- per-job live progress (active panel) --- */
-.jobbar { height: 6px; background: var(--code); border-radius: 999px; overflow: hidden; margin-top: 4px; max-width: 180px; }
+.jobbar { height: 6px; background: var(--code); border-radius: 999px; overflow: hidden; margin-top: 4px; max-width: 320px; }
 .jobbar-fill { height: 100%; background: var(--warn); border-radius: 999px; transition: width .4s ease; }
 .jobbar-note { font-size: 11px; color: var(--muted); margin-top: 2px; }
 
@@ -239,17 +248,27 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
     display: block; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch;
   }
 
-  /* inline edit form flows as a full-width block, not a clipped floating popover */
+  /* live progress must not force the Step column (and thus the card) wide:
+     the bar shrinks and the note wraps instead of being a long nowrap string */
+  .jobbar { max-width: 120px; }
+  .jobbar-note { white-space: normal; word-break: break-word; max-width: 120px; }
+
+  /* The edit form can't flow inside the row: the ledger table is a horizontally-scrolling,
+     white-space:nowrap block on mobile, which would trap the form in its last cell off-screen.
+     Lift it out as a fixed bottom-sheet so it escapes the table's overflow entirely. */
   .ledger details.edit[open] > form,
   details.edit[open] > form {
-    position: static; width: auto; max-width: none; box-shadow: none; margin-top: 8px;
+    position: fixed; left: 8px; right: 8px; bottom: 8px; top: auto;
+    width: auto; max-width: none; max-height: 82vh; overflow-y: auto;
+    z-index: 50; margin-top: 0; white-space: normal;
+    box-shadow: 0 -6px 30px rgba(0,0,0,.35);
   }
   .entry-form, .entry-form.inline { grid-template-columns: 1fr; }
 
   /* remaining card + chart stack cleanly */
   .remaining { gap: 12px; }
   .remaining-value { font-size: 24px; }
-  .chart-bars { height: 150px; }
+  .chart-bars { height: 176px; }
 }
 
 /* never let the page itself scroll sideways */

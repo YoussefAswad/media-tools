@@ -15,6 +15,7 @@ from mkvprune.verify import (
     _check_container_integrity,
     _fatal_ffmpeg_lines,
     _format_ffmpeg_lines,
+    _is_progress_line,
     _video_stream,
 )
 
@@ -73,6 +74,32 @@ def test_truncated_file_still_fails(sample_mkv: Path, tmp_path: Path) -> None:
         fh.truncate(int(broken.stat().st_size * 0.6))
     with pytest.raises(VerificationError, match="container integrity"):
         _check_container_integrity(str(broken), deep=False, verbose=False)
+
+
+def test_progress_status_lines_are_not_fatal() -> None:
+    # `ffmpeg -progress pipe:1` merges these key=value lines into the stream we scan for
+    # errors; they must be ignored so a healthy file doesn't fail verification.
+    noise = "\n".join(
+        ["frame=123", "fps=24.0", "out_time_us=4500000", "stream_0_0_q=-1.0",
+         "total_size=1048576", "speed=1.2x", "progress=continue", "progress=end"]
+    )
+    assert _fatal_ffmpeg_lines(noise) == []
+    assert _is_progress_line("out_time_us=4500000")
+    assert _is_progress_line("stream_0_0_q=-1.0")
+    assert not _is_progress_line(_READ_ERROR)
+
+
+@requires_tools
+def test_integrity_reports_progress(sample_mkv: Path) -> None:
+    fracs: list[float] = []
+    _check_container_integrity(
+        str(sample_mkv), deep=False, verbose=False,
+        duration_s=1.0, on_progress=fracs.append,
+    )
+    # phase flips immediately (0.0) and always resolves to a final 1.0 at progress=end
+    assert fracs and fracs[0] == 0.0
+    assert fracs[-1] == 1.0
+    assert all(0.0 <= f <= 1.0 for f in fracs)
 
 
 def test_video_stream_skips_leading_cover_art() -> None:

@@ -37,6 +37,8 @@ def _note(event: dict) -> str:
         return f"encoding audio {event.get('index', 1)}/{event.get('of', 1)} · {pct}%"
     if phase == "mux":
         return f"muxing · {pct}%"
+    if phase == "verify":
+        return f"verifying · {pct}%"
     return f"{phase} · {pct}%"
 
 

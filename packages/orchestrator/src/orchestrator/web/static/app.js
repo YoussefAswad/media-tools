@@ -49,7 +49,19 @@
   function refresh(el) {
     fetch(buildUrl(el), { headers: { "X-Requested-With": "poll" } })
       .then(function (r) { return r.ok ? r.text() : null; })
-      .then(function (html) { if (html !== null) el.innerHTML = html; })
+      .then(function (html) {
+        if (html === null || html === el._lastHtml) return;  // unchanged: don't touch the DOM
+        // preserve the inner table's horizontal scroll across the swap (on mobile the table
+        // itself is the overflow-x scroller, so a naive innerHTML reset would jump it to 0)
+        var scroller = el.querySelector("table.jobs, table.actions, table.ledger");
+        var sx = scroller ? scroller.scrollLeft : 0;
+        el.innerHTML = html;
+        el._lastHtml = html;
+        if (sx) {
+          var next = el.querySelector("table.jobs, table.actions, table.ledger");
+          if (next) next.scrollLeft = sx;
+        }
+      })
       .catch(function () {});
   }
 

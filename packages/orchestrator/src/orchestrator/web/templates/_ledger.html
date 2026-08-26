@@ -24,7 +24,7 @@
       <td class="muted nowrap">{{ (r.completed_at or r.recorded_at)[:10] }}</td>
       <td class="row-actions nowrap">
         <details class="edit">
-          <summary class="mini ghost">edit</summary>
+          <summary class="mini ghost" title="Edit">✎</summary>
           <form method="post" action="/downloads/{{ r.id }}/edit" class="entry-form inline">
             <label>Name<input name="name" value="{{ r.name }}" required></label>
             <label>Type

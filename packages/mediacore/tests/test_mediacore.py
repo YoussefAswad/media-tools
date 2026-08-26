@@ -147,3 +147,44 @@ def test_notifier_never_raises_on_transport_error(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(notify_mod.requests, "post", boom)
     n = Notifier(NtfyConfig(user="u", password="p"))
     assert n.send(NtfyMessage(title="x", body="y", tags=["t"])) is False
+
+
+def test_shared_connection_survives_concurrent_access(tmp_path: Path) -> None:
+    """Regression: the web threadpool + worker share one connection. Concurrent writes and
+    aggregate reads must never race into a truncated/None result or raise (see the intermittent
+    'NoneType is not subscriptable' 500s on the ledger endpoints)."""
+    import threading
+
+    db = open_db(tmp_path)
+    db.executescript(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER);"
+        "INSERT INTO t (n) VALUES (1),(2),(3);"
+    )
+    db.commit()
+    errors: list[Exception] = []
+
+    def writer() -> None:
+        try:
+            for i in range(200):
+                db.execute("UPDATE t SET n=? WHERE id=1", (i,))
+                db.commit()
+        except Exception as e:
+            errors.append(e)
+
+    def reader() -> None:
+        try:
+            for _ in range(200):
+                row = db.execute("SELECT COUNT(*) c, COALESCE(SUM(n),0) s FROM t").fetchone()
+                assert row is not None, "aggregate must always return a row"
+                assert row["c"] == 3
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer) for _ in range(3)]
+    threads += [threading.Thread(target=reader) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"concurrent access raised: {errors[:3]}"

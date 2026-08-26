@@ -6,6 +6,7 @@ import argparse
 import os
 import signal
 import sys
+from collections.abc import Callable
 from types import FrameType
 
 from mkvprune import __version__
@@ -363,7 +364,10 @@ def _execute_plan(pr: ProbeResult, plan: MuxPlan, args: argparse.Namespace) -> s
     run_mux(plan, progress=show_progress, verbose=args.verbose, on_progress=mux_cb)
 
     # Verify (raises on failure; leaves temp + original intact).
-    return verify_and_finalize(pr, plan, args, src_size, input_path)
+    verify_cb = (
+        (lambda frac: emit({"phase": "verify", "percent": round(frac * 100)})) if emit else None
+    )
+    return verify_and_finalize(pr, plan, args, src_size, input_path, on_progress=verify_cb)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -617,10 +621,15 @@ def verify_and_finalize(
     args: argparse.Namespace,
     src_size: int,
     input_path: str,
+    *,
+    on_progress: Callable[[float], None] | None = None,
 ) -> str:
     from mkvprune.verify import verify_output
 
-    verify_output(pr, plan, src_size=src_size, deep=args.deep_verify, verbose=args.verbose)
+    verify_output(
+        pr, plan, src_size=src_size, deep=args.deep_verify, verbose=args.verbose,
+        on_progress=on_progress,
+    )
     print("  verification passed.")
 
     dest = finalize_output(

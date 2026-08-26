@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+from collections.abc import Callable
 from typing import Any, NoReturn
 
 from mkvprune.errors import VerificationError
 from mkvprune.mux import MuxPlan
 from mkvprune.probe import ProbeResult, probe
-from mkvprune.proc import run
+from mkvprune.proc import run, run_streamed
 
 # video side-data fields that must survive bit-exact
 _DOVI_FIELDS = (
@@ -36,6 +38,13 @@ _BENIGN_FFMPEG_PATTERNS = (
 # Upper bound on offending lines quoted in a VerificationError; a bad file can emit
 # millions.
 _MAX_REPORTED_LINES = 20
+
+# Keys emitted by `ffmpeg -progress` (merged into the output stream when we stream for a
+# progress readout). These are status lines, not defects, so they're dropped from the error scan.
+_PROGRESS_KEYS = frozenset({
+    "frame", "fps", "bitrate", "total_size", "out_time_us", "out_time_ms", "out_time",
+    "dup_frames", "drop_frames", "speed", "progress",
+})
 
 
 def _fail(check: str, source: Any, output: Any) -> NoReturn:
@@ -177,8 +186,20 @@ def _fatal_ffmpeg_lines(stderr: str) -> list[str]:
     return [
         line
         for raw in stderr.splitlines()
-        if (line := raw.strip()) and not any(p in line for p in _BENIGN_FFMPEG_PATTERNS)
+        if (line := raw.strip())
+        and not _is_progress_line(line)
+        and not any(p in line for p in _BENIGN_FFMPEG_PATTERNS)
     ]
+
+
+def _is_progress_line(line: str) -> bool:
+    """True for an ``ffmpeg -progress`` status line (``key=value``), so it isn't mistaken
+    for an error when stdout (progress) and stderr are merged."""
+    key, sep, _ = line.partition("=")
+    if not sep:
+        return False
+    key = key.strip()
+    return key in _PROGRESS_KEYS or key.startswith("stream_")
 
 
 def _format_ffmpeg_lines(lines: list[str]) -> str:
@@ -189,10 +210,19 @@ def _format_ffmpeg_lines(lines: list[str]) -> str:
     return f"{text}\n... ({extra} more)" if extra else text
 
 
-def _check_container_integrity(path: str, *, deep: bool, verbose: bool) -> None:
+def _check_container_integrity(
+    path: str,
+    *,
+    deep: bool,
+    verbose: bool,
+    duration_s: float | None = None,
+    on_progress: Callable[[float], None] | None = None,
+) -> None:
     # -map 0 because ffmpeg's default stream selection reads only the best video and best
     # audio stream and no subtitles at all, leaving most tracks unverified.
-    cmd = ["ffmpeg", "-v", "error", "-i", path, "-map", "0"]
+    # -progress pipe:1 emits status lines we turn into a fraction; the null output goes to the
+    # platform null device (not stdout) so it never collides with the progress stream.
+    cmd = ["ffmpeg", "-v", "error", "-nostats", "-progress", "pipe:1", "-i", path, "-map", "0"]
     if deep:
         # Decode video and audio for real, but stream-copy everything else: the null muxer
         # has no encoder for subtitle/attachment/data streams, so re-encoding them would
@@ -200,11 +230,30 @@ def _check_container_integrity(path: str, *, deep: bool, verbose: bool) -> None:
         cmd += ["-c:s", "copy", "-c:t", "copy", "-c:d", "copy"]
     else:
         cmd += ["-c", "copy"]
-    cmd += ["-f", "null", "-"]
-    res = run(cmd, capture=True, verbose=verbose)
-    fatal = _fatal_ffmpeg_lines(res.stderr)
-    if res.returncode != 0 or fatal:
-        detail = _format_ffmpeg_lines(fatal) or f"exit status {res.returncode}"
+    cmd += ["-f", "null", os.devnull]
+
+    if on_progress is None:
+        # No readout wanted: a plain blocking run keeps stdout (progress) and stderr (errors)
+        # cleanly separated.
+        res = run(cmd, capture=True, verbose=verbose)
+        output, returncode = res.stderr, res.returncode
+    else:
+        on_progress(0.0)  # flip the phase to 'verify' immediately, before the first tick
+
+        def on_line(line: str) -> None:
+            if duration_s and line.startswith("out_time_us="):
+                value = line.split("=", 1)[1].strip()
+                with contextlib.suppress(ValueError):
+                    on_progress(max(0.0, min(1.0, int(value) / 1_000_000 / duration_s)))
+            elif line.strip() == "progress=end":
+                on_progress(1.0)
+
+        res = run_streamed(cmd, on_line=on_line, verbose=verbose)
+        output, returncode = res.stdout, res.returncode  # stdout is merged stdout+stderr here
+
+    fatal = _fatal_ffmpeg_lines(output)
+    if returncode != 0 or fatal:
+        detail = _format_ffmpeg_lines(fatal) or f"exit status {returncode}"
         raise VerificationError(
             f"[container integrity] ffmpeg reported problems in {path}:\n{detail}"
         )
@@ -217,11 +266,14 @@ def verify_output(
     src_size: int,
     deep: bool = False,
     verbose: bool = False,
+    on_progress: Callable[[float], None] | None = None,
 ) -> ProbeResult:
     """Run every verification check against the muxed temp file.
 
     Returns the output ProbeResult on success; raises VerificationError on the first
-    failing check (leaving the temp file and original untouched).
+    failing check (leaving the temp file and original untouched). ``on_progress`` (if given)
+    receives the fraction (0..1) of the full-file integrity read — the one slow check — so a
+    parent process can show a live 'verifying' readout instead of a stalled 100% mux bar.
     """
     out = probe(plan.output_path, verbose=verbose)  # also proves mkvmerge -J parses
 
@@ -232,5 +284,8 @@ def verify_output(
     _check_chapters_attachments(src, out)
     _check_defaults(out, plan)
     _check_size(src_size, os.path.getsize(plan.output_path))
-    _check_container_integrity(plan.output_path, deep=deep, verbose=verbose)
+    _check_container_integrity(
+        plan.output_path, deep=deep, verbose=verbose,
+        duration_s=src.duration_s, on_progress=on_progress,
+    )
     return out
