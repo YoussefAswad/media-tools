@@ -128,6 +128,21 @@
     });
   });
 
+  // close an open edit dialog when clicking outside it or pressing Escape. A native <details>
+  // only closes by clicking its <summary> again; clicking the summary or inside the (fixed,
+  // on mobile) form is still contained in the element, so those don't count as "outside".
+  document.addEventListener("click", function (e) {
+    document.querySelectorAll("details.edit[open]").forEach(function (d) {
+      if (!d.contains(e.target)) d.removeAttribute("open");
+    });
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    document.querySelectorAll("details.edit[open]").forEach(function (d) {
+      d.removeAttribute("open");
+    });
+  });
+
   // ---- YAML syntax highlighting on the config editor ---------------------------------
   var ta = document.getElementById("yaml-editor");
   var hl = document.getElementById("yaml-highlight");
