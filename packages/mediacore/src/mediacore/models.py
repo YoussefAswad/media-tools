@@ -78,6 +78,14 @@ class PolicyConfig(BaseModel):
     keep_default_subtitle: bool = False
 
 
+class QbitConfig(BaseModel):
+    """qBittorrent WebUI connection, used to snapshot per-download bandwidth at import."""
+
+    base_url: str = "http://qbittorrent:45666"
+    username: str = ""
+    password: str = ""
+
+
 class AuditConfig(BaseModel):
     #: Root for the SQLite db, JSONL audit files, and seasonal-shift undo files.
     state_dir: Path = Path("/state")
@@ -97,5 +105,7 @@ class CoreConfig(BaseModel):
     policy: PolicyConfig = PolicyConfig()
     audit: AuditConfig = AuditConfig()
     web: WebConfig = WebConfig()
+    #: qBittorrent connection for the download bandwidth ledger (None = ledger capture disabled).
+    qbit: QbitConfig | None = None
     #: Shared secret ARR must send (custom header) for webhook requests to be accepted.
     webhook_secret: str | None = None

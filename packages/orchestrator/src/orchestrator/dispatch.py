@@ -151,9 +151,58 @@ class Dispatcher:
             outcome.steps.append(step)
             self._record(job_id, event, step, local_path)
 
-        # 4. status rollup ----------------------------------------------------------
+        # 4. bandwidth ledger (silent side-effect; not a rollup step) ----------------
+        if cfg.enable_ledger:
+            self._ledger_capture(job_id, event)
+
+        # 5. status rollup ----------------------------------------------------------
         self._status_rollup(event, outcome)
         return outcome
+
+    def _ledger_capture(self, job_id: str, event: ArrEvent) -> None:
+        """Snapshot this import's consumed bandwidth from qBittorrent into the ledger.
+
+        Best-effort and silent: records an audit row for visibility but never a pipeline step
+        (so the ntfy rollup is unchanged) and never raises.
+        """
+        qbit = self.services.qbit
+        if qbit is None or not event.download_id:
+            return
+        try:
+            t = qbit.torrent_by_hash(event.download_id)
+        except Exception as exc:
+            log.warning("ledger: qbit lookup failed: %s", exc)
+            t = None
+        if not t:
+            self.services.audit.record(
+                ActionRecord(
+                    tool="ledger", action="record", result=SKIP, app=event.app,
+                    event_type=event.event_type, job_id=job_id,
+                    after={"detail": "torrent not found in qBittorrent"},
+                )
+            )
+            return
+        kind = "movie" if event.app == "radarr" else "episode"
+        self.services.ledger.record_auto(
+            infohash=event.download_id,
+            name=t["name"] or event.label,
+            kind=kind,
+            app=event.app,
+            downloaded_bytes=t["downloaded"],
+            uploaded_bytes=t["uploaded"],
+            size_bytes=t["total_size"],
+            completion_on=t["completion_on"],
+        )
+        from orchestrator.util import human_bytes
+
+        detail = f"↓{human_bytes(t['downloaded'])} ↑{human_bytes(t['uploaded'])}"
+        self.services.audit.record(
+            ActionRecord(
+                tool="ledger", action="record", result=OK, app=event.app,
+                event_type=event.event_type, job_id=job_id,
+                after={"detail": detail},
+            )
+        )
 
     def _shift_step(self, event: ArrEvent, local_path: Path) -> tuple[StepResult, Path | None]:
         show = self._matching_show(event.title)

@@ -7,6 +7,7 @@ from mediacore.models import ArrInstance, CoreConfig
 from mediacore.notify import Notifier
 from mediacore.probe import ProbeResult, Track
 from orchestrator.config import OrchestratorConfig
+from orchestrator.ledger import Ledger
 from orchestrator.queue import JobQueue
 from orchestrator.services import Services
 
@@ -69,6 +70,7 @@ def build_test_services(tmp_path: Path, config: OrchestratorConfig | None = None
         audit=audit,
         notifier=notifier,
         queue=queue,
+        ledger=Ledger(db),
     )
 
 

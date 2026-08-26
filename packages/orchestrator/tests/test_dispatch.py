@@ -192,3 +192,47 @@ def test_seasonal_shift_uses_original_episode_numbers(tmp_path, monkeypatch):
     assert calls["detect_file"]["kw"].get("release_group") == "RG"
     assert (show_dir / "Season 1" / "MyShow - S01E28 - Title.mkv").exists()
     assert not src.exists()
+
+
+class _StubQbit:
+    def __init__(self, torrent):
+        self._t = torrent
+
+    def torrent_by_hash(self, h):
+        return self._t
+
+
+def test_ledger_capture_records_bandwidth(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, item_id, **kw: None
+    )
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    services.qbit = _StubQbit({
+        "name": "Mov.2021", "downloaded": 1000, "uploaded": 200, "total_size": 900,
+        "category": "Movies", "completion_on": 1700000000, "added_on": 0, "state": "up", "hash": "h",
+    })
+    path = _touch(tmp_path)
+    payload = _radarr_payload(path)
+    payload["payload"]["downloadId"] = "ABCDEF"
+    disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p),
+                      prune_runner=lambda a: PruneResult(0, "", ""))
+    disp.dispatch("jl", payload)
+
+    rows = services.ledger.list()
+    assert len(rows) == 1
+    assert rows[0].downloaded_bytes == 1000 and rows[0].uploaded_bytes == 200
+    assert rows[0].kind == "movie" and rows[0].infohash == "abcdef"
+    assert any(r["tool"] == "ledger" and r["result"] == "ok" for r in services.audit.for_job("jl"))
+
+
+def test_ledger_capture_skips_without_downloadid(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, item_id, **kw: None
+    )
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    services.qbit = _StubQbit({"name": "x", "downloaded": 1, "uploaded": 0, "total_size": 0,
+                               "category": "", "completion_on": 0, "added_on": 0, "state": "", "hash": "h"})
+    disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p),
+                      prune_runner=lambda a: PruneResult(0, "", ""))
+    disp.dispatch("jn", _radarr_payload(_touch(tmp_path)))  # no downloadId
+    assert services.ledger.list() == []

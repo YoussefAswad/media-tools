@@ -28,6 +28,8 @@ class OrchestratorConfig(CoreConfig):
     enable_seasonal_shift: bool = True
     enable_quality_check: bool = True
     enable_prune: bool = True
+    #: Capture download bandwidth from qBittorrent at import (requires the `qbit` config block).
+    enable_ledger: bool = True
 
     #: max worker attempts before a job is dead-lettered.
     max_attempts: int = 3

@@ -2,19 +2,31 @@
 (function () {
   // ---- live-refreshing panels with search + filters ----------------------------------
   var searchEl = document.getElementById("search");
-  var appFilterEl = document.getElementById("app-filter");
-  var state = { q: "", app: "" };
+  var state = { q: "", app: "", range: "30d" };
+
+  function activeData(id, key) {
+    var box = id && document.getElementById(id);
+    var active = box && box.querySelector(".chip.active");
+    return active ? (active.dataset[key] || "") : "";
+  }
 
   function buildUrl(el) {
     var base = el.dataset.src;
     var params = new URLSearchParams();
     if (el.hasAttribute("data-searchable") && state.q) params.set("q", state.q);
     if (state.app) params.set("app", state.app);
+    if (el.hasAttribute("data-ranged")) params.set("range", state.range);
     var fid = el.dataset.filtered;
     if (fid) {
-      var box = document.getElementById(fid);
-      var active = box && box.querySelector(".chip.active");
-      if (active && active.dataset.result) params.set("result", active.dataset.result);
+      var res = activeData(fid, "result");
+      if (res) params.set("result", res);
+      var typ = activeData(fid, "type");
+      if (typ) params.set("type", typ);
+    }
+    var sid = el.dataset.sourceFiltered;
+    if (sid) {
+      var src = activeData(sid, "source");
+      if (src) params.set("source", src);
     }
     var qs = params.toString();
     return qs ? base + "?" + qs : base;
@@ -33,7 +45,7 @@
   panels.forEach(function (el) {
     refresh(el);
     var interval = parseInt(el.dataset.interval || "3000", 10);
-    setInterval(function () { refresh(el); }, interval);
+    if (interval > 0) setInterval(function () { refresh(el); }, interval);
   });
 
   if (searchEl) {
@@ -53,6 +65,7 @@
       group.querySelectorAll(".chip").forEach(function (c) { c.classList.remove("active"); });
       btn.classList.add("active");
       if (group.id === "app-filter") state.app = btn.dataset.app || "";
+      if (group.id === "range-filter") state.range = btn.dataset.range || "30d";
       refreshAll();
     });
   });

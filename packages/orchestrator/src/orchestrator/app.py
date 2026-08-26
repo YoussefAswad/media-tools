@@ -17,15 +17,20 @@ from mediacore.config import find_default_config, parse_config, read_raw, save_t
 from pydantic import ValidationError
 
 from orchestrator.config import OrchestratorConfig
+from orchestrator.ledger import MANUAL, QBITTORRENT
 from orchestrator.queue import CANCELED, DEAD, FAILED, PROCESSING, QUEUED
 from orchestrator.services import Services, build_services
+from orchestrator.util import RANGES, human_bytes, parse_bytes, parse_range
 from orchestrator.worker import Worker
 
 log = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "web" / "templates"))
+_TEMPLATES.env.filters["bytes"] = human_bytes
 _STATIC = _HERE / "web" / "static"
+
+_KINDS = ["movie", "show", "game", "software", "other"]
 
 CONFIG_ENV = "ORCHESTRATOR_CONFIG"
 
@@ -234,6 +239,118 @@ def job_delete(request: Request, job_id: str) -> Response:
 def jobs_clear_dead(request: Request) -> Response:
     services_of(request).queue.clear_dead()
     return RedirectResponse("/", status_code=303)
+
+
+# --- downloads bandwidth ledger ---------------------------------------------------------
+@app.get("/downloads", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def downloads_page(request: Request) -> HTMLResponse:
+    return _TEMPLATES.TemplateResponse(
+        request, "downloads.html", {"kinds": _KINDS, "ranges": list(RANGES.keys())}
+    )
+
+
+@app.get("/ui/ledger", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_ledger(
+    request: Request,
+    range: str | None = None,
+    type: str | None = None,
+    source: str | None = None,
+    q: str | None = None,
+) -> HTMLResponse:
+    start, end = parse_range(range)
+    src = source if source in (QBITTORRENT, MANUAL) else None
+    rows = services_of(request).ledger.list(
+        start=start, end=end, kind=type or None, source=src, q=q
+    )
+    return _TEMPLATES.TemplateResponse(request, "_ledger.html", {"rows": rows, "kinds": _KINDS})
+
+
+@app.get("/ui/ledger-summary", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_ledger_summary(request: Request, range: str | None = None) -> HTMLResponse:
+    start, end = parse_range(range)
+    t = services_of(request).ledger.totals(start=start, end=end)
+    tiles = [
+        ("Downloaded", human_bytes(t["downloaded"]), "queued"),
+        ("Uploaded", human_bytes(t["uploaded"]), "skip"),
+        ("Total bandwidth", human_bytes(t["total"]), "ok"),
+        ("Entries", str(t["count"]), ""),
+    ]
+    return _TEMPLATES.TemplateResponse(request, "_summary.html", {"tiles": tiles})
+
+
+@app.get("/ui/ledger-chart", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_ledger_chart(request: Request, range: str | None = None) -> HTMLResponse:
+    start, end = parse_range(range)
+    series = services_of(request).ledger.daily_series(start=start, end=end)
+    peak = max((d + u for _, d, u in series), default=0)
+    bars = [
+        {
+            "day": day,
+            "down": d,
+            "up": u,
+            "down_pct": (d / peak * 100) if peak else 0,
+            "up_pct": (u / peak * 100) if peak else 0,
+            "label": f"{day}: ↓{human_bytes(d)} ↑{human_bytes(u)}",
+        }
+        for day, d, u in series
+    ]
+    return _TEMPLATES.TemplateResponse(
+        request, "_ledger_chart.html", {"bars": bars, "peak": human_bytes(peak)}
+    )
+
+
+@app.post("/downloads/add", dependencies=[Depends(require_ui_auth)])
+def downloads_add(
+    request: Request,
+    name: str = Form(...),
+    kind: str = Form("other"),
+    downloaded: str = Form("0"),
+    uploaded: str = Form("0"),
+    size: str = Form("0"),
+    completed_at: str = Form(""),
+    notes: str = Form(""),
+) -> Response:
+    services_of(request).ledger.add_manual(
+        name=name.strip() or "Untitled",
+        kind=kind.strip() or "other",
+        downloaded_bytes=parse_bytes(downloaded),
+        uploaded_bytes=parse_bytes(uploaded),
+        size_bytes=parse_bytes(size),
+        completed_at=(completed_at or None),
+        notes=(notes.strip() or None),
+    )
+    return RedirectResponse("/downloads", status_code=303)
+
+
+@app.post("/downloads/{row_id}/edit", dependencies=[Depends(require_ui_auth)])
+def downloads_edit(
+    request: Request,
+    row_id: int,
+    name: str = Form(...),
+    kind: str = Form("other"),
+    downloaded: str = Form("0"),
+    uploaded: str = Form("0"),
+    size: str = Form("0"),
+    completed_at: str = Form(""),
+    notes: str = Form(""),
+) -> Response:
+    services_of(request).ledger.update(
+        row_id,
+        name=name.strip() or "Untitled",
+        kind=kind.strip() or "other",
+        downloaded_bytes=parse_bytes(downloaded),
+        uploaded_bytes=parse_bytes(uploaded),
+        size_bytes=parse_bytes(size),
+        completed_at=(completed_at or None),
+        notes=(notes.strip() or None),
+    )
+    return RedirectResponse("/downloads", status_code=303)
+
+
+@app.post("/downloads/{row_id}/delete", dependencies=[Depends(require_ui_auth)])
+def downloads_delete(request: Request, row_id: int) -> Response:
+    services_of(request).ledger.delete(row_id)
+    return RedirectResponse("/downloads", status_code=303)
 
 
 @app.post("/rerun", dependencies=[Depends(require_ui_auth)])

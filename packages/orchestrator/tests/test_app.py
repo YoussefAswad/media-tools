@@ -108,3 +108,33 @@ def test_config_save_valid_reloads(client, tmp_path) -> None:
     good = "audit:\n  state_dir: %s\nenable_prune: false\n" % (tmp_path / "state")
     r = client.post("/config", data={"raw": good})
     assert r.status_code == 200 and "Saved" in r.text
+
+
+def test_downloads_manual_add_edit_delete(client) -> None:
+    # page renders
+    assert client.get("/downloads").status_code == 200
+    # add a manual game entry
+    r = client.post("/downloads/add", data={
+        "name": "Elden Ring", "kind": "game", "downloaded": "50 GB", "uploaded": "2 GB",
+        "size": "50 GB", "completed_at": "2026-08-20", "notes": "steam",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    # shows in the ledger table (all range) flagged Manual
+    body = client.get("/ui/ledger", params={"range": "all"}).text
+    assert "Elden Ring" in body and "Manual" in body
+    # summary totals non-zero + chart renders
+    assert client.get("/ui/ledger-summary", params={"range": "all"}).status_code == 200
+    assert client.get("/ui/ledger-chart", params={"range": "all"}).status_code == 200
+    # filter by type
+    assert "Elden Ring" in client.get("/ui/ledger", params={"range": "all", "type": "game"}).text
+    assert "Elden Ring" not in client.get("/ui/ledger", params={"range": "all", "type": "movie"}).text
+    # find the row id via the services ledger and edit + delete it
+    services = client.app.state.services
+    rid = services.ledger.list()[0].id
+    assert client.post(f"/downloads/{rid}/edit", data={
+        "name": "Elden Ring GOTY", "kind": "game", "downloaded": "60 GB", "uploaded": "0",
+        "completed_at": "2026-08-20", "notes": "",
+    }, follow_redirects=False).status_code == 303
+    assert services.ledger.get(rid).name == "Elden Ring GOTY"
+    assert client.post(f"/downloads/{rid}/delete", follow_redirects=False).status_code == 303
+    assert services.ledger.get(rid) is None

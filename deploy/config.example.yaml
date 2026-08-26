@@ -28,6 +28,12 @@ ntfy:
   password: ${NTFY_MEDIAQC_PASSWORD}
   status_granularity: job          # job | action | off
 
+# qBittorrent connection for the Downloads bandwidth ledger (omit to disable auto-capture).
+qbit:
+  base_url: http://qbittorrent:45666
+  username: ${QBIT_WEBUI_USER}
+  password: ${QBIT_WEBUI_PASS}
+
 policy:
   audio_allow: [ac3, eac3, truehd, mlp, dts]
   audio_min_channels: 2
@@ -49,6 +55,7 @@ web:
 enable_seasonal_shift: true
 enable_quality_check: true
 enable_prune: true
+enable_ledger: true          # capture download bandwidth from qBittorrent at import
 max_attempts: 3
 
 # seasonal-shift per-show offsets (matched to a Sonarr series by `name`).

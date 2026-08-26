@@ -1,0 +1,52 @@
+{% if not rows %}
+  <p class="muted empty">No downloads in this range.</p>
+{% else %}
+<table class="actions ledger">
+  <thead><tr>
+    <th>Name</th><th>Type</th><th>Source</th><th>Down</th><th>Up</th><th>Total</th>
+    <th>Completed</th><th></th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td class="path" title="{{ r.name }}">{{ r.name }}{% if r.notes %} <span class="muted">— {{ r.notes }}</span>{% endif %}</td>
+      <td><span class="badge type">{{ (r.kind or "—")|capitalize }}</span></td>
+      <td class="nowrap">
+        {% if r.source == "manual" %}<span class="badge manual">Manual</span>
+        {% elif r.app == "radarr" %}<span class="app radarr">🎬 Movie</span>
+        {% elif r.app == "sonarr" %}<span class="app sonarr">📺 Episode</span>
+        {% else %}<span class="muted">auto</span>{% endif %}
+        {% if r.edited and r.source != "manual" %}<span class="muted" title="hand-edited">✎</span>{% endif %}
+      </td>
+      <td class="nowrap">{{ r.downloaded_bytes|bytes }}</td>
+      <td class="nowrap">{{ r.uploaded_bytes|bytes }}</td>
+      <td class="nowrap"><strong>{{ r.total_bytes|bytes }}</strong></td>
+      <td class="muted nowrap">{{ (r.completed_at or r.recorded_at)[:10] }}</td>
+      <td class="row-actions nowrap">
+        <details class="edit">
+          <summary class="mini ghost">edit</summary>
+          <form method="post" action="/downloads/{{ r.id }}/edit" class="entry-form inline">
+            <label>Name<input name="name" value="{{ r.name }}" required></label>
+            <label>Type
+              <select name="kind">
+                {% for k in kinds %}<option value="{{ k }}" {{ 'selected' if r.kind == k else '' }}>{{ k|capitalize }}</option>{% endfor %}
+                {% if r.kind and r.kind not in kinds %}<option value="{{ r.kind }}" selected>{{ r.kind }}</option>{% endif %}
+              </select>
+            </label>
+            <label>Downloaded<input name="downloaded" value="{{ r.downloaded_bytes|bytes }}"></label>
+            <label>Uploaded<input name="uploaded" value="{{ r.uploaded_bytes|bytes }}"></label>
+            <label>Completed<input name="completed_at" type="date" value="{{ (r.completed_at or '')[:10] }}"></label>
+            <label class="wide">Notes<input name="notes" value="{{ r.notes or '' }}"></label>
+            <div class="row-actions"><button type="submit" class="mini">save</button></div>
+          </form>
+        </details>
+        <form method="post" action="/downloads/{{ r.id }}/delete"
+              onsubmit="return confirm('Delete this entry?')">
+          <button class="mini ghost danger" title="Delete">✕</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

@@ -1,0 +1,22 @@
+{% if not bars %}
+  <p class="muted empty">No data to chart.</p>
+{% else %}
+<div class="chart">
+  <div class="chart-legend">
+    <span><i class="sw down"></i> Downloaded</span>
+    <span><i class="sw up"></i> Uploaded</span>
+    <span class="muted">peak/day: {{ peak }}</span>
+  </div>
+  <div class="chart-bars">
+    {% for b in bars %}
+    <div class="bar-col" title="{{ b.label }}">
+      <div class="bar-stack">
+        <div class="bar up" style="height: {{ b.up_pct }}%"></div>
+        <div class="bar down" style="height: {{ b.down_pct }}%"></div>
+      </div>
+      <div class="bar-x">{{ b.day[5:] }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}

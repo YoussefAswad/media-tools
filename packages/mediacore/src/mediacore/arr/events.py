@@ -27,6 +27,7 @@ class ArrEvent:
     season: int | None = None
     episodes: list[int] = field(default_factory=list)
     is_upgrade: bool = False
+    download_id: str | None = None  # torrent infohash (arr "downloadId"), for the bandwidth ledger
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -71,6 +72,7 @@ def parse_radarr(payload: dict[str, Any]) -> ArrEvent:
         title=title,
         label=label,
         is_upgrade=bool(payload.get("isUpgrade")),
+        download_id=(payload.get("downloadId") or None),
         raw=payload,
     )
 
@@ -107,6 +109,7 @@ def parse_sonarr(payload: dict[str, Any]) -> ArrEvent:
         season=season,
         episodes=ep_nums,
         is_upgrade=bool(payload.get("isUpgrade")),
+        download_id=(payload.get("downloadId") or None),
         raw=payload,
     )
 
