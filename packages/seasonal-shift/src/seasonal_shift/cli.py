@@ -314,6 +314,6 @@ def watch(
             return None
         client = SonarrClient(str(cfg.sonarr.base_url), cfg.sonarr.api_key)
         sonarr_cfg = cfg.sonarr
-        return lambda show, ops: _sonarr_process(client, sonarr_cfg, show, ops)  # noqa: E731
+        return lambda show, ops: _sonarr_process(client, sonarr_cfg, show, ops)
 
     run_watch(config, sonarr_cb_factory)

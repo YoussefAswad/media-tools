@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Callable
 
 from .models import FileOperation, ShowConfig
 
@@ -36,7 +35,9 @@ def plan_operations(
             if new_episode < 1:
                 continue
 
-        episode_name: str | None = ep_name_raw.strip(" - ") if ep_name_raw else None
+        # ep_name_raw is the regex group " - <title>"; drop that leading separator (not
+        # arbitrary space/dash chars, which would corrupt a title that itself starts with one).
+        episode_name: str | None = ep_name_raw.removeprefix(" - ").strip() if ep_name_raw else None
 
         if episode_name:
             new_name: str = (

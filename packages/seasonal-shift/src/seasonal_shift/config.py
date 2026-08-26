@@ -9,7 +9,6 @@ import yaml
 
 from .models import Config
 
-
 APP_NAME: str = "seasonal-shift"
 
 

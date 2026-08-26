@@ -7,11 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from rich import print
-from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileMovedEvent, FileSystemEventHandler
+from watchdog.events import (
+    FileCreatedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+    FileSystemEventHandler,
+)
 from watchdog.observers import Observer
 
-from .config import load_config
 from .cleanup import remove_empty_dirs
+from .config import load_config
 from .executor import execute_operations, get_default_undo_file
 from .models import Config, FileOperation, ShowConfig
 from .planner import plan_operations

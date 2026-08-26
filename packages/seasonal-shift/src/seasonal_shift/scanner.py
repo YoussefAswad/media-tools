@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from collections.abc import Iterator
+from pathlib import Path
 
 EPISODE_PATTERN = re.compile(
     r"(.+) - [Ss](\d{2})[Ee](\d{2})( - .*)?\.(.+)"
