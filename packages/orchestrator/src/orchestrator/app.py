@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
 from mediacore.config import find_default_config, parse_config, read_raw, save_text
 from pydantic import ValidationError
 
@@ -35,11 +36,24 @@ log = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "web" / "templates"))
-_TEMPLATES.env.filters["bytes"] = human_bytes
+
+
+@pass_context
+def _bytes_filter(ctx: dict, value: object) -> str:
+    """`{{ x|bytes }}` — honours a per-render `iec` context flag (GiB/MiB vs GB/MB)."""
+    return human_bytes(value, iec=bool(ctx.get("iec")))  # type: ignore[arg-type]
+
+
+_TEMPLATES.env.filters["bytes"] = _bytes_filter
 _TEMPLATES.env.filters["icon"] = kind_icon
 _STATIC = _HERE / "web" / "static"
 
 _KINDS = ["movie", "show", "game", "software", "other"]
+
+
+def _use_iec(units: str | None) -> bool:
+    """The Downloads unit toggle sends ``units=iec`` for the GiB/MiB (IEC) suffix form."""
+    return (units or "").lower() in ("iec", "binary", "gib")
 
 CONFIG_ENV = "ORCHESTRATOR_CONFIG"
 
@@ -283,25 +297,30 @@ def ui_ledger(
     type: str | None = None,
     source: str | None = None,
     q: str | None = None,
+    units: str | None = None,
 ) -> HTMLResponse:
     lo, hi = _ledger_bounds(services_of(request), range, start, end)
     src = source if source in (QBITTORRENT, MANUAL) else None
     rows = services_of(request).ledger.list(
         start=lo, end=hi, kind=type or None, source=src, q=q
     )
-    return _TEMPLATES.TemplateResponse(request, "_ledger.html", {"rows": rows, "kinds": _KINDS})
+    return _TEMPLATES.TemplateResponse(
+        request, "_ledger.html", {"rows": rows, "kinds": _KINDS, "iec": _use_iec(units)}
+    )
 
 
 @app.get("/ui/ledger-summary", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
 def ui_ledger_summary(
-    request: Request, range: str | None = None, start: str | None = None, end: str | None = None
+    request: Request, range: str | None = None, start: str | None = None, end: str | None = None,
+    units: str | None = None,
 ) -> HTMLResponse:
     lo, hi = _ledger_bounds(services_of(request), range, start, end)
     t = services_of(request).ledger.totals(start=lo, end=hi)
+    iec = _use_iec(units)
     tiles = [
-        ("Downloaded", human_bytes(t["downloaded"]), "queued"),
-        ("Uploaded", human_bytes(t["uploaded"]), "skip"),
-        ("Total bandwidth", human_bytes(t["total"]), "ok"),
+        ("Downloaded", human_bytes(t["downloaded"], iec=iec), "queued"),
+        ("Uploaded", human_bytes(t["uploaded"], iec=iec), "skip"),
+        ("Total bandwidth", human_bytes(t["total"], iec=iec), "ok"),
         ("Entries", str(t["count"]), ""),
     ]
     return _TEMPLATES.TemplateResponse(request, "_summary.html", {"tiles": tiles})
@@ -309,10 +328,12 @@ def ui_ledger_summary(
 
 @app.get("/ui/ledger-chart", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
 def ui_ledger_chart(
-    request: Request, range: str | None = None, start: str | None = None, end: str | None = None
+    request: Request, range: str | None = None, start: str | None = None, end: str | None = None,
+    units: str | None = None,
 ) -> HTMLResponse:
     lo, hi = _ledger_bounds(services_of(request), range, start, end)
     series = services_of(request).ledger.daily_series(start=lo, end=hi)
+    iec = _use_iec(units)
     peak = max((d + u for _, d, u in series), default=0)
     bars = [
         {
@@ -321,17 +342,17 @@ def ui_ledger_chart(
             "up": u,
             "down_pct": (d / peak * 100) if peak else 0,
             "up_pct": (u / peak * 100) if peak else 0,
-            "label": f"{day}: ↓{human_bytes(d)} ↑{human_bytes(u)}",
+            "label": f"{day}: ↓{human_bytes(d, iec=iec)} ↑{human_bytes(u, iec=iec)}",
         }
         for day, d, u in series
     ]
     return _TEMPLATES.TemplateResponse(
-        request, "_ledger_chart.html", {"bars": bars, "peak": human_bytes(peak)}
+        request, "_ledger_chart.html", {"bars": bars, "peak": human_bytes(peak, iec=iec)}
     )
 
 
 @app.get("/ui/ledger-remaining", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
-def ui_ledger_remaining(request: Request) -> HTMLResponse:
+def ui_ledger_remaining(request: Request, units: str | None = None) -> HTMLResponse:
     """Remaining bandwidth for the current quota period (since the latest cutoff). Independent of
     the selected range; only rendered when the latest cutoff carries a limit."""
     services = services_of(request)
@@ -342,10 +363,11 @@ def ui_ledger_remaining(request: Request) -> HTMLResponse:
     remaining = c.limit_bytes - used
     pct = (used / c.limit_bytes * 100) if c.limit_bytes else 0
     tone = "over" if remaining < 0 else ("warn" if pct >= 85 else "ok")
+    iec = _use_iec(units)
     ctx = {
-        "limit": human_bytes(c.limit_bytes),
-        "used": human_bytes(used),
-        "remaining": human_bytes(abs(remaining)),
+        "limit": human_bytes(c.limit_bytes, iec=iec),
+        "used": human_bytes(used, iec=iec),
+        "remaining": human_bytes(abs(remaining), iec=iec),
         "over": remaining < 0,
         "pct": min(pct, 100),
         "pct_label": round(pct),

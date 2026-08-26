@@ -140,6 +140,23 @@ def test_downloads_manual_add_edit_delete(client) -> None:
     assert services.ledger.get(rid) is None
 
 
+def test_downloads_unit_toggle(client) -> None:
+    services = client.app.state.services
+    services.ledger.add_manual(name="Big", kind="movie", downloaded_bytes=5 * 1024**3,
+                               uploaded_bytes=1024**3, completed_at="2026-08-20")
+    # add a cutoff with a limit so the remaining card renders too
+    services.cutoffs.add(cutoff_date="2026-08-01", limit_bytes=100 * 1024**3, note="q")
+
+    # default = GB suffix
+    for ep in ("/ui/ledger", "/ui/ledger-summary", "/ui/ledger-chart", "/ui/ledger-remaining"):
+        body = client.get(ep, params={"range": "all"}).text
+        assert "GB" in body and "GiB" not in body, ep
+    # units=iec = GiB suffix
+    for ep in ("/ui/ledger", "/ui/ledger-summary", "/ui/ledger-chart", "/ui/ledger-remaining"):
+        body = client.get(ep, params={"range": "all", "units": "iec"}).text
+        assert "GiB" in body, ep
+
+
 def test_downloads_custom_date_range(client) -> None:
     services = client.app.state.services
     services.ledger.add_manual(name="JanDL", kind="movie", downloaded_bytes=100,

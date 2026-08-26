@@ -87,6 +87,20 @@ def test_human_and_parse_bytes():
     assert parse_bytes("") == 0 and parse_bytes(None) == 0
 
 
+def test_human_bytes_iec_suffix():
+    # same 1024-based magnitude, only the suffix changes to the IEC form
+    assert human_bytes(1536, iec=True) == "1.50 KiB"
+    assert human_bytes(1024**3, iec=True) == "1.00 GiB"
+    assert human_bytes(0, iec=True) == "0 B"
+
+
+def test_parse_bytes_accepts_iec_units():
+    assert parse_bytes("1 GiB") == 1024**3
+    assert parse_bytes("500MiB") == 500 * 1024**2
+    # GB and GiB parse to the same bytes (both 1024-based)
+    assert parse_bytes("2 GB") == parse_bytes("2 GiB")
+
+
 def test_range_bounds_custom_dates_override_preset():
     # explicit dates win over the preset key
     lo, hi = range_bounds("30d", "2026-01-01", "2026-01-31")

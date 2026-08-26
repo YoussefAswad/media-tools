@@ -5,11 +5,22 @@
   // default range comes from the server-marked active chip (e.g. "cutoff" when one exists)
   var _rf = document.getElementById("range-filter");
   var _active = _rf && _rf.querySelector(".chip.active");
+  // display-unit preference (GB vs GiB) is remembered per browser
+  var _units = "";
+  try { _units = localStorage.getItem("dl-units") || ""; } catch (e) { /* ignore */ }
   var state = {
     q: "", app: "",
     range: (_active && _active.dataset.range) || "30d",
     start: "", end: "",
+    units: _units,
   };
+  // reflect the remembered unit choice on the toggle before the first fetch
+  var _uf = document.getElementById("unit-filter");
+  if (_uf) {
+    _uf.querySelectorAll(".chip").forEach(function (c) {
+      c.classList.toggle("active", (c.dataset.units || "") === state.units);
+    });
+  }
 
   function activeData(id, key) {
     var box = id && document.getElementById(id);
@@ -42,6 +53,7 @@
       var src = activeData(sid, "source");
       if (src) params.set("source", src);
     }
+    if (el.hasAttribute("data-unit-aware") && state.units) params.set("units", state.units);
     var qs = params.toString();
     return qs ? base + "?" + qs : base;
   }
@@ -118,6 +130,10 @@
       group.querySelectorAll(".chip").forEach(function (c) { c.classList.remove("active"); });
       btn.classList.add("active");
       if (group.id === "app-filter") state.app = btn.dataset.app || "";
+      if (group.id === "unit-filter") {
+        state.units = btn.dataset.units || "";
+        try { localStorage.setItem("dl-units", state.units); } catch (e) { /* ignore */ }
+      }
       if (group.id === "range-filter") {
         state.range = btn.dataset.range || "30d";
         state.start = ""; state.end = "";  // preset overrides a custom range
