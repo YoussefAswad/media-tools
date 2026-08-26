@@ -85,7 +85,7 @@ def parse_sonarr(payload: dict[str, Any]) -> ArrEvent:
     ep_nums = [n for n in (_int(e.get("episodeNumber")) for e in episodes) if n is not None]
     if season is not None and ep_nums:
         eps = "".join(f"E{n:02d}" for n in ep_nums)
-        label = f"{title} — S{season:02d}{eps}"
+        label = f"{title} - S{season:02d}{eps}"
     else:
         label = title
 

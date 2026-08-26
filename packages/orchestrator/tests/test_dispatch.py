@@ -125,3 +125,70 @@ def test_probe_failure_is_nonfatal_quality_but_fatal_prune(tmp_path):
     outcome = disp.dispatch("j", _radarr_payload(path))
     qc = next(s for s in outcome.steps if s.tool == "quality-check")
     assert qc.result == FAIL
+
+
+def test_seasonal_shift_uses_original_episode_numbers(tmp_path, monkeypatch):
+    """Regression: the shifted file (S02E03 -> S01E28) must be re-registered with Sonarr
+    under the ORIGINAL episode (2,3), not the shifted (1,28)."""
+    from mediacore.arr.client import SonarrClient
+    from mediacore.models import ArrInstance, CoreConfig
+    from orchestrator.config import OrchestratorConfig
+    from seasonal_shift.models import SeasonConfig, ShowConfig
+
+    show_dir = tmp_path / "shows" / "MyShow"
+    (show_dir / "Season 2").mkdir(parents=True)
+    src = show_dir / "Season 2" / "MyShow - S02E03 - Title.mkv"
+    src.write_bytes(b"x")
+
+    cfg = OrchestratorConfig(enable_quality_check=False, enable_prune=False)
+    cfg.arr = CoreConfig().arr
+    cfg.arr.sonarr = ArrInstance(base_url="http://sonarr", api_key="k")
+    cfg.ntfy.status_granularity = "off"  # don't reach out to a real ntfy in tests
+    cfg.shows = [
+        ShowConfig(
+            name="MyShow",
+            path=show_dir,
+            seasons={2: SeasonConfig(season_offset=-1, episode_offset=25)},
+        )
+    ]
+    services = build_test_services(tmp_path, cfg)
+
+    calls: dict = {}
+
+    def rec_get_episode_id(self, sid, s, e):
+        calls["get_episode_id"] = (sid, s, e)
+        return 555
+
+    def rec_detect_file(self, sid, path, season, ep, **k):
+        calls["detect_file"] = {"season": season, "ep": ep, "path": path, "kw": k}
+        return {"c": 1}
+
+    monkeypatch.setattr(SonarrClient, "get_episode_id", rec_get_episode_id)
+    monkeypatch.setattr(SonarrClient, "get_episode_file",
+                        lambda self, ep: {"quality": {"q": 1}, "releaseGroup": "RG"})
+    monkeypatch.setattr(SonarrClient, "refresh", lambda self, i: {"id": 1})
+    monkeypatch.setattr(SonarrClient, "wait_for_command", lambda self, cid, **k: None)
+    monkeypatch.setattr(SonarrClient, "detect_file", rec_detect_file)
+    monkeypatch.setattr(SonarrClient, "import_file",
+                        lambda self, sid, ep, cand: calls.setdefault("import_file", (sid, ep)))
+
+    payload = {
+        "app": "sonarr",
+        "payload": {
+            "eventType": "Download",
+            "series": {"id": 42, "title": "MyShow"},
+            "episodes": [{"seasonNumber": 2, "episodeNumber": 3}],
+            "episodeFile": {"path": str(src)},
+        },
+    }
+    disp = Dispatcher(services, probe_fn=lambda p: None, prune_runner=lambda a: None)
+    outcome = disp.dispatch("jshift", payload)
+
+    shift = next(s for s in outcome.steps if s.tool == "seasonal-shift")
+    assert shift.result == OK, shift.error
+    # original numbers used for lookup, shifted file on disk
+    assert calls["get_episode_id"] == (42, 2, 3)
+    assert calls["detect_file"]["season"] == 2 and calls["detect_file"]["ep"] == 555
+    assert calls["detect_file"]["kw"].get("release_group") == "RG"
+    assert (show_dir / "Season 1" / "MyShow - S01E28 - Title.mkv").exists()
+    assert not src.exists()

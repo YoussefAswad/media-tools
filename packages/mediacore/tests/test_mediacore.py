@@ -3,10 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from mediacore import notify as notify_mod
 from mediacore.arr.events import parse_event
 from mediacore.audit import OK, ActionRecord, Audit, open_db
 from mediacore.config import parse_config
-from mediacore.models import ArrInstance, CoreConfig
+from mediacore.models import ArrInstance, CoreConfig, NtfyConfig
+from mediacore.notify import Notifier, NtfyMessage
 from mediacore.paths import to_local, to_remote
 
 
@@ -70,7 +72,7 @@ def test_parse_sonarr_event() -> None:
     )
     assert ev.app == "sonarr" and ev.item_id == 7
     assert ev.season == 2 and ev.episodes == [3, 4]
-    assert ev.label == "Show — S02E03E04"
+    assert ev.label == "Show - S02E03E04"
     assert ev.is_actionable and not ev.is_test
 
 
@@ -112,3 +114,36 @@ def test_audit_record_and_dedup(tmp_path: Path) -> None:
     assert len(au.recent(limit=10)) == 1
     assert len(au.recent(limit=10, results=[OK])) == 1
     assert (tmp_path / "audit").glob("actions-*.jsonl")
+
+
+class _FakeResp:
+    def raise_for_status(self) -> None:
+        pass
+
+
+def test_notifier_unicode_title_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    def fake_post(url, data=None, headers=None, auth=None, timeout=None):
+        # requests enforces latin-1 on header values; emulate that to catch regressions.
+        for v in (headers or {}).values():
+            v.encode("latin-1")
+        captured["headers"] = headers
+        captured["data"] = data
+        return _FakeResp()
+
+    monkeypatch.setattr(notify_mod.requests, "post", fake_post)
+    n = Notifier(NtfyConfig(user="u", password="p"))
+    # em dash + CJK + emoji in the title, full UTF-8 in the body
+    ok = n.send(NtfyMessage(title="Re: ZERO — 進撃 🎬 S04E14", body="body — 全部", tags=["sonarr"]))
+    assert ok is True
+    assert captured["data"] == "body — 全部".encode()  # body stays UTF-8
+
+
+def test_notifier_never_raises_on_transport_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(notify_mod.requests, "post", boom)
+    n = Notifier(NtfyConfig(user="u", password="p"))
+    assert n.send(NtfyMessage(title="x", body="y", tags=["t"])) is False

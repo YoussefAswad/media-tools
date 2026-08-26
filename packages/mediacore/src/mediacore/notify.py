@@ -22,6 +22,12 @@ PRIORITY_FINDING = 4
 PRIORITY_FAILURE = 5
 
 
+def _header_safe(value: str) -> str:
+    """HTTP header values must be latin-1 (requests enforces this). Replace anything else
+    (em dashes, CJK titles, emoji) so a notification never raises. The body stays full UTF-8."""
+    return value.encode("latin-1", "replace").decode("latin-1")
+
+
 @dataclass
 class NtfyMessage:
     title: str
@@ -47,14 +53,14 @@ class Notifier:
         topic = msg.topic or self.cfg.status_topic_resolved()
         url = f"{self.cfg.url.rstrip('/')}/{topic}"
         headers = {
-            "X-Title": msg.title,
-            "X-Tags": ",".join(msg.tags),
+            "X-Title": _header_safe(msg.title),
+            "X-Tags": _header_safe(",".join(msg.tags)),
             "X-Priority": str(msg.priority),
         }
         if msg.markdown:
             headers["X-Markdown"] = "yes"
         if msg.click:
-            headers["X-Click"] = msg.click
+            headers["X-Click"] = _header_safe(msg.click)
 
         auth = None
         if self.cfg.user and self.cfg.password:
@@ -73,6 +79,6 @@ class Notifier:
             )
             r.raise_for_status()
             return True
-        except requests.RequestException as exc:
+        except Exception as exc:
             log.warning("ntfy publish failed (%s): %s", url, exc)
             return False
