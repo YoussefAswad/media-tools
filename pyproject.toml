@@ -1,0 +1,43 @@
+[project]
+name = "media-tools"
+version = "0.0.0"
+description = "Monorepo: shared mediacore + mkvprune, seasonal-shift, quality-check, and the ARR-driven orchestrator."
+requires-python = ">=3.12"
+dependencies = [
+    "mediacore",
+    "quality-check",
+    "orchestrator",
+    "mkvprune",
+    "seasonal-shift",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+mediacore = { workspace = true }
+quality-check = { workspace = true }
+orchestrator = { workspace = true }
+mkvprune = { workspace = true }
+seasonal-shift = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "httpx>=0.27"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+# B008: FastAPI/Typer require calls (Depends/Form/Argument) in argument defaults.
+# UP047: PEP 695 generics are 3.12+, but mediacore keeps 3.11 support via TypeVar.
+ignore = ["E501", "B008", "UP047"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = [
+    "packages/mediacore/tests",
+    "packages/quality-check/tests",
+    "packages/orchestrator/tests",
+]

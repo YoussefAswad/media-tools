@@ -1,0 +1,12 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "packages/mediacore/src",
+    "packages/quality-check/src",
+    "packages/orchestrator/src",
+    "packages/mkvprune/src",
+    "packages/seasonal-shift/src"
+  ],
+  "reportMissingImports": "warning"
+}

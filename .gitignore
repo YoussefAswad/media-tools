@@ -1,0 +1,12 @@
+.venv/
+**/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+.python-version.local
+/state/
+deploy/state/
+config.local.yaml

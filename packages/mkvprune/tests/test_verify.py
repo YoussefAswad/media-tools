@@ -1,0 +1,101 @@
+"""Container-integrity verification: benign muxer chatter vs. real problems."""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import pytest
+
+from conftest import make_track, requires_tools
+from mkvprune.errors import VerificationError
+from mkvprune.probe import ProbeResult
+from mkvprune.verify import (
+    _MAX_REPORTED_LINES,
+    _check_container_integrity,
+    _fatal_ffmpeg_lines,
+    _format_ffmpeg_lines,
+    _video_stream,
+)
+
+# What ffmpeg's null muxer emits for every TrueHD frame in a passthrough remux.
+_TRUEHD_DTS = (
+    "[null @ 0x55b4eb0e0540] Application provided invalid, non monotonically "
+    "increasing dts to muxer in stream 1: {n} >= {n}"
+)
+_READ_ERROR = "[matroska,webm @ 0x5588e3ae15c0] Read error at pos. 12345 (of 67890)"
+
+
+def test_truehd_dts_chatter_is_not_fatal() -> None:
+    stderr = "\n".join(_TRUEHD_DTS.format(n=n) for n in range(5, 105, 5))
+    assert _fatal_ffmpeg_lines(stderr) == []
+
+
+def test_blank_lines_are_ignored() -> None:
+    assert _fatal_ffmpeg_lines("\n  \n\n") == []
+
+
+def test_demuxer_error_is_fatal() -> None:
+    assert _fatal_ffmpeg_lines(_READ_ERROR) == [_READ_ERROR]
+
+
+def test_mixed_output_keeps_only_the_real_error() -> None:
+    stderr = "\n".join([_TRUEHD_DTS.format(n=5), _READ_ERROR, _TRUEHD_DTS.format(n=10)])
+    assert _fatal_ffmpeg_lines(stderr) == [_READ_ERROR]
+
+
+def test_format_below_cap_is_verbatim() -> None:
+    lines = ["a", "b", "c"]
+    assert _format_ffmpeg_lines(lines) == "a\nb\nc"
+
+
+def test_format_caps_and_counts_the_remainder() -> None:
+    lines = [f"line {i}" for i in range(_MAX_REPORTED_LINES + 7)]
+    out = _format_ffmpeg_lines(lines)
+    assert out.count("\n") == _MAX_REPORTED_LINES  # capped lines + the summary line
+    assert out.endswith("... (7 more)")
+    assert f"line {_MAX_REPORTED_LINES}" not in out
+
+
+@requires_tools
+@pytest.mark.parametrize("deep", [False, True])
+def test_intact_file_passes(sample_mkv: Path, deep: bool) -> None:
+    # deep=True must survive the subtitle and attachment streams too: the null muxer has
+    # no encoder for them, so they have to be stream-copied rather than re-encoded.
+    _check_container_integrity(str(sample_mkv), deep=deep, verbose=False)
+
+
+@requires_tools
+def test_truncated_file_still_fails(sample_mkv: Path, tmp_path: Path) -> None:
+    broken = tmp_path / "broken.mkv"
+    shutil.copy(sample_mkv, broken)
+    with broken.open("r+b") as fh:
+        fh.truncate(int(broken.stat().st_size * 0.6))
+    with pytest.raises(VerificationError, match="container integrity"):
+        _check_container_integrity(str(broken), deep=False, verbose=False)
+
+
+def test_video_stream_skips_leading_cover_art() -> None:
+    # Artwork at ffprobe index 0, the real video at index 1: the reconciled track model
+    # decides, not the stream order.
+    pr = ProbeResult(
+        path="x.mp4",
+        tracks=[make_track(kind="video", mkv_id=0, ffprobe_index=1, codec_name="hevc")],
+        duration_s=1.0,
+        chapter_entries=0,
+        attachment_count=1,
+        ffprobe_json={
+            "streams": [
+                {"index": 0, "codec_type": "video", "codec_name": "mjpeg"},
+                {"index": 1, "codec_type": "video", "codec_name": "hevc"},
+            ]
+        },
+    )
+    assert _video_stream(pr)["codec_name"] == "hevc"
+
+
+def test_video_stream_without_video_track() -> None:
+    pr = ProbeResult(
+        path="x.mka", tracks=[], duration_s=None, chapter_entries=0, attachment_count=0
+    )
+    assert _video_stream(pr) == {}

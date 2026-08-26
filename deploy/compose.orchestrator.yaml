@@ -1,0 +1,26 @@
+# Snippet to merge into my-media-server/docker-compose.yml.
+# Mount the media library at the SAME path Radarr/Sonarr use (here: /data) so webhook paths
+# are directly openable; otherwise set arr.*.media_root / local_media_root in config.yaml.
+services:
+  media-orchestrator:
+    build:
+      context: ../media-tools           # adjust to wherever the monorepo lives
+      dockerfile: deploy/orchestrator/Dockerfile
+    image: youssefaswad/media-orchestrator:latest
+    container_name: media-orchestrator
+    restart: unless-stopped
+    environment:
+      - ORCH_WEBHOOK_SECRET=${ORCH_WEBHOOK_SECRET}
+      - RADARR_API_KEY=${RADARR_API_KEY}
+      - SONARR_API_KEY=${SONARR_API_KEY}
+      - NTFY_MEDIAQC_USER=${NTFY_MEDIAQC_USER}
+      - NTFY_MEDIAQC_PASSWORD=${NTFY_MEDIAQC_PASSWORD}
+      # - ORCH_UI_USER=${ORCH_UI_USER}
+      # - ORCH_UI_PASSWORD=${ORCH_UI_PASSWORD}
+    volumes:
+      - ./orchestrator/config:/config
+      - ./orchestrator/state:/state
+      - /path/to/media:/data          # SAME mount path as radarr/sonarr
+    # cpus: "4"                        # re-encodes are CPU-heavy; cap if desired
+    networks:
+      - default

@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mkvprune"
+version = "0.2.0"
+description = "Interactively prune MKV audio/subtitle tracks and normalize audio to Dolby Digital, without touching video/DV/HDR metadata."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Youssef Aswad", email = "youssefaswad@gmail.com" }]
+keywords = ["mkv", "matroska", "mkvmerge", "ffmpeg", "dolby-vision", "hdr", "audio", "ac3", "eac3"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = []
+
+[project.scripts]
+mkvprune = "mkvprune.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/YoussefAswad/mkvprune"
+Repository = "https://github.com/YoussefAswad/mkvprune"
+Issues = "https://github.com/YoussefAswad/mkvprune/issues"
+
+[dependency-groups]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mkvprune"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/README.md", "/LICENSE", "/pyproject.toml"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

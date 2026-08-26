@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{{ job.label or job.id }} — job{% endblock %}
+{% block content %}
+<p><a href="/">← back</a></p>
+<section class="card">
+  <h2>{{ job.label or job.id }}</h2>
+  <p>
+    <span class="badge {{ job.status }}">{{ job.status }}</span>
+    <span class="muted">kind={{ job.kind }} · attempts={{ job.attempts }} · updated {{ job.updated_at.replace("T"," ") }}</span>
+  </p>
+  {% if job.error %}<pre class="err">{{ job.error }}</pre>{% endif %}
+  <div class="row-actions">
+    {% if job.status in ("dead", "failed", "canceled") %}
+      <form method="post" action="/jobs/{{ job.id }}/retry"><button>retry</button></form>
+    {% elif job.status == "queued" %}
+      <form method="post" action="/jobs/{{ job.id }}/cancel"><button class="ghost">cancel</button></form>
+    {% endif %}
+  </div>
+</section>
+<section class="card">
+  <h2>Audit trail</h2>
+  {% if not actions %}<p class="muted">No actions recorded.</p>{% else %}
+  <table class="actions">
+    <thead><tr><th>When</th><th>Tool</th><th>Action</th><th>Result</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for a in actions %}
+      <tr>
+        <td class="muted nowrap">{{ a.ts.replace("T"," ") }}</td>
+        <td>{{ a.tool }}</td>
+        <td>{{ a.action }}</td>
+        <td><span class="badge {{ a.result }}">{{ a.result }}</span></td>
+        <td>{{ a.after or a.error or "" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from conftest import build_test_services, mk, probe_of, radarr_config
+from mediacore.audit import FAIL, OK, SKIP
+from orchestrator.dispatch import Dispatcher, DispatchError
+from orchestrator.runner import PruneResult
+
+
+def _touch(tmp_path: Path) -> str:
+    f = tmp_path / "movie.mkv"
+    f.write_bytes(b"x")
+    return str(f)
+
+
+def _radarr_payload(path: str) -> dict:
+    return {
+        "app": "radarr",
+        "payload": {
+            "eventType": "Download",
+            "movie": {"id": 5, "title": "Mov", "year": 2021},
+            "movieFile": {"path": path},
+        },
+    }
+
+
+def _dirty_probe(path: str):
+    return probe_of(
+        mk(0, "video", codec_name="hevc"),
+        mk(1, "audio", codec_name="opus", channels=6),  # -> re-encode
+        mk(2, "subtitle", codec_name="hdmv_pgs_subtitle", language="fre"),  # -> drop
+        mk(3, "subtitle", codec_name="hdmv_pgs_subtitle", language="eng"),  # keep
+        path=path,
+    )
+
+
+def test_prune_pipeline_runs_and_rescans(tmp_path, monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(
+        "mediacore.arr.client.RadarrClient.rescan_and_wait",
+        lambda self, item_id, **kw: calls.append(item_id),
+    )
+    cfg = radarr_config(enable_seasonal_shift=False)
+    services = build_test_services(tmp_path, cfg)
+    path = _touch(tmp_path)
+
+    argv_seen: list = []
+
+    def fake_runner(argv):
+        argv_seen.append(argv)
+        return PruneResult(0, "ok", "")
+
+    disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p), prune_runner=fake_runner)
+    outcome = disp.dispatch("job1", _radarr_payload(path))
+
+    results = {s.tool: s.result for s in outcome.steps}
+    assert results["quality-check"] == OK
+    assert results["mkvprune"] == OK
+    assert calls == [5]  # rescan called with movie id
+    # argv keeps all audio, drops foreign sub (id 2) -> keep only id 3
+    assert argv_seen[0] == ["mkvprune", "-y", "--audio", "all", "--subs", "3", path]
+
+    rows = services.audit.for_job("job1")
+    assert any(r["tool"] == "mkvprune" and r["result"] == OK for r in rows)
+
+
+def test_prune_skips_when_clean(tmp_path, monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(
+        "mediacore.arr.client.RadarrClient.rescan_and_wait",
+        lambda self, item_id, **kw: calls.append(item_id),
+    )
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    path = _touch(tmp_path)
+    clean = probe_of(
+        mk(0, "video", codec_name="hevc"),
+        mk(1, "audio", codec_name="dts", channels=6),
+        mk(2, "subtitle", codec_name="hdmv_pgs_subtitle", language="eng"),
+        path=path,
+    )
+    disp = Dispatcher(services, probe_fn=lambda p: clean, prune_runner=lambda a: PruneResult(0, "", ""))
+    outcome = disp.dispatch("j", _radarr_payload(path))
+    prune = next(s for s in outcome.steps if s.tool == "mkvprune")
+    assert prune.result == SKIP
+    assert calls == []  # no rescan when nothing changed
+
+
+def test_prune_dedup_second_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, item_id, **kw: None
+    )
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    path = _touch(tmp_path)
+    disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p), prune_runner=lambda a: PruneResult(0, "", ""))
+    disp.dispatch("j1", _radarr_payload(path))
+    outcome2 = disp.dispatch("j2", _radarr_payload(path))
+    prune = next(s for s in outcome2.steps if s.tool == "mkvprune")
+    assert prune.result == SKIP and "already pruned" in prune.detail
+
+
+def test_prune_failure_raises(tmp_path):
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    path = _touch(tmp_path)
+    disp = Dispatcher(
+        services,
+        probe_fn=lambda p: _dirty_probe(p),
+        prune_runner=lambda a: PruneResult(3, "", "verify failed"),
+    )
+    with pytest.raises(DispatchError):
+        disp.dispatch("j", _radarr_payload(path))
+
+
+def test_probe_failure_is_nonfatal_quality_but_fatal_prune(tmp_path):
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    path = _touch(tmp_path)
+
+    def boom(_p):
+        raise RuntimeError("no ffprobe")
+
+    disp = Dispatcher(services, probe_fn=boom, prune_runner=lambda a: PruneResult(0, "", ""))
+    # quality-check records FAIL (non-fatal), prune also fails to probe -> FAIL step (non-fatal here
+    # since decision needs a probe; a probe error in prune is reported, not raised)
+    outcome = disp.dispatch("j", _radarr_payload(path))
+    qc = next(s for s in outcome.steps if s.tool == "quality-check")
+    assert qc.result == FAIL

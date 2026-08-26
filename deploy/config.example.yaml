@@ -1,0 +1,60 @@
+# media-tools orchestrator config. Copy to /config/config.yaml (a mounted volume).
+# Secrets are ${ENV} references — expanded at load, never written back resolved, so this file
+# is safe to edit in the web UI. Set the referenced vars in the container environment.
+
+server:
+  host: 0.0.0.0
+  port: 8000
+
+# Shared secret ARR must send as the `X-Webhook-Token` header on its Webhook Connect.
+webhook_secret: ${ORCH_WEBHOOK_SECRET}
+
+arr:
+  radarr:
+    base_url: http://radarr:7878
+    api_key: ${RADARR_API_KEY}
+    # Only needed if this container mounts the library at a different prefix than Radarr:
+    # media_root: /data          # path as Radarr reports it
+    # local_media_root: /data    # path as this container sees it
+  sonarr:
+    base_url: http://sonarr:8989
+    api_key: ${SONARR_API_KEY}
+
+ntfy:
+  url: http://ntfy:80
+  topic: media-quality             # quality-check findings
+  # status_topic: media-status     # optional: split action status from findings
+  user: ${NTFY_MEDIAQC_USER}
+  password: ${NTFY_MEDIAQC_PASSWORD}
+  status_granularity: job          # job | action | off
+
+policy:
+  audio_allow: [ac3, eac3, truehd, mlp, dts]
+  audio_min_channels: 2
+  audio_max_tracks: 2
+  subtitle_image_codecs: [hdmv_pgs_subtitle, dvd_subtitle, dvb_subtitle, xsub]
+  subtitle_keep_langs: [eng, en, ara, ar]
+  subtitle_flag_untagged: false
+  keep_default_subtitle: false     # true = never drop the current default sub, even if foreign
+
+audit:
+  state_dir: /state
+
+web:
+  # Optional app-level basic auth for the UI (Caddy may also enforce its own).
+  basic_auth_user: ${ORCH_UI_USER:-}
+  basic_auth_password: ${ORCH_UI_PASSWORD:-}
+
+# Pipeline toggles
+enable_seasonal_shift: true
+enable_quality_check: true
+enable_prune: true
+max_attempts: 3
+
+# seasonal-shift per-show offsets (matched to a Sonarr series by `name`).
+shows: []
+#  - name: "Some Anime"
+#    path: /data/tv/Some Anime
+#    seasons:
+#      2: { season_offset: -1, episode_offset: 12 }
+#    specials: {}

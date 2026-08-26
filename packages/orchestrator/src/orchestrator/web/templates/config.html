@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Config — media-tools{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>Configuration</h2>
+  <p class="muted">Edit <code>config.yaml</code>. Secrets should be <code>${ENV_VAR}</code> references —
+     they are expanded at load time and never stored resolved. Saving validates against the schema
+     and hot-reloads on success.</p>
+  {% if error %}<pre class="err">{{ error }}</pre>{% endif %}
+  {% if saved %}<p class="ok-toast">✓ Saved and reloaded.</p>{% endif %}
+  <form method="post" action="/config">
+    <textarea name="raw" spellcheck="false" rows="28">{{ raw }}</textarea>
+    <div class="row-actions"><button type="submit">Save &amp; reload</button></div>
+  </form>
+</section>
+{% endblock %}
