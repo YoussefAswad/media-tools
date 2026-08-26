@@ -233,3 +233,80 @@ class Ledger:
             sql += " WHERE " + clause
         sql += f" GROUP BY {day} ORDER BY d ASC"
         return [(r["d"], r["dn"], r["up"]) for r in self.db.execute(sql, params).fetchall()]
+
+
+# --- cutoffs ----------------------------------------------------------------------------
+
+_CUTOFFS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cutoffs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    cutoff_date  TEXT NOT NULL,
+    limit_bytes  INTEGER NOT NULL DEFAULT 0,
+    note         TEXT,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cutoffs_date ON cutoffs(cutoff_date);
+"""
+
+
+@dataclass
+class Cutoff:
+    id: int
+    cutoff_date: str
+    limit_bytes: int
+    note: str | None
+    created_at: str
+
+
+class Cutoffs:
+    """Period markers for the downloads ledger. The most recent cutoff defines the current
+    quota period; an optional ``limit_bytes`` drives the 'remaining' card."""
+
+    def __init__(self, db: sqlite3.Connection) -> None:
+        self.db = db
+        self._lock = threading.Lock()
+        with self._lock:
+            self.db.executescript(_CUTOFFS_SCHEMA)
+            self.db.commit()
+
+    def add(self, *, cutoff_date: str, limit_bytes: int = 0, note: str | None = None) -> int:
+        with self._lock:
+            cur = self.db.execute(
+                "INSERT INTO cutoffs (cutoff_date, limit_bytes, note, created_at) VALUES (?,?,?,?)",
+                (cutoff_date, limit_bytes, note, _now()),
+            )
+            self.db.commit()
+            return int(cur.lastrowid or 0)
+
+    def update(
+        self, cutoff_id: int, *, cutoff_date: str, limit_bytes: int = 0, note: str | None = None
+    ) -> bool:
+        with self._lock:
+            cur = self.db.execute(
+                "UPDATE cutoffs SET cutoff_date=?, limit_bytes=?, note=? WHERE id=?",
+                (cutoff_date, limit_bytes, note, cutoff_id),
+            )
+            self.db.commit()
+            return cur.rowcount > 0
+
+    def delete(self, cutoff_id: int) -> bool:
+        with self._lock:
+            cur = self.db.execute("DELETE FROM cutoffs WHERE id=?", (cutoff_id,))
+            self.db.commit()
+            return cur.rowcount > 0
+
+    def list(self) -> list[Cutoff]:
+        rows = self.db.execute(
+            "SELECT * FROM cutoffs ORDER BY cutoff_date DESC, id DESC"
+        ).fetchall()
+        return [Cutoff(**dict(r)) for r in rows]
+
+    def latest(self) -> Cutoff | None:
+        r = self.db.execute(
+            "SELECT * FROM cutoffs ORDER BY cutoff_date DESC, id DESC LIMIT 1"
+        ).fetchone()
+        return Cutoff(**dict(r)) if r else None
+
+    def latest_date(self) -> str | None:
+        c = self.latest()
+        return c.cutoff_date if c else None

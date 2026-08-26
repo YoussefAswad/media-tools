@@ -20,7 +20,15 @@ from orchestrator.config import OrchestratorConfig
 from orchestrator.ledger import MANUAL, QBITTORRENT
 from orchestrator.queue import CANCELED, DEAD, FAILED, PROCESSING, QUEUED
 from orchestrator.services import Services, build_services
-from orchestrator.util import RANGES, human_bytes, parse_bytes, range_bounds
+from orchestrator.util import (
+    _DATE_RE,
+    RANGES,
+    human_bytes,
+    kind_icon,
+    parse_bytes,
+    parse_range,
+    range_bounds,
+)
 from orchestrator.worker import Worker
 
 log = logging.getLogger(__name__)
@@ -28,6 +36,7 @@ log = logging.getLogger(__name__)
 _HERE = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "web" / "templates"))
 _TEMPLATES.env.filters["bytes"] = human_bytes
+_TEMPLATES.env.filters["icon"] = kind_icon
 _STATIC = _HERE / "web" / "static"
 
 _KINDS = ["movie", "show", "game", "software", "other"]
@@ -242,10 +251,26 @@ def jobs_clear_dead(request: Request) -> Response:
 
 
 # --- downloads bandwidth ledger ---------------------------------------------------------
+def _ledger_bounds(
+    services: Services, range: str | None, start: str | None, end: str | None
+) -> tuple[str | None, str | None]:
+    """Resolve time-frame bounds. Explicit start/end win; else 'since the latest cutoff' (the
+    default when a cutoff exists, or when range=='cutoff'); else the preset range key (30d)."""
+    if start or end:
+        return range_bounds(range, start, end)
+    latest = services.cutoffs.latest_date()
+    if range in (None, "", "cutoff") and latest:
+        return f"{latest}T00:00:00+00:00", None
+    return parse_range(range or "30d")
+
+
 @app.get("/downloads", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
 def downloads_page(request: Request) -> HTMLResponse:
+    has_cutoff = services_of(request).cutoffs.latest_date() is not None
     return _TEMPLATES.TemplateResponse(
-        request, "downloads.html", {"kinds": _KINDS, "ranges": list(RANGES.keys())}
+        request,
+        "downloads.html",
+        {"kinds": _KINDS, "ranges": list(RANGES.keys()), "has_cutoff": has_cutoff},
     )
 
 
@@ -259,7 +284,7 @@ def ui_ledger(
     source: str | None = None,
     q: str | None = None,
 ) -> HTMLResponse:
-    lo, hi = range_bounds(range, start, end)
+    lo, hi = _ledger_bounds(services_of(request), range, start, end)
     src = source if source in (QBITTORRENT, MANUAL) else None
     rows = services_of(request).ledger.list(
         start=lo, end=hi, kind=type or None, source=src, q=q
@@ -271,7 +296,7 @@ def ui_ledger(
 def ui_ledger_summary(
     request: Request, range: str | None = None, start: str | None = None, end: str | None = None
 ) -> HTMLResponse:
-    lo, hi = range_bounds(range, start, end)
+    lo, hi = _ledger_bounds(services_of(request), range, start, end)
     t = services_of(request).ledger.totals(start=lo, end=hi)
     tiles = [
         ("Downloaded", human_bytes(t["downloaded"]), "queued"),
@@ -286,7 +311,7 @@ def ui_ledger_summary(
 def ui_ledger_chart(
     request: Request, range: str | None = None, start: str | None = None, end: str | None = None
 ) -> HTMLResponse:
-    lo, hi = range_bounds(range, start, end)
+    lo, hi = _ledger_bounds(services_of(request), range, start, end)
     series = services_of(request).ledger.daily_series(start=lo, end=hi)
     peak = max((d + u for _, d, u in series), default=0)
     bars = [
@@ -303,6 +328,74 @@ def ui_ledger_chart(
     return _TEMPLATES.TemplateResponse(
         request, "_ledger_chart.html", {"bars": bars, "peak": human_bytes(peak)}
     )
+
+
+@app.get("/ui/ledger-remaining", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_ledger_remaining(request: Request) -> HTMLResponse:
+    """Remaining bandwidth for the current quota period (since the latest cutoff). Independent of
+    the selected range; only rendered when the latest cutoff carries a limit."""
+    services = services_of(request)
+    c = services.cutoffs.latest()
+    if c is None or c.limit_bytes <= 0:
+        return HTMLResponse("")  # no card
+    used = services.ledger.totals(start=f"{c.cutoff_date}T00:00:00+00:00", end=None)["total"]
+    remaining = c.limit_bytes - used
+    pct = (used / c.limit_bytes * 100) if c.limit_bytes else 0
+    tone = "over" if remaining < 0 else ("warn" if pct >= 85 else "ok")
+    ctx = {
+        "limit": human_bytes(c.limit_bytes),
+        "used": human_bytes(used),
+        "remaining": human_bytes(abs(remaining)),
+        "over": remaining < 0,
+        "pct": min(pct, 100),
+        "pct_label": round(pct),
+        "tone": tone,
+        "cutoff_date": c.cutoff_date,
+    }
+    return _TEMPLATES.TemplateResponse(request, "_remaining.html", ctx)
+
+
+# --- cutoffs (period markers + quota limits) --------------------------------------------
+@app.get("/ui/cutoffs", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_cutoffs(request: Request) -> HTMLResponse:
+    rows = services_of(request).cutoffs.list()
+    return _TEMPLATES.TemplateResponse(request, "_cutoffs.html", {"rows": rows})
+
+
+@app.post("/cutoffs/add", dependencies=[Depends(require_ui_auth)])
+def cutoffs_add(
+    request: Request,
+    cutoff_date: str = Form(...),
+    limit: str = Form("0"),
+    note: str = Form(""),
+) -> Response:
+    if _DATE_RE.match(cutoff_date):
+        services_of(request).cutoffs.add(
+            cutoff_date=cutoff_date, limit_bytes=parse_bytes(limit), note=(note.strip() or None)
+        )
+    return RedirectResponse("/downloads", status_code=303)
+
+
+@app.post("/cutoffs/{cutoff_id}/edit", dependencies=[Depends(require_ui_auth)])
+def cutoffs_edit(
+    request: Request,
+    cutoff_id: int,
+    cutoff_date: str = Form(...),
+    limit: str = Form("0"),
+    note: str = Form(""),
+) -> Response:
+    if _DATE_RE.match(cutoff_date):
+        services_of(request).cutoffs.update(
+            cutoff_id, cutoff_date=cutoff_date, limit_bytes=parse_bytes(limit),
+            note=(note.strip() or None),
+        )
+    return RedirectResponse("/downloads", status_code=303)
+
+
+@app.post("/cutoffs/{cutoff_id}/delete", dependencies=[Depends(require_ui_auth)])
+def cutoffs_delete(request: Request, cutoff_id: int) -> Response:
+    services_of(request).cutoffs.delete(cutoff_id)
+    return RedirectResponse("/downloads", status_code=303)
 
 
 @app.post("/downloads/add", dependencies=[Depends(require_ui_auth)])

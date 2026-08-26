@@ -5,6 +5,21 @@ from __future__ import annotations
 import datetime as _dt
 import re
 
+#: Emoji per download type, for the ledger's label column / filters / dropdowns.
+KIND_ICONS = {
+    "movie": "🎬",
+    "show": "📺",
+    "episode": "📺",
+    "game": "🎮",
+    "software": "💿",
+    "other": "📦",
+}
+
+
+def kind_icon(kind: str | None) -> str:
+    return KIND_ICONS.get((kind or "").lower(), "📦")
+
+
 _UNITS = ["B", "KB", "MB", "GB", "TB", "PB"]
 _UNIT_FACTORS = {
     "B": 1,

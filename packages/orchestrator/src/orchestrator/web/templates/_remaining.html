@@ -1,0 +1,15 @@
+<div class="remaining {{ tone }}">
+  <div class="remaining-main">
+    <div class="remaining-value">
+      {% if over %}<span class="over-tag">over by</span> {{ remaining }}{% else %}{{ remaining }}{% endif %}
+    </div>
+    <div class="remaining-label">
+      {% if over %}over the limit{% else %}remaining this period{% endif %}
+      <span class="muted">· since {{ cutoff_date }}</span>
+    </div>
+  </div>
+  <div class="remaining-bar-wrap">
+    <div class="remaining-bar"><div class="remaining-fill" style="width: {{ pct }}%"></div></div>
+    <div class="remaining-sub muted">{{ used }} of {{ limit }} used ({{ pct_label }}%)</div>
+  </div>
+</div>

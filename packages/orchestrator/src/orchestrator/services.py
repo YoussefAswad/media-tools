@@ -19,7 +19,7 @@ from mediacore.notify import Notifier
 from mediacore.qbit import QbitClient
 
 from orchestrator.config import OrchestratorConfig, load_orchestrator_config
-from orchestrator.ledger import Ledger
+from orchestrator.ledger import Cutoffs, Ledger
 from orchestrator.queue import JobQueue
 
 
@@ -32,6 +32,7 @@ class Services:
     notifier: Notifier
     queue: JobQueue
     ledger: Ledger
+    cutoffs: Cutoffs
     qbit: QbitClient | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -60,6 +61,7 @@ def build_services(config_path: Path) -> Services:
     queue = JobQueue(db, max_attempts=config.max_attempts)
     queue.requeue_stuck()
     ledger = Ledger(db)
+    cutoffs = Cutoffs(db)
     qbit = QbitClient.from_config(config.qbit) if config.qbit else None
     return Services(
         config=config,
@@ -69,5 +71,6 @@ def build_services(config_path: Path) -> Services:
         notifier=notifier,
         queue=queue,
         ledger=ledger,
+        cutoffs=cutoffs,
         qbit=qbit,
     )

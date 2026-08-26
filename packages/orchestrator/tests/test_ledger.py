@@ -100,3 +100,28 @@ def test_range_bounds_custom_dates_override_preset():
     # no dates -> preset applies (30d has a start)
     lo, hi = range_bounds("30d", None, None)
     assert lo is not None and hi is not None
+
+
+def test_cutoffs_crud_and_latest(tmp_path):
+    from mediacore.audit import open_db
+    from orchestrator.ledger import Cutoffs
+    cf = Cutoffs(open_db(tmp_path))
+    assert cf.latest() is None and cf.latest_date() is None
+    a = cf.add(cutoff_date="2026-08-01", limit_bytes=1024**4, note="Aug")
+    cf.add(cutoff_date="2026-09-01", limit_bytes=0, note="Sep")
+    latest = cf.latest()
+    assert latest.cutoff_date == "2026-09-01"  # most recent
+    assert cf.latest_date() == "2026-09-01"
+    assert len(cf.list()) == 2
+    assert cf.update(a, cutoff_date="2026-08-02", limit_bytes=2 * 1024**4, note="Aug2") is True
+    got = next(c for c in cf.list() if c.id == a)
+    assert got.cutoff_date == "2026-08-02" and got.limit_bytes == 2 * 1024**4
+    assert cf.delete(a) is True and len(cf.list()) == 1
+
+
+def test_kind_icon():
+    from orchestrator.util import kind_icon
+    assert kind_icon("movie") == "🎬"
+    assert kind_icon("episode") == "📺" and kind_icon("show") == "📺"
+    assert kind_icon("game") == "🎮" and kind_icon("software") == "💿"
+    assert kind_icon(None) == "📦" and kind_icon("weird") == "📦"

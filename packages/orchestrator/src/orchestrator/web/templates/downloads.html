@@ -4,8 +4,9 @@
 {% block content %}
 <div class="toolbar">
   <div class="filters" id="range-filter">
+    <button data-range="cutoff" class="chip {{ 'active' if has_cutoff else '' }}">Since cutoff</button>
     <button data-range="7d" class="chip">7d</button>
-    <button data-range="30d" class="chip active">30d</button>
+    <button data-range="30d" class="chip {{ '' if has_cutoff else 'active' }}">30d</button>
     <button data-range="90d" class="chip">90d</button>
     <button data-range="1y" class="chip">1y</button>
     <button data-range="all" class="chip">All</button>
@@ -22,7 +23,8 @@
     <button data-source="qbittorrent" class="chip">Auto</button>
     <button data-source="manual" class="chip">Manual</button>
   </div>
-  <button class="ghost" type="button" onclick="document.getElementById('add-entry').hidden = !document.getElementById('add-entry').hidden">+ Add entry</button>
+  <button class="ghost" type="button" onclick="var e=document.getElementById('add-entry');e.hidden=!e.hidden">+ Add entry</button>
+  <button class="ghost" type="button" onclick="var e=document.getElementById('manage-cutoffs');e.hidden=!e.hidden">Manage cutoffs</button>
 </div>
 
 <section class="card" id="add-entry" hidden>
@@ -31,7 +33,7 @@
     <label>Name<input name="name" required></label>
     <label>Type
       <select name="kind">
-        {% for k in kinds %}<option value="{{ k }}">{{ k|capitalize }}</option>{% endfor %}
+        {% for k in kinds %}<option value="{{ k }}">{{ k|icon }} {{ k|capitalize }}</option>{% endfor %}
       </select>
     </label>
     <label>Downloaded<input name="downloaded" placeholder="e.g. 12.3 GB" value="0"></label>
@@ -42,6 +44,19 @@
     <div class="row-actions"><button type="submit">Add</button></div>
   </form>
 </section>
+
+<section class="card" id="manage-cutoffs" hidden>
+  <h2>Manage cutoffs <span class="muted">— period markers &amp; quota limits</span></h2>
+  <form method="post" action="/cutoffs/add" class="entry-form">
+    <label>Cutoff date<input name="cutoff_date" type="date" required></label>
+    <label>Bandwidth limit<input name="limit" placeholder="e.g. 1 TB (blank = none)"></label>
+    <label>Note<input name="note" placeholder="e.g. August quota"></label>
+    <div class="row-actions"><button type="submit">Add cutoff</button></div>
+  </form>
+  <div data-src="/ui/cutoffs" data-interval="0">Loading…</div>
+</section>
+
+<div data-src="/ui/ledger-remaining" data-interval="0"></div>
 
 <div class="summary" data-src="/ui/ledger-summary" data-interval="0" data-ranged>Loading…</div>
 
@@ -55,7 +70,7 @@
     <h2>Downloads</h2>
     <div class="filters" id="type-filter">
       <button data-type="" class="chip active">All types</button>
-      {% for k in kinds %}<button data-type="{{ k }}" class="chip">{{ k|capitalize }}</button>{% endfor %}
+      {% for k in kinds %}<button data-type="{{ k }}" class="chip">{{ k|icon }} {{ k|capitalize }}</button>{% endfor %}
     </div>
   </div>
   <div data-src="/ui/ledger" data-interval="0" data-ranged data-searchable

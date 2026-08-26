@@ -154,3 +154,54 @@ def test_downloads_custom_date_range(client) -> None:
     assert "JanDL" in both and "MarDL" in both
     # summary respects the custom window
     assert client.get("/ui/ledger-summary", params={"start": "2026-01-01", "end": "2026-01-31"}).status_code == 200
+
+
+def test_cutoffs_and_remaining(client) -> None:
+    services = client.app.state.services
+    # add ledger entries around a cutoff date
+    services.ledger.add_manual(name="before", kind="movie", downloaded_bytes=10, uploaded_bytes=0,
+                               completed_at="2026-07-01T00:00:00+00:00")
+    services.ledger.add_manual(name="after", kind="game", downloaded_bytes=300, uploaded_bytes=100,
+                               completed_at="2026-08-10T00:00:00+00:00")
+    # add a cutoff (1000 B limit) on 2026-08-01 with a limit
+    r = client.post("/cutoffs/add", data={"cutoff_date": "2026-08-01", "limit": "1000", "note": "Aug"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    # cutoffs list shows it
+    assert "2026-08-01" in client.get("/ui/cutoffs").text
+    # downloads page marks 'Since cutoff' active
+    dl = client.get("/downloads").text
+    assert 'data-range="cutoff" class="chip active"' in dl
+    # ledger default (no range) => only entries on/after cutoff (the 'after' one)
+    led = client.get("/ui/ledger").text
+    assert "after" in led and "before" not in led
+    # remaining card: limit 1000 - used 400 (300+100) = 600 remaining, not over
+    rem = client.get("/ui/ledger-remaining").text
+    assert "600 B" in rem and "over" not in rem
+    # remaining ignores the range param (still the cutoff period)
+    assert "600 B" in client.get("/ui/ledger-remaining", params={"range": "7d"}).text
+
+
+def test_remaining_over_limit_and_no_card(client) -> None:
+    services = client.app.state.services
+    services.ledger.add_manual(name="big", kind="movie", downloaded_bytes=2000, uploaded_bytes=0,
+                               completed_at="2026-08-10T00:00:00+00:00")
+    # no cutoff yet -> no card
+    assert client.get("/ui/ledger-remaining").text.strip() == ""
+    # cutoff with a 1000 B limit -> used 2000 -> over by 1000
+    services.cutoffs.add(cutoff_date="2026-08-01", limit_bytes=1000, note="q")
+    rem = client.get("/ui/ledger-remaining").text
+    assert "over" in rem and "1000 B" in rem
+    # cutoff without a limit -> no card
+    services2 = client.app.state.services
+    for c in services2.cutoffs.list():
+        services2.cutoffs.delete(c.id)
+    services2.cutoffs.add(cutoff_date="2026-08-05", limit_bytes=0, note="nolimit")
+    assert client.get("/ui/ledger-remaining").text.strip() == ""
+
+
+def test_ledger_type_column_has_icons(client) -> None:
+    client.app.state.services.ledger.add_manual(name="EldenRing", kind="game",
+                                                 downloaded_bytes=1, uploaded_bytes=0)
+    body = client.get("/ui/ledger", params={"range": "all"}).text
+    assert "🎮" in body and "EldenRing" in body

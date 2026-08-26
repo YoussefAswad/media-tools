@@ -10,7 +10,7 @@
   {% for r in rows %}
     <tr>
       <td class="path" title="{{ r.name }}">{{ r.name }}{% if r.notes %} <span class="muted">— {{ r.notes }}</span>{% endif %}</td>
-      <td><span class="badge type">{{ (r.kind or "—")|capitalize }}</span></td>
+      <td class="nowrap"><span class="badge type">{{ r.kind|icon }} {{ (r.kind or "—")|capitalize }}</span></td>
       <td class="nowrap">
         {% if r.source == "manual" %}<span class="badge manual">Manual</span>
         {% elif r.app == "radarr" %}<span class="app radarr">🎬 Movie</span>
@@ -29,7 +29,7 @@
             <label>Name<input name="name" value="{{ r.name }}" required></label>
             <label>Type
               <select name="kind">
-                {% for k in kinds %}<option value="{{ k }}" {{ 'selected' if r.kind == k else '' }}>{{ k|capitalize }}</option>{% endfor %}
+                {% for k in kinds %}<option value="{{ k }}" {{ 'selected' if r.kind == k else '' }}>{{ k|icon }} {{ k|capitalize }}</option>{% endfor %}
                 {% if r.kind and r.kind not in kinds %}<option value="{{ r.kind }}" selected>{{ r.kind }}</option>{% endif %}
               </select>
             </label>
