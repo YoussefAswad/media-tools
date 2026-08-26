@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -99,6 +100,63 @@ def run_streamed(
         _CHILDREN.discard(proc)
 
     return subprocess.CompletedProcess(list(cmd), proc.returncode, "\n".join(collected), "")
+
+
+def run_streamed_split(
+    cmd: Sequence[str],
+    *,
+    on_stdout_line: Callable[[str], None] | None = None,
+    verbose: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command, streaming stdout line by line to ``on_stdout_line`` while keeping stderr
+    on its own pipe. Unlike :func:`run_streamed` (which merges the two), this never lets a
+    ``-progress pipe:1`` readout on stdout interleave with ``-v error`` diagnostics on stderr —
+    interleaving mangles error lines and breaks error detection. Returns a CompletedProcess with
+    the collected stdout and the full, untouched stderr.
+    """
+    if verbose:
+        print(f"+ {format_command(cmd)}", file=sys.stderr)
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _CHILDREN.add(proc)
+    out_lines: list[str] = []
+    err_chunks: list[bytes] = []
+
+    def _drain_stderr() -> None:
+        assert proc.stderr is not None
+        err_chunks.append(proc.stderr.read() or b"")
+
+    err_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    err_thread.start()
+    buf = b""
+    try:
+        assert proc.stdout is not None
+        while True:
+            chunk = proc.stdout.read1(65536)  # type: ignore[attr-defined]
+            if not chunk:
+                break
+            buf += chunk
+            parts = _LINE_SPLIT.split(buf)
+            buf = parts.pop()
+            for part in parts:
+                if not part:
+                    continue
+                line = part.decode("utf-8", "replace")
+                out_lines.append(line)
+                if on_stdout_line is not None:
+                    on_stdout_line(line)
+        if buf:
+            line = buf.decode("utf-8", "replace")
+            out_lines.append(line)
+            if on_stdout_line is not None:
+                on_stdout_line(line)
+        proc.wait()
+        err_thread.join()
+    finally:
+        _CHILDREN.discard(proc)
+
+    err = b"".join(err_chunks).decode("utf-8", "replace")
+    return subprocess.CompletedProcess(list(cmd), proc.returncode, "\n".join(out_lines), err)
 
 
 def run_json(cmd: Sequence[str], *, verbose: bool = False) -> dict[str, Any]:

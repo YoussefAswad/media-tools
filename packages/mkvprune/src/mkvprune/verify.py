@@ -10,7 +10,7 @@ from typing import Any, NoReturn
 from mkvprune.errors import VerificationError
 from mkvprune.mux import MuxPlan
 from mkvprune.probe import ProbeResult, probe
-from mkvprune.proc import run, run_streamed
+from mkvprune.proc import run, run_streamed_split
 
 # video side-data fields that must survive bit-exact
 _DOVI_FIELDS = (
@@ -236,7 +236,6 @@ def _check_container_integrity(
         # No readout wanted: a plain blocking run keeps stdout (progress) and stderr (errors)
         # cleanly separated.
         res = run(cmd, capture=True, verbose=verbose)
-        output, returncode = res.stderr, res.returncode
     else:
         on_progress(0.0)  # flip the phase to 'verify' immediately, before the first tick
 
@@ -248,10 +247,12 @@ def _check_container_integrity(
             elif line.strip() == "progress=end":
                 on_progress(1.0)
 
-        res = run_streamed(cmd, on_line=on_line, verbose=verbose)
-        output, returncode = res.stdout, res.returncode  # stdout is merged stdout+stderr here
+        # Keep stdout (progress) and stderr (errors) on separate pipes — merging them lets the
+        # `-progress` ticks interleave with `-v error` muxer chatter and mangle the error lines.
+        res = run_streamed_split(cmd, on_stdout_line=on_line, verbose=verbose)
 
-    fatal = _fatal_ffmpeg_lines(output)
+    fatal = _fatal_ffmpeg_lines(res.stderr)
+    returncode = res.returncode
     if returncode != 0 or fatal:
         detail = _format_ffmpeg_lines(fatal) or f"exit status {returncode}"
         raise VerificationError(
