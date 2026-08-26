@@ -1,16 +1,21 @@
 {% if not actions %}
-  <p class="muted empty">No actions recorded yet.</p>
+  <p class="muted empty">No actions match.</p>
 {% else %}
 <table class="actions">
-  <thead><tr><th>When</th><th>Tool</th><th>Action</th><th>Result</th><th>File</th></tr></thead>
+  <thead><tr><th>When</th><th>App</th><th>Tool</th><th>Result</th><th>Change</th><th>File</th></tr></thead>
   <tbody>
   {% for a in actions %}
     <tr>
       <td class="muted nowrap">{{ a.ts.replace("T", " ") }}</td>
+      <td class="nowrap">
+        {% if a.app == "radarr" %}<span class="app radarr">🎬 Movie</span>
+        {% elif a.app == "sonarr" %}<span class="app sonarr">📺 Episode</span>
+        {% else %}<span class="muted">{{ a.app or "" }}</span>{% endif %}
+      </td>
       <td>{{ a.tool }}</td>
-      <td>{{ a.action }}</td>
       <td><span class="badge {{ a.result }}">{{ a.result }}</span></td>
-      <td class="path" title="{{ a.path or '' }}">{{ (a.path or "").split("/")[-1] }}</td>
+      <td class="change" title="{{ a.change }}">{{ a.change or "—" }}</td>
+      <td class="path" title="{{ a.path or '' }}">{{ a.file }}</td>
     </tr>
   {% endfor %}
   </tbody>

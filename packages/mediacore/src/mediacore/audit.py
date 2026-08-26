@@ -131,19 +131,38 @@ class Audit:
         ).fetchone()
         return row is not None
 
-    def recent(self, *, limit: int = 100, results: list[str] | None = None) -> list[dict]:
+    def recent(
+        self,
+        *,
+        limit: int = 100,
+        results: list[str] | None = None,
+        q: str | None = None,
+        tool: str | None = None,
+        app: str | None = None,
+    ) -> list[dict]:
+        where: list[str] = []
+        params: list = []
         if results:
-            placeholders = ",".join("?" for _ in results)
-            rows = self.db.execute(
-                f"SELECT * FROM actions WHERE result IN ({placeholders}) "
-                "ORDER BY id DESC LIMIT ?",
-                (*results, limit),
-            ).fetchall()
-        else:
-            rows = self.db.execute(
-                "SELECT * FROM actions ORDER BY id DESC LIMIT ?", (limit,)
-            ).fetchall()
+            where.append(f"result IN ({','.join('?' for _ in results)})")
+            params.extend(results)
+        if tool:
+            where.append("tool = ?")
+            params.append(tool)
+        if app:
+            where.append("app = ?")
+            params.append(app)
+        if q:
+            where.append("(path LIKE ? OR after LIKE ? OR error LIKE ? OR app LIKE ?)")
+            params.extend([f"%{q}%"] * 4)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        rows = self.db.execute(
+            f"SELECT * FROM actions{clause} ORDER BY id DESC LIMIT ?", (*params, limit)
+        ).fetchall()
         return [dict(r) for r in rows]
+
+    def counts(self) -> dict[str, int]:
+        rows = self.db.execute("SELECT result, COUNT(*) c FROM actions GROUP BY result").fetchall()
+        return {r["result"]: r["c"] for r in rows}
 
     def for_job(self, job_id: str) -> list[dict]:
         rows = self.db.execute(

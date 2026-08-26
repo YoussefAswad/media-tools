@@ -2,11 +2,17 @@
   <p class="muted empty">Nothing here.</p>
 {% else %}
 <table class="jobs">
-  <thead><tr><th>Item</th><th>Status</th><th>Step</th><th>Att.</th><th></th></tr></thead>
+  <thead><tr><th>Item</th><th>Type</th><th>Status</th><th>Step</th><th>Att.</th><th></th></tr></thead>
   <tbody>
   {% for job in jobs %}
+    {% set ap = job.payload.app %}
     <tr>
       <td><a href="/jobs/{{ job.id }}">{{ job.label or job.id[:8] }}</a></td>
+      <td class="nowrap">
+        {% if ap == "radarr" %}<span class="app radarr">🎬 Movie</span>
+        {% elif ap == "sonarr" %}<span class="app sonarr">📺 Episode</span>
+        {% else %}<span class="muted">{{ ap or "—" }}</span>{% endif %}
+      </td>
       <td><span class="badge {{ job.status }}">{{ job.status }}</span></td>
       <td class="muted">{{ job.current_step or "—" }}</td>
       <td>{{ job.attempts }}</td>
@@ -16,9 +22,13 @@
         {% elif job.status == "queued" %}
           <form method="post" action="/jobs/{{ job.id }}/cancel"><button class="mini ghost">cancel</button></form>
         {% endif %}
+        <form method="post" action="/jobs/{{ job.id }}/delete"
+              onsubmit="return confirm('Remove this job from history?')">
+          <button class="mini ghost danger" title="Remove from history">✕</button>
+        </form>
       </td>
     </tr>
-    {% if job.error %}<tr class="err-row"><td colspan="5"><code>{{ job.error }}</code></td></tr>{% endif %}
+    {% if job.error %}<tr class="err-row"><td colspan="6"><code>{{ job.error }}</code></td></tr>{% endif %}
   {% endfor %}
   </tbody>
 </table>

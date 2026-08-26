@@ -1,15 +1,107 @@
-// Minimal live-refresh: poll each [data-src] element and swap in the returned HTML fragment.
-// No external libraries — keeps the artifact fully self-contained (no CDN at runtime).
+// Self-contained UI logic — no external libraries (CSP-safe).
 (function () {
+  // ---- live-refreshing panels with search + filters ----------------------------------
+  var searchEl = document.getElementById("search");
+  var appFilterEl = document.getElementById("app-filter");
+  var state = { q: "", app: "" };
+
+  function buildUrl(el) {
+    var base = el.dataset.src;
+    var params = new URLSearchParams();
+    if (el.hasAttribute("data-searchable") && state.q) params.set("q", state.q);
+    if (state.app) params.set("app", state.app);
+    var fid = el.dataset.filtered;
+    if (fid) {
+      var box = document.getElementById(fid);
+      var active = box && box.querySelector(".chip.active");
+      if (active && active.dataset.result) params.set("result", active.dataset.result);
+    }
+    var qs = params.toString();
+    return qs ? base + "?" + qs : base;
+  }
+
   function refresh(el) {
-    fetch(el.dataset.src, { headers: { "X-Requested-With": "poll" } })
+    fetch(buildUrl(el), { headers: { "X-Requested-With": "poll" } })
       .then(function (r) { return r.ok ? r.text() : null; })
       .then(function (html) { if (html !== null) el.innerHTML = html; })
-      .catch(function () { /* transient; keep last render */ });
+      .catch(function () {});
   }
-  document.querySelectorAll("[data-src]").forEach(function (el) {
+
+  var panels = Array.prototype.slice.call(document.querySelectorAll("[data-src]"));
+  function refreshAll() { panels.forEach(refresh); }
+
+  panels.forEach(function (el) {
     refresh(el);
     var interval = parseInt(el.dataset.interval || "3000", 10);
     setInterval(function () { refresh(el); }, interval);
   });
+
+  if (searchEl) {
+    var t;
+    searchEl.addEventListener("input", function () {
+      clearTimeout(t);
+      t = setTimeout(function () { state.q = searchEl.value.trim(); refreshAll(); }, 250);
+    });
+  }
+
+  // chip filter groups (app filter is global; result filter is per-panel)
+  document.querySelectorAll(".filters").forEach(function (group) {
+    group.addEventListener("click", function (e) {
+      var btn = e.target.closest(".chip");
+      if (!btn) return;
+      e.preventDefault();
+      group.querySelectorAll(".chip").forEach(function (c) { c.classList.remove("active"); });
+      btn.classList.add("active");
+      if (group.id === "app-filter") state.app = btn.dataset.app || "";
+      refreshAll();
+    });
+  });
+
+  // ---- YAML syntax highlighting on the config editor ---------------------------------
+  var ta = document.getElementById("yaml-editor");
+  var hl = document.getElementById("yaml-highlight");
+  if (ta && hl) {
+    var esc = function (s) {
+      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    };
+    var highlight = function (src) {
+      return src.split("\n").map(function (line) {
+        var e = esc(line);
+        if (/^\s*#/.test(line)) return '<span class="y-com">' + e + "</span>";
+        // key:  value
+        var m = e.match(/^(\s*(?:- )?)([A-Za-z0-9_.-]+)(:)(.*)$/);
+        if (m) {
+          var val = m[4].replace(/^(\s+)(.*)$/, function (_a, sp, rest) {
+            if (rest === "") return sp;
+            var r = rest;
+            if (/^#/.test(rest)) return sp + '<span class="y-com">' + rest + "</span>";
+            if (/^(true|false|null|~)\s*$/i.test(rest)) r = '<span class="y-bool">' + rest + "</span>";
+            else if (/^-?\d+(\.\d+)?\s*$/.test(rest)) r = '<span class="y-num">' + rest + "</span>";
+            else r = '<span class="y-str">' + rest + "</span>";
+            return sp + r;
+          });
+          return m[1] + '<span class="y-key">' + m[2] + "</span>" + '<span class="y-punc">:</span>' + val;
+        }
+        return e;
+      }).join("\n");
+    };
+    var sync = function () {
+      hl.innerHTML = highlight(ta.value) + "\n";
+      hl.scrollTop = ta.scrollTop;
+      hl.scrollLeft = ta.scrollLeft;
+    };
+    ta.addEventListener("input", sync);
+    ta.addEventListener("scroll", function () { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; });
+    // keep tabs usable as two spaces
+    ta.addEventListener("keydown", function (e) {
+      if (e.key === "Tab") {
+        e.preventDefault();
+        var s = ta.selectionStart, en = ta.selectionEnd;
+        ta.value = ta.value.slice(0, s) + "  " + ta.value.slice(en);
+        ta.selectionStart = ta.selectionEnd = s + 2;
+        sync();
+      }
+    });
+    sync();
+  }
 })();

@@ -77,9 +77,20 @@ def test_webhook_download_enqueues(client) -> None:
         headers={"X-Webhook-Token": "topsecret"},
     )
     assert r.status_code == 200 and r.json()["status"] == "queued"
-    # job shows up in the active panel
+    # job shows up in the active panel, with a Movie type + searchable + app-filterable
     active = client.get("/ui/active")
-    assert "Mov (2021)" in active.text
+    assert "Mov (2021)" in active.text and "Movie" in active.text
+    assert "Mov (2021)" in client.get("/ui/active", params={"q": "Mov"}).text
+    assert "Mov (2021)" not in client.get("/ui/active", params={"q": "zzz"}).text
+    assert "Mov (2021)" in client.get("/ui/active", params={"app": "radarr"}).text
+    assert "Mov (2021)" not in client.get("/ui/active", params={"app": "sonarr"}).text
+
+
+def test_summary_and_clear_dead(client) -> None:
+    assert client.get("/ui/summary").status_code == 200
+    # clear-dead redirects and succeeds even with nothing to clear
+    r = client.post("/jobs/clear-dead", follow_redirects=False)
+    assert r.status_code == 303
 
 
 def test_dashboard_and_config_pages(client) -> None:

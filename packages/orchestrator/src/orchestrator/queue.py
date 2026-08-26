@@ -165,18 +165,49 @@ class JobQueue:
         row = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         return Job.from_row(row) if row else None
 
-    def list(self, *, statuses: tuple[str, ...] | None = None, limit: int = 100) -> list[Job]:
+    def list(
+        self,
+        *,
+        statuses: tuple[str, ...] | None = None,
+        q: str | None = None,
+        limit: int = 100,
+    ) -> list[Job]:
+        where: list[str] = []
+        params: list = []
         if statuses:
-            ph = ",".join("?" for _ in statuses)
-            rows = self.db.execute(
-                f"SELECT * FROM jobs WHERE status IN ({ph}) ORDER BY created_at DESC LIMIT ?",
-                (*statuses, limit),
-            ).fetchall()
-        else:
-            rows = self.db.execute(
-                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
-            ).fetchall()
+            where.append(f"status IN ({','.join('?' for _ in statuses)})")
+            params.extend(statuses)
+        if q:
+            where.append("(label LIKE ? OR payload LIKE ?)")
+            params.extend([f"%{q}%", f"%{q}%"])
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        rows = self.db.execute(
+            f"SELECT * FROM jobs{clause} ORDER BY created_at DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
         return [Job.from_row(r) for r in rows]
+
+    def counts(self) -> dict[str, int]:
+        rows = self.db.execute("SELECT status, COUNT(*) c FROM jobs GROUP BY status").fetchall()
+        return {r["status"]: r["c"] for r in rows}
+
+    def clear_dead(self) -> int:
+        """Delete finished-but-not-successful jobs (dead / failed / canceled)."""
+        with self._lock:
+            cur = self.db.execute(
+                "DELETE FROM jobs WHERE status IN (?,?,?)", (DEAD, FAILED, CANCELED)
+            )
+            self.db.commit()
+            return cur.rowcount
+
+    def delete(self, job_id: str) -> bool:
+        """Remove a single job from history. Refuses to delete a job still in flight."""
+        with self._lock:
+            cur = self.db.execute(
+                "DELETE FROM jobs WHERE id=? AND status != ?", (job_id, PROCESSING)
+            )
+            self.db.commit()
+            return cur.rowcount > 0
 
     def requeue_stuck(self) -> int:
         """On startup, move any ``processing`` jobs (from a crash) back to ``queued``."""

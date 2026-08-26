@@ -17,7 +17,7 @@ from mediacore.config import find_default_config, parse_config, read_raw, save_t
 from pydantic import ValidationError
 
 from orchestrator.config import OrchestratorConfig
-from orchestrator.queue import DEAD, FAILED, PROCESSING, QUEUED
+from orchestrator.queue import CANCELED, DEAD, FAILED, PROCESSING, QUEUED
 from orchestrator.services import Services, build_services
 from orchestrator.worker import Worker
 
@@ -28,6 +28,23 @@ _TEMPLATES = Jinja2Templates(directory=str(_HERE / "web" / "templates"))
 _STATIC = _HERE / "web" / "static"
 
 CONFIG_ENV = "ORCHESTRATOR_CONFIG"
+
+
+def _decorate(a: dict) -> dict:
+    """Add a human 'change' string (what the step actually did) and a short filename."""
+    import json as _json
+
+    change = ""
+    after = a.get("after")
+    if after:
+        try:
+            change = (_json.loads(after) or {}).get("detail", "")
+        except (ValueError, TypeError):
+            change = ""
+    a = dict(a)
+    a["change"] = change or (a.get("error") or "")
+    a["file"] = (a.get("path") or "").rsplit("/", 1)[-1]
+    return a
 
 
 def _config_path() -> Path:
@@ -130,22 +147,57 @@ def dashboard(request: Request) -> HTMLResponse:
     return _TEMPLATES.TemplateResponse(request, "dashboard.html", {})
 
 
+@app.get("/ui/summary", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_summary(request: Request) -> HTMLResponse:
+    services = services_of(request)
+    jc = services.queue.counts()
+    ac = services.audit.counts()
+    tiles = [
+        ("Active", (jc.get("queued", 0) + jc.get("processing", 0)), "queued"),
+        ("Done", jc.get("done", 0), "ok"),
+        ("Dead", (jc.get("dead", 0) + jc.get("failed", 0) + jc.get("canceled", 0)), "fail"),
+        ("Pruned/changed", ac.get("ok", 0), "ok"),
+        ("Skipped", ac.get("skip", 0), "skip"),
+        ("Failed steps", ac.get("fail", 0), "fail"),
+    ]
+    return _TEMPLATES.TemplateResponse(request, "_summary.html", {"tiles": tiles})
+
+
+def _app_filter(jobs, app: str | None):
+    if app not in ("radarr", "sonarr"):
+        return jobs
+    return [j for j in jobs if (j.payload or {}).get("app") == app]
+
+
 @app.get("/ui/active", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
-def ui_active(request: Request) -> HTMLResponse:
-    jobs = services_of(request).queue.list(statuses=(QUEUED, PROCESSING), limit=100)
-    return _TEMPLATES.TemplateResponse(request, "_jobs.html", {"jobs": jobs, "kind": "active"})
+def ui_active(request: Request, q: str | None = None, app: str | None = None) -> HTMLResponse:
+    jobs = services_of(request).queue.list(statuses=(QUEUED, PROCESSING), q=q, limit=100)
+    return _TEMPLATES.TemplateResponse(
+        request, "_jobs.html", {"jobs": _app_filter(jobs, app), "kind": "active"}
+    )
 
 
 @app.get("/ui/failed", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
-def ui_failed(request: Request) -> HTMLResponse:
-    jobs = services_of(request).queue.list(statuses=(FAILED, DEAD), limit=100)
-    return _TEMPLATES.TemplateResponse(request, "_jobs.html", {"jobs": jobs, "kind": "failed"})
+def ui_failed(request: Request, q: str | None = None, app: str | None = None) -> HTMLResponse:
+    jobs = services_of(request).queue.list(statuses=(FAILED, DEAD, CANCELED), q=q, limit=100)
+    return _TEMPLATES.TemplateResponse(
+        request, "_jobs.html", {"jobs": _app_filter(jobs, app), "kind": "failed"}
+    )
 
 
 @app.get("/ui/actions", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
-def ui_actions(request: Request) -> HTMLResponse:
-    actions = services_of(request).audit.recent(limit=60)
-    return _TEMPLATES.TemplateResponse(request, "_actions.html", {"actions": actions})
+def ui_actions(
+    request: Request,
+    q: str | None = None,
+    result: str | None = None,
+    app: str | None = None,
+) -> HTMLResponse:
+    results = [result] if result in ("ok", "skip", "fail") else None
+    app = app if app in ("radarr", "sonarr") else None
+    actions = services_of(request).audit.recent(limit=80, q=q, results=results, app=app)
+    return _TEMPLATES.TemplateResponse(
+        request, "_actions.html", {"actions": [_decorate(a) for a in actions]}
+    )
 
 
 @app.get("/jobs/{job_id}", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
@@ -154,7 +206,7 @@ def job_detail(request: Request, job_id: str) -> HTMLResponse:
     job = services.queue.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
-    actions = services.audit.for_job(job_id)
+    actions = [_decorate(a) for a in services.audit.for_job(job_id)]
     return _TEMPLATES.TemplateResponse(
         request, "job_detail.html", {"job": job, "actions": actions}
     )
@@ -169,6 +221,18 @@ def job_retry(request: Request, job_id: str) -> Response:
 @app.post("/jobs/{job_id}/cancel", dependencies=[Depends(require_ui_auth)])
 def job_cancel(request: Request, job_id: str) -> Response:
     services_of(request).queue.cancel(job_id)
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/jobs/{job_id}/delete", dependencies=[Depends(require_ui_auth)])
+def job_delete(request: Request, job_id: str) -> Response:
+    services_of(request).queue.delete(job_id)
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/jobs/clear-dead", dependencies=[Depends(require_ui_auth)])
+def jobs_clear_dead(request: Request) -> Response:
+    services_of(request).queue.clear_dead()
     return RedirectResponse("/", status_code=303)
 
 

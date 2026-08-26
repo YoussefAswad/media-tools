@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Config — media-tools{% endblock %}
+{% block title %}Config — Media Orchestrator{% endblock %}
+{% block nav_cfg %}active{% endblock %}
 {% block content %}
 <section class="card">
   <h2>Configuration</h2>
@@ -9,7 +10,11 @@
   {% if error %}<pre class="err">{{ error }}</pre>{% endif %}
   {% if saved %}<p class="ok-toast">✓ Saved and reloaded.</p>{% endif %}
   <form method="post" action="/config">
-    <textarea name="raw" spellcheck="false" rows="28">{{ raw }}</textarea>
+    <div class="editor">
+      <pre id="yaml-highlight" aria-hidden="true"></pre>
+      <textarea id="yaml-editor" name="raw" spellcheck="false" rows="30"
+                autocomplete="off" autocapitalize="off" autocorrect="off">{{ raw }}</textarea>
+    </div>
     <div class="row-actions"><button type="submit">Save &amp; reload</button></div>
   </form>
 </section>

@@ -15,13 +15,17 @@
     {% elif job.status == "queued" %}
       <form method="post" action="/jobs/{{ job.id }}/cancel"><button class="ghost">cancel</button></form>
     {% endif %}
+    <form method="post" action="/jobs/{{ job.id }}/delete"
+          onsubmit="return confirm('Remove this job from history?')">
+      <button class="ghost danger">remove from history</button>
+    </form>
   </div>
 </section>
 <section class="card">
-  <h2>Audit trail</h2>
+  <h2>What this job changed</h2>
   {% if not actions %}<p class="muted">No actions recorded.</p>{% else %}
   <table class="actions">
-    <thead><tr><th>When</th><th>Tool</th><th>Action</th><th>Result</th><th>Detail</th></tr></thead>
+    <thead><tr><th>When</th><th>Tool</th><th>Action</th><th>Result</th><th>Change</th><th>File</th></tr></thead>
     <tbody>
     {% for a in actions %}
       <tr>
@@ -29,7 +33,8 @@
         <td>{{ a.tool }}</td>
         <td>{{ a.action }}</td>
         <td><span class="badge {{ a.result }}">{{ a.result }}</span></td>
-        <td>{{ a.after or a.error or "" }}</td>
+        <td class="change">{{ a.change or "—" }}</td>
+        <td class="path" title="{{ a.path or '' }}">{{ a.file }}</td>
       </tr>
     {% endfor %}
     </tbody>

@@ -64,3 +64,32 @@ def test_requeue_stuck(tmp_path: Path) -> None:
     q.claim_next()  # now processing
     assert q.requeue_stuck() == 1
     assert q.list(statuses=(QUEUED,))[0].status == QUEUED
+
+
+def test_clear_dead_and_delete(tmp_path: Path) -> None:
+    q = make_queue(tmp_path, max_attempts=1)
+    d = q.enqueue("k", {})
+    q.claim_next()
+    q.mark_failed(d, "x")  # -> dead
+    keep = q.enqueue("k", {})  # queued
+    assert q.counts().get(DEAD) == 1
+    assert q.clear_dead() == 1
+    assert q.get(d) is None and q.get(keep) is not None
+    # delete a queued job by id
+    assert q.delete(keep) is True and q.get(keep) is None
+
+
+def test_delete_refuses_in_flight(tmp_path: Path) -> None:
+    q = make_queue(tmp_path)
+    jid = q.enqueue("k", {})
+    q.claim_next()  # processing
+    assert q.delete(jid) is False and q.get(jid) is not None
+
+
+def test_list_q_filter(tmp_path: Path) -> None:
+    q = make_queue(tmp_path)
+    q.enqueue("k", {"app": "radarr"}, label="The Matrix (1999)")
+    q.enqueue("k", {"app": "sonarr"}, label="Some Show - S01E01")
+    assert len(q.list(q="matrix")) == 1
+    assert len(q.list(q="S01E01")) == 1
+    assert len(q.list(q="nope")) == 0
