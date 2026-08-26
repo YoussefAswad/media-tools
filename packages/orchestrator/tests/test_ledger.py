@@ -47,6 +47,20 @@ def test_add_manual_and_delete(tmp_path):
     assert lg.delete(rid) is True and lg.list() == []
 
 
+def test_list_orders_by_day_then_added(tmp_path):
+    lg = mk(tmp_path)
+    # three entries share a completion day, added in order a -> b -> c
+    for name in ("a", "b", "c"):
+        lg.add_manual(name=name, kind="movie", downloaded_bytes=1, uploaded_bytes=0,
+                      completed_at="2026-08-20")
+    # a later-day entry added first must still sort above the 08-20 group
+    lg.add_manual(name="newday", kind="movie", downloaded_bytes=1, uploaded_bytes=0,
+                  completed_at="2026-08-21")
+    names = [r.name for r in lg.list()]
+    assert names[0] == "newday"            # newer download day on top
+    assert names[1:] == ["c", "b", "a"]    # within the same day: newest-added first
+
+
 def test_range_and_filters(tmp_path):
     lg = mk(tmp_path)
     now = _dt.datetime.now(_dt.UTC)
@@ -78,27 +92,30 @@ def test_daily_series(tmp_path):
 
 
 def test_human_and_parse_bytes():
+    # default is decimal / SI (base 1000)
     assert human_bytes(0) == "0 B"
-    assert human_bytes(1536) == "1.50 KB"
-    assert human_bytes(1024**3) == "1.00 GB"
-    assert parse_bytes("12.3 GB") == int(12.3 * 1024**3)
-    assert parse_bytes("500MB") == 500 * 1024**2
+    assert human_bytes(1500) == "1.50 KB"
+    assert human_bytes(1000**3) == "1.00 GB"
+    assert parse_bytes("12.3 GB") == int(12.3 * 1000**3)
+    assert parse_bytes("500MB") == 500 * 1000**2
     assert parse_bytes("1048576") == 1048576
     assert parse_bytes("") == 0 and parse_bytes(None) == 0
 
 
-def test_human_bytes_iec_suffix():
-    # same 1024-based magnitude, only the suffix changes to the IEC form
-    assert human_bytes(1536, iec=True) == "1.50 KiB"
+def test_human_bytes_iec_is_binary_and_differs_from_decimal():
+    # IEC is base 1024 — a genuinely different magnitude, not just a relabelled suffix
+    assert human_bytes(1024, iec=True) == "1.00 KiB"
     assert human_bytes(1024**3, iec=True) == "1.00 GiB"
     assert human_bytes(0, iec=True) == "0 B"
+    assert human_bytes(1024**3) == "1.07 GB"  # same bytes, decimal label -> bigger number
 
 
-def test_parse_bytes_accepts_iec_units():
+def test_parse_bytes_scale_matches_suffix():
     assert parse_bytes("1 GiB") == 1024**3
     assert parse_bytes("500MiB") == 500 * 1024**2
-    # GB and GiB parse to the same bytes (both 1024-based)
-    assert parse_bytes("2 GB") == parse_bytes("2 GiB")
+    assert parse_bytes("1 GB") == 1000**3
+    # GB (decimal) and GiB (binary) are different byte counts now
+    assert parse_bytes("2 GB") != parse_bytes("2 GiB")
 
 
 def test_range_bounds_custom_dates_override_preset():

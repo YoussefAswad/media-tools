@@ -204,7 +204,13 @@ class Ledger:
         sql = "SELECT * FROM downloads"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY COALESCE(completed_at, recorded_at) DESC LIMIT ?"
+        # Order by the download DAY (newest first), then by when the row was added — so several
+        # entries sharing a completion date show the most-recently-added on top. id breaks any
+        # final tie (later insert = higher id).
+        sql += (
+            " ORDER BY substr(COALESCE(completed_at, recorded_at), 1, 10) DESC,"
+            " recorded_at DESC, id DESC LIMIT ?"
+        )
         rows = self.db.execute(sql, (*params, limit)).fetchall()
         return [DownloadRow(**dict(r)) for r in rows]
 

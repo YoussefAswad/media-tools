@@ -20,41 +20,41 @@ def kind_icon(kind: str | None) -> str:
     return KIND_ICONS.get((kind or "").lower(), "📦")
 
 
-# Both scales use the same 1024 math (matching qBittorrent); only the suffix differs. The
-# IEC form (GiB/MiB) is the technically-correct label for 1024-based values; the plain form
-# (GB/MB) is the familiar one. A UI toggle picks which suffix to render.
+# Two genuinely different scales: the plain form is decimal SI (GB = 1000^3), the IEC form is
+# binary (GiB = 1024^3, what qBittorrent counts in). A UI toggle picks which to render, so the
+# same byte count shows a different magnitude in each. Suffixes are matched to their scale.
 _UNITS = ["B", "KB", "MB", "GB", "TB", "PB"]
 _UNITS_IEC = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
 _UNIT_FACTORS = {
     "B": 1,
-    "KB": 1024,
-    "K": 1024,
+    # decimal / SI
+    "KB": 1000, "K": 1000,
+    "MB": 1000**2, "M": 1000**2,
+    "GB": 1000**3, "G": 1000**3,
+    "TB": 1000**4, "T": 1000**4,
+    "PB": 1000**5, "P": 1000**5,
+    # binary / IEC
     "KIB": 1024,
-    "MB": 1024**2,
-    "M": 1024**2,
     "MIB": 1024**2,
-    "GB": 1024**3,
-    "G": 1024**3,
     "GIB": 1024**3,
-    "TB": 1024**4,
-    "T": 1024**4,
     "TIB": 1024**4,
-    "PB": 1024**5,
     "PIB": 1024**5,
 }
 
 
 def human_bytes(n: int | float | None, *, iec: bool = False) -> str:
-    """1234567 -> '1.18 MB' (or '1.18 MiB' when ``iec``). Binary (1024) math either way,
-    matching qBittorrent's display; ``iec`` only switches the suffix to the KiB/MiB/GiB form."""
+    """Format a byte count. Decimal by default (``1_500_000_000 -> '1.50 GB'``, base 1000); with
+    ``iec`` it's binary (``1073741824 -> '1.00 GiB'``, base 1024). The two are different
+    magnitudes for the same input, not a relabelled suffix."""
     units = _UNITS_IEC if iec else _UNITS
+    base = 1024 if iec else 1000
     if not n or n < 0:
         return "0 B"
     size = float(n)
     for unit in units:
-        if size < 1024 or unit == units[-1]:
+        if size < base or unit == units[-1]:
             return (f"{size:.0f} {unit}" if unit == "B" else f"{size:.2f} {unit}")
-        size /= 1024
+        size /= base
     return f"{size:.2f} {units[-1]}"
 
 
@@ -62,7 +62,9 @@ _BYTES_RE = re.compile(r"^\s*([\d.,]+)\s*([A-Za-z]{0,3})\s*$")
 
 
 def parse_bytes(text: str | None) -> int:
-    """Parse '12.3 GB' / '500MB' / '1048576' into an int number of bytes. 0 on empty/invalid."""
+    """Parse '12.3 GB' / '500MiB' / '1048576' into an int number of bytes. 0 on empty/invalid.
+    Decimal suffixes (GB/MB/...) are 1000-based; IEC suffixes (GiB/MiB/...) are 1024-based, so
+    a value round-trips with whichever unit :func:`human_bytes` rendered it in."""
     if text is None:
         return 0
     s = str(text).strip()

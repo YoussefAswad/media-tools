@@ -205,10 +205,10 @@ def test_remaining_over_limit_and_no_card(client) -> None:
                                completed_at="2026-08-10T00:00:00+00:00")
     # no cutoff yet -> no card
     assert client.get("/ui/ledger-remaining").text.strip() == ""
-    # cutoff with a 1000 B limit -> used 2000 -> over by 1000
+    # cutoff with a 1000 B limit -> used 2000 -> over by 1000 (= 1.00 KB decimal)
     services.cutoffs.add(cutoff_date="2026-08-01", limit_bytes=1000, note="q")
     rem = client.get("/ui/ledger-remaining").text
-    assert "over" in rem and "1000 B" in rem
+    assert "over" in rem and "1.00 KB" in rem
     # cutoff without a limit -> no card
     services2 = client.app.state.services
     for c in services2.cutoffs.list():
