@@ -1,9 +1,11 @@
 """The per-job dispatch pipeline.
 
-For one imported/renamed file: optionally renumber it (seasonal-shift), flag quality issues
-(quality-check → ntfy), prune foreign image subs + re-encode audio (mkvprune), rescan the arr,
-and emit a status rollup. Each step is recorded to the audit log; seasonal-shift and
-quality-check failures are non-fatal, a prune failure fails the job (so the worker retries).
+For one imported/renamed file, in order: flag quality issues (quality-check → ntfy), prune
+foreign image subs + re-encode audio (mkvprune) on the freshly-imported path, then optionally
+renumber it (seasonal-shift, which moves the pruned file + re-imports to Sonarr), snapshot its
+bandwidth into the ledger, and emit a status rollup. quality-check/prune run before the shift so
+they always operate on the stable imported path. Each step is recorded to the audit log;
+seasonal-shift and quality-check failures are non-fatal, a prune failure fails the job (retried).
 """
 
 from __future__ import annotations
@@ -122,7 +124,28 @@ class Dispatcher:
             raise DispatchError("event has no file path")
         local_path = str(to_local(instance, remote_path)) if instance else remote_path
 
-        # 1. seasonal-shift ---------------------------------------------------------
+        # quality-check + prune run FIRST, on the stable freshly-imported path — before
+        # seasonal-shift moves/re-imports the file (which would otherwise leave prune probing
+        # a stale/relocated path). mkvprune replaces in place, so the path is unchanged for the
+        # shift that follows.
+        # 1. quality-check ----------------------------------------------------------
+        pr: ProbeResult | None = None
+        if cfg.enable_quality_check:
+            if set_step:
+                set_step("quality-check")
+            step, pr = self._quality_step(event, local_path)
+            outcome.steps.append(step)
+            self._record(job_id, event, step, local_path)
+
+        # 2. prune ------------------------------------------------------------------
+        if cfg.enable_prune:
+            if set_step:
+                set_step("prune")
+            step = self._prune_step(event, local_path, pr)
+            outcome.steps.append(step)
+            self._record(job_id, event, step, local_path)
+
+        # 3. seasonal-shift (moves the now-pruned file to its final numbering) -------
         if cfg.enable_seasonal_shift and event.app == "sonarr":
             if set_step:
                 set_step("seasonal-shift")
@@ -133,23 +156,6 @@ class Dispatcher:
                 local_path = str(new_local)
 
         outcome.final_local_path = local_path
-
-        # 2. quality-check ----------------------------------------------------------
-        pr: ProbeResult | None = None
-        if cfg.enable_quality_check:
-            if set_step:
-                set_step("quality-check")
-            step, pr = self._quality_step(event, local_path)
-            outcome.steps.append(step)
-            self._record(job_id, event, step, local_path)
-
-        # 3. prune ------------------------------------------------------------------
-        if cfg.enable_prune:
-            if set_step:
-                set_step("prune")
-            step = self._prune_step(event, local_path, pr)
-            outcome.steps.append(step)
-            self._record(job_id, event, step, local_path)
 
         # 4. bandwidth ledger (silent side-effect; not a rollup step) ----------------
         if cfg.enable_ledger:

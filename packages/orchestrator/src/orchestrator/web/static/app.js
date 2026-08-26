@@ -2,7 +2,7 @@
 (function () {
   // ---- live-refreshing panels with search + filters ----------------------------------
   var searchEl = document.getElementById("search");
-  var state = { q: "", app: "", range: "30d" };
+  var state = { q: "", app: "", range: "30d", start: "", end: "" };
 
   function activeData(id, key) {
     var box = id && document.getElementById(id);
@@ -15,7 +15,14 @@
     var params = new URLSearchParams();
     if (el.hasAttribute("data-searchable") && state.q) params.set("q", state.q);
     if (state.app) params.set("app", state.app);
-    if (el.hasAttribute("data-ranged")) params.set("range", state.range);
+    if (el.hasAttribute("data-ranged")) {
+      if (state.start || state.end) {
+        if (state.start) params.set("start", state.start);
+        if (state.end) params.set("end", state.end);
+      } else {
+        params.set("range", state.range);
+      }
+    }
     var fid = el.dataset.filtered;
     if (fid) {
       var res = activeData(fid, "result");
@@ -56,6 +63,33 @@
     });
   }
 
+  // custom date range: date inputs override the preset range chips
+  var fromEl = document.getElementById("date-from");
+  var toEl = document.getElementById("date-to");
+  var clearEl = document.getElementById("date-clear");
+  function applyDates() {
+    state.start = fromEl ? fromEl.value : "";
+    state.end = toEl ? toEl.value : "";
+    if (state.start || state.end) {
+      var rf = document.getElementById("range-filter");
+      if (rf) rf.querySelectorAll(".chip").forEach(function (c) { c.classList.remove("active"); });
+    }
+    refreshAll();
+  }
+  if (fromEl) fromEl.addEventListener("change", applyDates);
+  if (toEl) toEl.addEventListener("change", applyDates);
+  if (clearEl) clearEl.addEventListener("click", function () {
+    if (fromEl) fromEl.value = "";
+    if (toEl) toEl.value = "";
+    state.start = ""; state.end = "";
+    var rf = document.getElementById("range-filter");
+    var def = rf && rf.querySelector('[data-range="30d"]');
+    if (rf) rf.querySelectorAll(".chip").forEach(function (c) { c.classList.remove("active"); });
+    if (def) def.classList.add("active");
+    state.range = "30d";
+    refreshAll();
+  });
+
   // chip filter groups (app filter is global; result filter is per-panel)
   document.querySelectorAll(".filters").forEach(function (group) {
     group.addEventListener("click", function (e) {
@@ -65,7 +99,12 @@
       group.querySelectorAll(".chip").forEach(function (c) { c.classList.remove("active"); });
       btn.classList.add("active");
       if (group.id === "app-filter") state.app = btn.dataset.app || "";
-      if (group.id === "range-filter") state.range = btn.dataset.range || "30d";
+      if (group.id === "range-filter") {
+        state.range = btn.dataset.range || "30d";
+        state.start = ""; state.end = "";  // preset overrides a custom range
+        if (fromEl) fromEl.value = "";
+        if (toEl) toEl.value = "";
+      }
       refreshAll();
     });
   });

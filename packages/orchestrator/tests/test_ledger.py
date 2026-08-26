@@ -5,7 +5,7 @@ from pathlib import Path
 
 from mediacore.audit import open_db
 from orchestrator.ledger import Ledger
-from orchestrator.util import human_bytes, parse_bytes, parse_range
+from orchestrator.util import human_bytes, parse_bytes, parse_range, range_bounds
 
 
 def mk(tmp_path: Path) -> Ledger:
@@ -85,3 +85,18 @@ def test_human_and_parse_bytes():
     assert parse_bytes("500MB") == 500 * 1024**2
     assert parse_bytes("1048576") == 1048576
     assert parse_bytes("") == 0 and parse_bytes(None) == 0
+
+
+def test_range_bounds_custom_dates_override_preset():
+    # explicit dates win over the preset key
+    lo, hi = range_bounds("30d", "2026-01-01", "2026-01-31")
+    assert lo == "2026-01-01T00:00:00+00:00" and hi == "2026-01-31T23:59:59+00:00"
+    # lone start -> open-ended
+    lo, hi = range_bounds("30d", "2026-01-01", None)
+    assert lo == "2026-01-01T00:00:00+00:00" and hi is None
+    # invalid date ignored -> falls back to preset
+    lo, hi = range_bounds("all", "nonsense", "")
+    assert lo is None  # 'all' preset
+    # no dates -> preset applies (30d has a start)
+    lo, hi = range_bounds("30d", None, None)
+    assert lo is not None and hi is not None

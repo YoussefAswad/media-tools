@@ -20,7 +20,7 @@ from orchestrator.config import OrchestratorConfig
 from orchestrator.ledger import MANUAL, QBITTORRENT
 from orchestrator.queue import CANCELED, DEAD, FAILED, PROCESSING, QUEUED
 from orchestrator.services import Services, build_services
-from orchestrator.util import RANGES, human_bytes, parse_bytes, parse_range
+from orchestrator.util import RANGES, human_bytes, parse_bytes, range_bounds
 from orchestrator.worker import Worker
 
 log = logging.getLogger(__name__)
@@ -253,22 +253,26 @@ def downloads_page(request: Request) -> HTMLResponse:
 def ui_ledger(
     request: Request,
     range: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
     type: str | None = None,
     source: str | None = None,
     q: str | None = None,
 ) -> HTMLResponse:
-    start, end = parse_range(range)
+    lo, hi = range_bounds(range, start, end)
     src = source if source in (QBITTORRENT, MANUAL) else None
     rows = services_of(request).ledger.list(
-        start=start, end=end, kind=type or None, source=src, q=q
+        start=lo, end=hi, kind=type or None, source=src, q=q
     )
     return _TEMPLATES.TemplateResponse(request, "_ledger.html", {"rows": rows, "kinds": _KINDS})
 
 
 @app.get("/ui/ledger-summary", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
-def ui_ledger_summary(request: Request, range: str | None = None) -> HTMLResponse:
-    start, end = parse_range(range)
-    t = services_of(request).ledger.totals(start=start, end=end)
+def ui_ledger_summary(
+    request: Request, range: str | None = None, start: str | None = None, end: str | None = None
+) -> HTMLResponse:
+    lo, hi = range_bounds(range, start, end)
+    t = services_of(request).ledger.totals(start=lo, end=hi)
     tiles = [
         ("Downloaded", human_bytes(t["downloaded"]), "queued"),
         ("Uploaded", human_bytes(t["uploaded"]), "skip"),
@@ -279,9 +283,11 @@ def ui_ledger_summary(request: Request, range: str | None = None) -> HTMLRespons
 
 
 @app.get("/ui/ledger-chart", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
-def ui_ledger_chart(request: Request, range: str | None = None) -> HTMLResponse:
-    start, end = parse_range(range)
-    series = services_of(request).ledger.daily_series(start=start, end=end)
+def ui_ledger_chart(
+    request: Request, range: str | None = None, start: str | None = None, end: str | None = None
+) -> HTMLResponse:
+    lo, hi = range_bounds(range, start, end)
+    series = services_of(request).ledger.daily_series(start=lo, end=hi)
     peak = max((d + u for _, d, u in series), default=0)
     bars = [
         {

@@ -184,3 +184,10 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 .bar.down { background: var(--accent); }
 .bar.up { background: var(--warn); }
 .bar-x { font-size: 9px; color: var(--muted); margin-top: 4px; transform: rotate(-45deg); white-space: nowrap; }
+
+/* --- custom date range --- */
+.daterange { display: inline-flex; align-items: center; gap: 6px; }
+.daterange input[type="date"] {
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--card); color: var(--fg); font-size: 13px;
+}

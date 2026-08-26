@@ -236,3 +236,58 @@ def test_ledger_capture_skips_without_downloadid(tmp_path, monkeypatch):
                       prune_runner=lambda a: PruneResult(0, "", ""))
     disp.dispatch("jn", _radarr_payload(_touch(tmp_path)))  # no downloadId
     assert services.ledger.list() == []
+
+
+def test_prune_runs_before_seasonal_shift(tmp_path, monkeypatch):
+    """Ordering fix: prune probes the stable imported path (S02E03) BEFORE seasonal-shift moves
+    it, so it never no-ops on a relocated post-shift path."""
+    from mediacore.arr.client import SonarrClient
+    from mediacore.models import ArrInstance, CoreConfig
+    from orchestrator.config import OrchestratorConfig
+    from seasonal_shift.models import SeasonConfig, ShowConfig
+
+    show_dir = tmp_path / "shows" / "MyShow"
+    (show_dir / "Season 2").mkdir(parents=True)
+    src = show_dir / "Season 2" / "MyShow - S02E03 - Title.mkv"
+    src.write_bytes(b"x")
+
+    cfg = OrchestratorConfig(enable_quality_check=True, enable_prune=True)
+    cfg.arr = CoreConfig().arr
+    cfg.arr.sonarr = ArrInstance(base_url="http://sonarr", api_key="k")
+    cfg.ntfy.status_granularity = "off"
+    cfg.shows = [ShowConfig(name="MyShow", path=show_dir,
+                            seasons={2: SeasonConfig(season_offset=-1, episode_offset=25)})]
+    services = build_test_services(tmp_path, cfg)
+
+    monkeypatch.setattr(SonarrClient, "get_episode_id", lambda self, *a, **k: 1)
+    monkeypatch.setattr(SonarrClient, "get_episode_file", lambda self, *a, **k: {})
+    monkeypatch.setattr(SonarrClient, "refresh", lambda self, *a, **k: {"id": 1})
+    monkeypatch.setattr(SonarrClient, "wait_for_command", lambda self, *a, **k: None)
+    monkeypatch.setattr(SonarrClient, "detect_file", lambda self, *a, **k: {})
+    monkeypatch.setattr(SonarrClient, "import_file", lambda self, *a, **k: {})
+
+    pruned_paths = []
+    probe_paths = []
+
+    def fake_probe(p):
+        probe_paths.append(p)
+        return _dirty_probe(p)
+
+    def fake_runner(argv):
+        pruned_paths.append(argv[-1])
+        return PruneResult(0, "", "")
+
+    payload = {"app": "sonarr", "payload": {
+        "eventType": "Download", "series": {"id": 42, "title": "MyShow"},
+        "episodes": [{"seasonNumber": 2, "episodeNumber": 3}],
+        "episodeFile": {"path": str(src)}}}
+    disp = Dispatcher(services, probe_fn=fake_probe, prune_runner=fake_runner)
+    outcome = disp.dispatch("jorder", payload)
+
+    # prune saw the ORIGINAL S02E03 path (not the shifted S01E28), i.e. it ran before the move
+    assert pruned_paths and "S02E03" in pruned_paths[0]
+    assert all("S01E28" not in p for p in probe_paths)
+    # shift still ran and moved the file afterward
+    shift = next(s for s in outcome.steps if s.tool == "seasonal-shift")
+    assert shift.result == OK
+    assert (show_dir / "Season 1" / "MyShow - S01E28 - Title.mkv").exists()

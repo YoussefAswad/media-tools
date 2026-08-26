@@ -69,3 +69,18 @@ def parse_range(key: str | None) -> tuple[str | None, str]:
         return None, end
     start = (now - _dt.timedelta(days=days)).isoformat()
     return start, end
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def range_bounds(
+    key: str | None, start: str | None, end: str | None
+) -> tuple[str | None, str | None]:
+    """Resolve time-frame bounds. An explicit start/end date (YYYY-MM-DD) wins over the preset
+    range key; a lone start or end makes an open-ended range."""
+    s = start if start and _DATE_RE.match(start) else None
+    e = end if end and _DATE_RE.match(end) else None
+    if s or e:
+        return (f"{s}T00:00:00+00:00" if s else None), (f"{e}T23:59:59+00:00" if e else None)
+    return parse_range(key)

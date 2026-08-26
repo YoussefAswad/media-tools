@@ -138,3 +138,19 @@ def test_downloads_manual_add_edit_delete(client) -> None:
     assert services.ledger.get(rid).name == "Elden Ring GOTY"
     assert client.post(f"/downloads/{rid}/delete", follow_redirects=False).status_code == 303
     assert services.ledger.get(rid) is None
+
+
+def test_downloads_custom_date_range(client) -> None:
+    services = client.app.state.services
+    services.ledger.add_manual(name="JanDL", kind="movie", downloaded_bytes=100,
+                               uploaded_bytes=0, completed_at="2026-01-15T00:00:00+00:00")
+    services.ledger.add_manual(name="MarDL", kind="movie", downloaded_bytes=200,
+                               uploaded_bytes=0, completed_at="2026-03-15T00:00:00+00:00")
+    # custom window catches only January
+    jan = client.get("/ui/ledger", params={"start": "2026-01-01", "end": "2026-01-31"}).text
+    assert "JanDL" in jan and "MarDL" not in jan
+    # explicit dates override a preset range key
+    both = client.get("/ui/ledger", params={"range": "7d", "start": "2026-01-01", "end": "2026-12-31"}).text
+    assert "JanDL" in both and "MarDL" in both
+    # summary respects the custom window
+    assert client.get("/ui/ledger-summary", params={"start": "2026-01-01", "end": "2026-01-31"}).status_code == 200
