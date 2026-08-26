@@ -25,6 +25,7 @@ from orchestrator.util import (
     _DATE_RE,
     RANGES,
     human_bytes,
+    human_duration,
     kind_icon,
     parse_bytes,
     parse_range,
@@ -72,6 +73,7 @@ def _decorate(a: dict) -> dict:
     a = dict(a)
     a["change"] = change or (a.get("error") or "")
     a["file"] = (a.get("path") or "").rsplit("/", 1)[-1]
+    a["elapsed"] = human_duration(a.get("duration_ms"))
     return a
 
 

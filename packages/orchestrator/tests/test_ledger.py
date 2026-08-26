@@ -5,7 +5,7 @@ from pathlib import Path
 
 from mediacore.audit import open_db
 from orchestrator.ledger import Ledger
-from orchestrator.util import human_bytes, parse_bytes, parse_range, range_bounds
+from orchestrator.util import human_bytes, human_duration, parse_bytes, parse_range, range_bounds
 
 
 def mk(tmp_path: Path) -> Ledger:
@@ -108,6 +108,14 @@ def test_human_bytes_iec_is_binary_and_differs_from_decimal():
     assert human_bytes(1024**3, iec=True) == "1.00 GiB"
     assert human_bytes(0, iec=True) == "0 B"
     assert human_bytes(1024**3) == "1.07 GB"  # same bytes, decimal label -> bigger number
+
+
+def test_human_duration():
+    assert human_duration(None) == "" and human_duration(-5) == ""
+    assert human_duration(820) == "820ms"
+    assert human_duration(4200) == "4.2s"
+    assert human_duration(72_000) == "1m 12s"
+    assert human_duration(2 * 3600_000 + 5 * 60_000) == "2h 05m"
 
 
 def test_parse_bytes_scale_matches_suffix():

@@ -116,6 +116,31 @@ def test_audit_record_and_dedup(tmp_path: Path) -> None:
     assert (tmp_path / "audit").glob("actions-*.jsonl")
 
 
+def test_audit_stores_duration_ms(tmp_path: Path) -> None:
+    au = Audit(open_db(tmp_path), tmp_path)
+    au.record(ActionRecord(tool="prune", action="prune", result=OK, duration_ms=90_123))
+    au.record(ActionRecord(tool="quality-check", action="check", result=OK))  # no duration
+    rows = au.recent(limit=10)
+    by_tool = {r["tool"]: r for r in rows}
+    assert by_tool["prune"]["duration_ms"] == 90_123
+    assert by_tool["quality-check"]["duration_ms"] is None
+
+
+def test_audit_migrates_legacy_table_without_duration(tmp_path: Path) -> None:
+    # simulate a db created before the duration_ms column existed
+    db = open_db(tmp_path)
+    db.executescript(
+        "CREATE TABLE actions (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,"
+        " job_id TEXT, app TEXT, event_type TEXT, tool TEXT NOT NULL, action TEXT NOT NULL,"
+        " path TEXT, mtime REAL, result TEXT NOT NULL, before TEXT, after TEXT,"
+        " undo_ref TEXT, error TEXT);"
+    )
+    db.commit()
+    au = Audit(db, tmp_path)  # __init__ runs the migration
+    au.record(ActionRecord(tool="prune", action="prune", result=OK, duration_ms=42))
+    assert au.recent(limit=1)[0]["duration_ms"] == 42
+
+
 class _FakeResp:
     def raise_for_status(self) -> None:
         pass

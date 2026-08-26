@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS actions (
     before     TEXT,
     after      TEXT,
     undo_ref   TEXT,
-    error      TEXT
+    error      TEXT,
+    duration_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_actions_job  ON actions(job_id);
 CREATE INDEX IF NOT EXISTS idx_actions_path ON actions(path);
@@ -131,6 +132,7 @@ class ActionRecord:
     undo_ref: str | None = None
     error: str | None = None
     job_id: str | None = None
+    duration_ms: int | None = None
     ts: str = field(default_factory=_now)
 
 
@@ -141,7 +143,14 @@ class Audit:
         self._lock = threading.Lock()
         with self._lock:
             self.db.executescript(_ACTIONS_SCHEMA)
+            self._migrate()
             self.db.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a db was first created (idempotent)."""
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(actions)")}
+        if "duration_ms" not in cols:
+            self.db.execute("ALTER TABLE actions ADD COLUMN duration_ms INTEGER")
 
     def _jsonl_path(self) -> Path:
         month = _dt.datetime.now(_dt.UTC).strftime("%Y%m")
@@ -157,8 +166,8 @@ class Audit:
             cur = self.db.execute(
                 """INSERT INTO actions
                    (ts, job_id, app, event_type, tool, action, path, mtime, result,
-                    before, after, undo_ref, error)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    before, after, undo_ref, error, duration_ms)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     rec.ts,
                     rec.job_id,
@@ -173,6 +182,7 @@ class Audit:
                     json.dumps(rec.after) if rec.after is not None else None,
                     rec.undo_ref,
                     rec.error,
+                    rec.duration_ms,
                 ),
             )
             self.db.commit()

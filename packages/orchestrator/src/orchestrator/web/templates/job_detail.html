@@ -25,7 +25,7 @@
   <h2>What this job changed</h2>
   {% if not actions %}<p class="muted">No actions recorded.</p>{% else %}
   <table class="actions">
-    <thead><tr><th>When</th><th>Tool</th><th>Action</th><th>Result</th><th>Change</th><th>File</th></tr></thead>
+    <thead><tr><th>When</th><th>Tool</th><th>Action</th><th>Result</th><th>Elapsed</th><th>Change</th><th>File</th></tr></thead>
     <tbody>
     {% for a in actions %}
       <tr>
@@ -33,6 +33,7 @@
         <td>{{ a.tool }}</td>
         <td>{{ a.action }}</td>
         <td><span class="badge {{ a.result }}">{{ a.result }}</span></td>
+        <td class="muted nowrap">{{ a.elapsed or "—" }}</td>
         <td class="change">{{ a.change or "—" }}</td>
         <td class="path" title="{{ a.path or '' }}">{{ a.file }}</td>
       </tr>

@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +49,7 @@ class StepResult:
     result: str  # OK | SKIP | FAIL
     detail: str = ""
     error: str | None = None
+    duration_ms: int | None = None  # wall time the step ran until completion
 
 
 @dataclass
@@ -95,6 +97,7 @@ class Dispatcher:
                 after={"detail": step.detail} if step.detail else None,
                 error=step.error,
                 job_id=job_id,
+                duration_ms=step.duration_ms,
             )
         )
         if cfg.ntfy.status_granularity == "action" and step.result != SKIP:
@@ -140,7 +143,9 @@ class Dispatcher:
         if cfg.enable_quality_check:
             if set_step:
                 set_step("quality-check")
+            t0 = time.monotonic()
             step, pr = self._quality_step(event, local_path)
+            step.duration_ms = int((time.monotonic() - t0) * 1000)
             outcome.steps.append(step)
             self._record(job_id, event, step, local_path)
 
@@ -149,7 +154,9 @@ class Dispatcher:
         if cfg.enable_prune:
             if set_step:
                 set_step("prune")
+            t0 = time.monotonic()
             step = self._prune_step(event, local_path, pr, set_progress=set_progress)
+            step.duration_ms = int((time.monotonic() - t0) * 1000)
             outcome.steps.append(step)
             self._record(job_id, event, step, local_path)
             pruned_ran = True  # reached only if prune didn't raise (ok/skip)
@@ -158,7 +165,9 @@ class Dispatcher:
         if cfg.enable_seasonal_shift and event.app == "sonarr":
             if set_step:
                 set_step("seasonal-shift")
+            t0 = time.monotonic()
             step, new_local = self._shift_step(event, Path(local_path))
+            step.duration_ms = int((time.monotonic() - t0) * 1000)
             outcome.steps.append(step)
             self._record(job_id, event, step, local_path)
             if new_local is not None:

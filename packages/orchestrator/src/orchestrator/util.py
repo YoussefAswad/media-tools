@@ -20,6 +20,23 @@ def kind_icon(kind: str | None) -> str:
     return KIND_ICONS.get((kind or "").lower(), "📦")
 
 
+def human_duration(ms: int | float | None) -> str:
+    """Milliseconds -> a compact elapsed string: '820ms', '4.2s', '1m 12s', '2h 05m'. Empty
+    for a missing value (old rows recorded before durations were tracked)."""
+    if ms is None or ms < 0:
+        return ""
+    if ms < 1000:
+        return f"{int(ms)}ms"
+    secs = ms / 1000
+    if secs < 60:
+        return f"{secs:.1f}s"
+    m, s = divmod(int(secs), 60)
+    if m < 60:
+        return f"{m}m {s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m"
+
+
 # Two genuinely different scales: the plain form is decimal SI (GB = 1000^3), the IEC form is
 # binary (GiB = 1024^3, what qBittorrent counts in). A UI toggle picks which to render, so the
 # same byte count shows a different magnitude in each. Suffixes are matched to their scale.
