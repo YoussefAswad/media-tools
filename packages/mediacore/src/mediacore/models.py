@@ -86,6 +86,13 @@ class QbitConfig(BaseModel):
     password: str = ""
 
 
+class JellyfinConfig(BaseModel):
+    """Jellyfin connection, used to trigger a library refresh after an import."""
+
+    base_url: str = "http://jellyfin:8096"
+    api_key: str = ""
+
+
 class AuditConfig(BaseModel):
     #: Root for the SQLite db, JSONL audit files, and seasonal-shift undo files.
     state_dir: Path = Path("/state")
@@ -107,5 +114,7 @@ class CoreConfig(BaseModel):
     web: WebConfig = WebConfig()
     #: qBittorrent connection for the download bandwidth ledger (None = ledger capture disabled).
     qbit: QbitConfig | None = None
+    #: Jellyfin connection for post-import library refresh (None = refresh disabled).
+    jellyfin: JellyfinConfig | None = None
     #: Shared secret ARR must send (custom header) for webhook requests to be accepted.
     webhook_secret: str | None = None

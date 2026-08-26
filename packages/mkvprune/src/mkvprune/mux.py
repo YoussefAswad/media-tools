@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from mkvprune.classify import AudioAction
@@ -231,8 +232,18 @@ def build_mux_command(plan: MuxPlan) -> list[str]:
     return cmd
 
 
-def run_mux(plan: MuxPlan, *, progress: bool = False, verbose: bool = False) -> None:
-    """Run the mux. Exit 1 (warnings) is non-fatal; exit >=2 is fatal."""
+def run_mux(
+    plan: MuxPlan,
+    *,
+    progress: bool = False,
+    verbose: bool = False,
+    on_progress: Callable[[float], None] | None = None,
+) -> None:
+    """Run the mux. Exit 1 (warnings) is non-fatal; exit >=2 is fatal.
+
+    ``on_progress`` (if given) receives the mux fraction (0..1), independent of the terminal
+    bar — used to emit machine-readable progress.
+    """
     if os.path.exists(plan.output_path):
         raise MkvPruneError(
             f"refusing to overwrite existing temp file: {plan.output_path}\n"
@@ -246,7 +257,10 @@ def run_mux(plan: MuxPlan, *, progress: bool = False, verbose: bool = False) -> 
     def on_line(line: str) -> None:
         m = _MKVMERGE_PROGRESS.search(line)
         if m:
-            bar.update(int(m.group(1)) / 100)
+            frac = int(m.group(1)) / 100
+            bar.update(frac)
+            if on_progress is not None:
+                on_progress(frac)
 
     res = run_streamed(cmd, on_line=on_line, verbose=verbose)
     bar.finish(ok=res.returncode < 2)

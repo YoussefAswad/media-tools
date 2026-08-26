@@ -42,13 +42,12 @@ def _sub_desc(t: Track) -> str:
     return f"{t.codec_name or t.codec_id} {lang} (id {t.mkv_id})"
 
 
-def foreign_image_subs(probe: ProbeResult, policy: PolicyConfig) -> list[Track]:
-    """Subtitle tracks that are image-based AND not in the keep languages."""
+def foreign_subs(probe: ProbeResult, policy: PolicyConfig) -> list[Track]:
+    """Subtitle tracks whose language is not in the keep languages — ANY codec (text SRT/ASS
+    and image PGS/VOBSUB alike). Untagged/``und`` tracks count only when
+    ``subtitle_flag_untagged`` is set."""
     out: list[Track] = []
     for t in probe.subtitles:
-        codec = (t.codec_name or "").lower()
-        if codec not in policy.subtitle_image_codecs:
-            continue
         if is_undetermined(t.language):
             if policy.subtitle_flag_untagged:
                 out.append(t)
@@ -56,6 +55,10 @@ def foreign_image_subs(probe: ProbeResult, policy: PolicyConfig) -> list[Track]:
         if not lang_in(t, policy.subtitle_keep_langs):
             out.append(t)
     return out
+
+
+# Back-compat alias (kept so external callers/tests importing the old name still resolve).
+foreign_image_subs = foreign_subs
 
 
 def non_allowed_multichannel(probe: ProbeResult, policy: PolicyConfig) -> list[Track]:
@@ -77,10 +80,10 @@ def check(probe: ProbeResult, policy: PolicyConfig) -> list[Finding]:
             Finding("A", "Non-Dolby/DTS multichannel audio", [_audio_desc(t) for t in bad_audio])
         )
 
-    foreign = foreign_image_subs(probe, policy)
+    foreign = foreign_subs(probe, policy)
     if foreign:
         findings.append(
-            Finding("B", "Foreign image-based subtitles", [_sub_desc(t) for t in foreign])
+            Finding("B", "Foreign subtitles", [_sub_desc(t) for t in foreign])
         )
 
     n_audio = len(probe.audio)

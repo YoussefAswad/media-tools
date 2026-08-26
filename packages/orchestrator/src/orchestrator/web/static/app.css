@@ -210,3 +210,47 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 .remaining.warn .remaining-fill { background: var(--warn); }
 .remaining.over .remaining-fill { background: var(--fail); }
 .remaining-sub { font-size: 12px; margin-top: 6px; }
+
+/* --- per-job live progress (active panel) --- */
+.jobbar { height: 6px; background: var(--code); border-radius: 999px; overflow: hidden; margin-top: 4px; max-width: 180px; }
+.jobbar-fill { height: 100%; background: var(--warn); border-radius: 999px; transition: width .4s ease; }
+.jobbar-note { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* --- mobile / small screens --- */
+@media (max-width: 640px) {
+  main { padding: 0 10px; margin: 14px auto; }
+  .topbar { padding: 11px 14px; flex-wrap: wrap; gap: 6px 14px; }
+  .brand { font-size: 15px; }
+  .topbar nav a { margin-left: 0; margin-right: 16px; }
+  .card { padding: 12px 14px; border-radius: 10px; }
+  .card h2 { font-size: 14px; }
+
+  /* summary + tiles: 2 across instead of 3/6 */
+  .summary, .grid { grid-template-columns: 1fr 1fr; }
+  .tile-value { font-size: 22px; }
+
+  /* toolbar wraps; search takes a full row */
+  .toolbar { gap: 8px; }
+  .toolbar #search { flex-basis: 100%; min-width: 0; order: -1; }
+  .chip { padding: 5px 10px; font-size: 12px; }
+
+  /* wide tables scroll horizontally inside their panel instead of overflowing the page */
+  table.jobs, table.actions, table.ledger {
+    display: block; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch;
+  }
+
+  /* inline edit form flows as a full-width block, not a clipped floating popover */
+  .ledger details.edit[open] > form,
+  details.edit[open] > form {
+    position: static; width: auto; max-width: none; box-shadow: none; margin-top: 8px;
+  }
+  .entry-form, .entry-form.inline { grid-template-columns: 1fr; }
+
+  /* remaining card + chart stack cleanly */
+  .remaining { gap: 12px; }
+  .remaining-value { font-size: 24px; }
+  .chart-bars { height: 150px; }
+}
+
+/* never let the page itself scroll sideways */
+body { overflow-x: hidden; }

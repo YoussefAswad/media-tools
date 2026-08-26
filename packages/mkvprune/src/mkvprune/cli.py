@@ -131,6 +131,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="batch: only scan the top level of the directory",
     )
     p.add_argument("--no-progress", action="store_true", help="disable progress bars")
+    p.add_argument(
+        "--progress-json",
+        action="store_true",
+        help="emit machine-readable progress as '@@PROGRESS@@ {json}' lines on stdout "
+        "(for a calling process; independent of the terminal bar / TTY)",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p
@@ -286,6 +292,27 @@ def _print_dry_run(plan: MuxPlan, args: argparse.Namespace, input_path: str) -> 
         print(f"\n# then write: {dest}\n# and remove the source: {input_path}")
 
 
+def _progress_emitter():
+    """Return a function that writes '@@PROGRESS@@ {json}' progress events to stdout.
+
+    Deduplicates identical (phase, percent) events so a parent process gets one line per
+    percent tick per phase.
+    """
+    import json as _json
+
+    last: dict = {}
+
+    def emit(event: dict) -> None:
+        key = (event.get("phase"), event.get("index"))
+        if last.get(key) == event.get("percent"):
+            return
+        last[key] = event.get("percent")
+        sys.stdout.write("@@PROGRESS@@ " + _json.dumps(event) + "\n")
+        sys.stdout.flush()
+
+    return emit
+
+
 def _execute_plan(pr: ProbeResult, plan: MuxPlan, args: argparse.Namespace) -> str:
     """Encode, mux, verify, and place one file. Returns the destination path."""
     input_path = plan.input_path
@@ -314,12 +341,26 @@ def _execute_plan(pr: ProbeResult, plan: MuxPlan, args: argparse.Namespace) -> s
         verbose=args.verbose, dry_run=args.dry_run, disabled=args.no_progress
     )
 
+    # Machine-readable progress for a parent process (independent of the terminal bar / TTY).
+    emit = _progress_emitter() if getattr(args, "progress_json", False) else None
+
     # Encode.
-    for job in plan.encode_jobs:
-        run_encode(job, duration_s=pr.duration_s, progress=show_progress, verbose=args.verbose)
+    n_enc = len(plan.encode_jobs)
+    for i, job in enumerate(plan.encode_jobs, 1):
+        enc_cb = (
+            (lambda frac, i=i: emit({"phase": "encode", "index": i, "of": n_enc,
+                                     "percent": round(frac * 100)}))
+            if emit
+            else None
+        )
+        run_encode(
+            job, duration_s=pr.duration_s, progress=show_progress,
+            verbose=args.verbose, on_progress=enc_cb,
+        )
 
     # Mux.
-    run_mux(plan, progress=show_progress, verbose=args.verbose)
+    mux_cb = (lambda frac: emit({"phase": "mux", "percent": round(frac * 100)})) if emit else None
+    run_mux(plan, progress=show_progress, verbose=args.verbose, on_progress=mux_cb)
 
     # Verify (raises on failure; leaves temp + original intact).
     return verify_and_finalize(pr, plan, args, src_size, input_path)

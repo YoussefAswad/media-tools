@@ -58,7 +58,7 @@ class DispatchOutcome:
 
 
 ProbeFn = Callable[[str], ProbeResult]
-PruneRunner = Callable[[list[str]], PruneResult]
+PruneRunner = Callable[..., PruneResult]
 
 
 class Dispatcher:
@@ -113,7 +113,9 @@ class Dispatcher:
         )
 
     # --- pipeline -------------------------------------------------------------------
-    def dispatch(self, job_id: str, payload: dict[str, Any], *, set_step=None) -> DispatchOutcome:
+    def dispatch(
+        self, job_id: str, payload: dict[str, Any], *, set_step=None, set_progress=None
+    ) -> DispatchOutcome:
         cfg = self.services.config
         event = self._event_from_job(payload)
         outcome = DispatchOutcome(label=event.label)
@@ -124,11 +126,16 @@ class Dispatcher:
             raise DispatchError("event has no file path")
         local_path = str(to_local(instance, remote_path)) if instance else remote_path
 
-        # quality-check + prune run FIRST, on the stable freshly-imported path — before
-        # seasonal-shift moves/re-imports the file (which would otherwise leave prune probing
-        # a stale/relocated path). mkvprune replaces in place, so the path is unchanged for the
+        # 1. bandwidth ledger FIRST — record consumed bandwidth from qBittorrent up front, so it
+        # is captured even if a later step fails (prune raising, torrent later deleted, etc.).
+        # Independent of the file; idempotent (upsert by infohash).
+        if cfg.enable_ledger:
+            self._ledger_capture(job_id, event)
+
+        # quality-check + prune run on the stable freshly-imported path, BEFORE seasonal-shift
+        # moves/re-imports the file. mkvprune replaces in place, so the path is unchanged for the
         # shift that follows.
-        # 1. quality-check ----------------------------------------------------------
+        # 2. quality-check ----------------------------------------------------------
         pr: ProbeResult | None = None
         if cfg.enable_quality_check:
             if set_step:
@@ -137,15 +144,17 @@ class Dispatcher:
             outcome.steps.append(step)
             self._record(job_id, event, step, local_path)
 
-        # 2. prune ------------------------------------------------------------------
+        # 3. prune (live progress via set_progress) ---------------------------------
+        pruned_ran = False
         if cfg.enable_prune:
             if set_step:
                 set_step("prune")
-            step = self._prune_step(event, local_path, pr)
+            step = self._prune_step(event, local_path, pr, set_progress=set_progress)
             outcome.steps.append(step)
             self._record(job_id, event, step, local_path)
+            pruned_ran = True  # reached only if prune didn't raise (ok/skip)
 
-        # 3. seasonal-shift (moves the now-pruned file to its final numbering) -------
+        # 4. seasonal-shift (moves the now-pruned file to its final numbering) -------
         if cfg.enable_seasonal_shift and event.app == "sonarr":
             if set_step:
                 set_step("seasonal-shift")
@@ -157,13 +166,32 @@ class Dispatcher:
 
         outcome.final_local_path = local_path
 
-        # 4. bandwidth ledger (silent side-effect; not a rollup step) ----------------
-        if cfg.enable_ledger:
-            self._ledger_capture(job_id, event)
+        # 5. Jellyfin refresh — after pruning (ok or skip), regardless of whether the file
+        # changed, so Jellyfin picks up the (re)imported/altered file. Best-effort.
+        if pruned_ran or not cfg.enable_prune:
+            self._jellyfin_refresh(job_id, event)
 
-        # 5. status rollup ----------------------------------------------------------
+        # 6. status rollup ----------------------------------------------------------
         self._status_rollup(event, outcome)
         return outcome
+
+    def _jellyfin_refresh(self, job_id: str, event: ArrEvent) -> None:
+        """Trigger an incremental all-library Jellyfin scan (best-effort, never fatal)."""
+        jf = self.services.jellyfin
+        if jf is None:
+            return
+        ok = False
+        try:
+            ok = jf.refresh_library()
+        except Exception as exc:
+            log.warning("jellyfin refresh error: %s", exc)
+        self.services.audit.record(
+            ActionRecord(
+                tool="jellyfin", action="refresh", result=OK if ok else SKIP,
+                app=event.app, event_type=event.event_type, job_id=job_id,
+                after={"detail": "library refresh triggered" if ok else "not configured / failed"},
+            )
+        )
 
     def _ledger_capture(self, job_id: str, event: ArrEvent) -> None:
         """Snapshot this import's consumed bandwidth from qBittorrent into the ledger.
@@ -263,10 +291,13 @@ class Dispatcher:
                 topic=self.services.config.ntfy.topic,
             )
         )
-        rules = ", ".join(sorted(f.rule for f in findings))
-        return StepResult("quality-check", "check", OK, f"findings: {rules}"), pr
+        # Human-readable finding titles (not cryptic rule letters).
+        titles = "; ".join(f.title for f in findings)
+        return StepResult("quality-check", "check", OK, f"findings: {titles}"), pr
 
-    def _prune_step(self, event: ArrEvent, local_path: str, pr: ProbeResult | None) -> StepResult:
+    def _prune_step(
+        self, event: ArrEvent, local_path: str, pr: ProbeResult | None, *, set_progress=None
+    ) -> StepResult:
         try:
             if pr is None:
                 pr = self.probe_fn(local_path)
@@ -281,10 +312,23 @@ class Dispatcher:
         if self.services.audit.already_done(local_path, "prune", mtime):
             return StepResult("mkvprune", "prune", SKIP, "already pruned (same mtime)")
 
+        # Self-heal: a prune killed mid-mux (e.g. a container restart) leaves a stale
+        # {stem}.tmp.mkv that mkvprune refuses to overwrite. Safe to remove — the worker is
+        # single-threaded, so nothing else is writing it.
+        stale = os.path.splitext(local_path)[0] + ".tmp.mkv"
+        if os.path.exists(stale):
+            with contextlib.suppress(OSError):
+                os.remove(stale)
+                log.info("removed stale temp before prune: %s", stale)
+
         argv = build_mkvprune_argv(
             local_path, decision, executable=self.services.config.mkvprune_executable
         )
-        result = self.prune_runner(argv)
+        argv.insert(1, "--progress-json")  # after the executable
+        on_progress = None
+        if set_progress is not None:
+            on_progress = lambda pct, note: set_progress(pct, note)  # noqa: E731
+        result = self.prune_runner(argv, on_progress=on_progress)
         if not result.ok:
             tail = (result.stderr or result.stdout or "").strip()[-400:]
             raise DispatchError(f"mkvprune exit {result.returncode}: {tail}")

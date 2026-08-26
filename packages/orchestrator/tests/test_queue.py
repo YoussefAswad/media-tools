@@ -93,3 +93,36 @@ def test_list_q_filter(tmp_path: Path) -> None:
     assert len(q.list(q="matrix")) == 1
     assert len(q.list(q="S01E01")) == 1
     assert len(q.list(q="nope")) == 0
+
+
+def test_set_progress_and_step_clears(tmp_path):
+    q = make_queue(tmp_path)
+    jid = q.enqueue("k", {})
+    q.claim_next()
+    q.set_progress(jid, 42.0, "muxing · 42%")
+    job = q.get(jid)
+    assert job.progress == 42.0 and job.progress_note == "muxing · 42%"
+    # a new step resets progress
+    q.set_step(jid, "prune")
+    job2 = q.get(jid)
+    assert job2.progress is None and job2.current_step == "prune"
+
+
+def test_progress_columns_migrated_on_existing_table(tmp_path):
+    from mediacore.audit import open_db
+    # simulate an OLD db: jobs table without progress columns
+    db = open_db(tmp_path)
+    db.execute("DROP TABLE IF EXISTS jobs")
+    db.execute(
+        "CREATE TABLE jobs (id TEXT PRIMARY KEY, kind TEXT, label TEXT, payload TEXT, "
+        "status TEXT, attempts INTEGER, current_step TEXT, error TEXT, created_at TEXT, updated_at TEXT)"
+    )
+    db.commit()
+    q = JobQueue(db)  # __init__ runs the migration
+    cols = {r["name"] for r in db.execute("PRAGMA table_info(jobs)")}
+    assert "progress" in cols and "progress_note" in cols
+    # and it still works
+    jid = q.enqueue("k", {})
+    q.claim_next()
+    q.set_progress(jid, 10.0, "x")
+    assert q.get(jid).progress == 10.0

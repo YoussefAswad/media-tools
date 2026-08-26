@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -48,7 +49,7 @@ def test_prune_pipeline_runs_and_rescans(tmp_path, monkeypatch):
 
     argv_seen: list = []
 
-    def fake_runner(argv):
+    def fake_runner(argv, **k):
         argv_seen.append(argv)
         return PruneResult(0, "ok", "")
 
@@ -59,8 +60,8 @@ def test_prune_pipeline_runs_and_rescans(tmp_path, monkeypatch):
     assert results["quality-check"] == OK
     assert results["mkvprune"] == OK
     assert calls == [5]  # rescan called with movie id
-    # argv keeps all audio, drops foreign sub (id 2) -> keep only id 3
-    assert argv_seen[0] == ["mkvprune", "-y", "--audio", "all", "--subs", "3", path]
+    # argv keeps all audio, drops foreign sub (id 2) -> keep only id 3; --progress-json injected
+    assert argv_seen[0] == ["mkvprune", "--progress-json", "-y", "--audio", "all", "--subs", "3", path]
 
     rows = services.audit.for_job("job1")
     assert any(r["tool"] == "mkvprune" and r["result"] == OK for r in rows)
@@ -80,7 +81,7 @@ def test_prune_skips_when_clean(tmp_path, monkeypatch):
         mk(2, "subtitle", codec_name="hdmv_pgs_subtitle", language="eng"),
         path=path,
     )
-    disp = Dispatcher(services, probe_fn=lambda p: clean, prune_runner=lambda a: PruneResult(0, "", ""))
+    disp = Dispatcher(services, probe_fn=lambda p: clean, prune_runner=lambda a, **k: PruneResult(0, "", ""))
     outcome = disp.dispatch("j", _radarr_payload(path))
     prune = next(s for s in outcome.steps if s.tool == "mkvprune")
     assert prune.result == SKIP
@@ -93,7 +94,7 @@ def test_prune_dedup_second_run(tmp_path, monkeypatch):
     )
     services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
     path = _touch(tmp_path)
-    disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p), prune_runner=lambda a: PruneResult(0, "", ""))
+    disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p), prune_runner=lambda a, **k: PruneResult(0, "", ""))
     disp.dispatch("j1", _radarr_payload(path))
     outcome2 = disp.dispatch("j2", _radarr_payload(path))
     prune = next(s for s in outcome2.steps if s.tool == "mkvprune")
@@ -106,7 +107,7 @@ def test_prune_failure_raises(tmp_path):
     disp = Dispatcher(
         services,
         probe_fn=lambda p: _dirty_probe(p),
-        prune_runner=lambda a: PruneResult(3, "", "verify failed"),
+        prune_runner=lambda a, **k: PruneResult(3, "", "verify failed"),
     )
     with pytest.raises(DispatchError):
         disp.dispatch("j", _radarr_payload(path))
@@ -119,7 +120,7 @@ def test_probe_failure_is_nonfatal_quality_but_fatal_prune(tmp_path):
     def boom(_p):
         raise RuntimeError("no ffprobe")
 
-    disp = Dispatcher(services, probe_fn=boom, prune_runner=lambda a: PruneResult(0, "", ""))
+    disp = Dispatcher(services, probe_fn=boom, prune_runner=lambda a, **k: PruneResult(0, "", ""))
     # quality-check records FAIL (non-fatal), prune also fails to probe -> FAIL step (non-fatal here
     # since decision needs a probe; a probe error in prune is reported, not raised)
     outcome = disp.dispatch("j", _radarr_payload(path))
@@ -181,7 +182,7 @@ def test_seasonal_shift_uses_original_episode_numbers(tmp_path, monkeypatch):
             "episodeFile": {"path": str(src)},
         },
     }
-    disp = Dispatcher(services, probe_fn=lambda p: None, prune_runner=lambda a: None)
+    disp = Dispatcher(services, probe_fn=lambda p: None, prune_runner=lambda a, **k: None)
     outcome = disp.dispatch("jshift", payload)
 
     shift = next(s for s in outcome.steps if s.tool == "seasonal-shift")
@@ -215,7 +216,7 @@ def test_ledger_capture_records_bandwidth(tmp_path, monkeypatch):
     payload = _radarr_payload(path)
     payload["payload"]["downloadId"] = "ABCDEF"
     disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p),
-                      prune_runner=lambda a: PruneResult(0, "", ""))
+                      prune_runner=lambda a, **k: PruneResult(0, "", ""))
     disp.dispatch("jl", payload)
 
     rows = services.ledger.list()
@@ -233,7 +234,7 @@ def test_ledger_capture_skips_without_downloadid(tmp_path, monkeypatch):
     services.qbit = _StubQbit({"name": "x", "downloaded": 1, "uploaded": 0, "total_size": 0,
                                "category": "", "completion_on": 0, "added_on": 0, "state": "", "hash": "h"})
     disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p),
-                      prune_runner=lambda a: PruneResult(0, "", ""))
+                      prune_runner=lambda a, **k: PruneResult(0, "", ""))
     disp.dispatch("jn", _radarr_payload(_touch(tmp_path)))  # no downloadId
     assert services.ledger.list() == []
 
@@ -273,7 +274,7 @@ def test_prune_runs_before_seasonal_shift(tmp_path, monkeypatch):
         probe_paths.append(p)
         return _dirty_probe(p)
 
-    def fake_runner(argv):
+    def fake_runner(argv, **k):
         pruned_paths.append(argv[-1])
         return PruneResult(0, "", "")
 
@@ -291,3 +292,88 @@ def test_prune_runs_before_seasonal_shift(tmp_path, monkeypatch):
     shift = next(s for s in outcome.steps if s.tool == "seasonal-shift")
     assert shift.result == OK
     assert (show_dir / "Season 1" / "MyShow - S01E28 - Title.mkv").exists()
+
+
+class _RecJellyfin:
+    def __init__(self):
+        self.calls = 0
+
+    def refresh_library(self):
+        self.calls += 1
+        return True
+
+
+def test_ledger_recorded_even_when_prune_fails(tmp_path, monkeypatch):
+    """Ledger capture now runs BEFORE prune, so a prune failure no longer loses the bandwidth."""
+    from conftest import mk as _mk  # noqa: F401
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    services.qbit = _StubQbit({
+        "name": "Mov", "downloaded": 500, "uploaded": 50, "total_size": 400,
+        "category": "", "completion_on": 0, "added_on": 0, "state": "", "hash": "h",
+    })
+    payload = _radarr_payload(_touch(tmp_path))
+    payload["payload"]["downloadId"] = "DEAD"
+    disp = Dispatcher(
+        services, probe_fn=lambda p: _dirty_probe(p),
+        prune_runner=lambda a, **k: PruneResult(1, "", "boom"),  # prune fails -> raises
+    )
+    with pytest.raises(DispatchError):
+        disp.dispatch("jlp", payload)
+    # ledger still has the row despite the prune failure
+    assert len(services.ledger.list()) == 1
+    assert services.ledger.list()[0].downloaded_bytes == 500
+
+
+def test_prune_cleans_stale_temp(tmp_path, monkeypatch):
+    monkeypatch.setattr("mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, i, **k: None)
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    path = _touch(tmp_path)
+    # a leftover temp from a killed run
+    stale = os.path.splitext(path)[0] + ".tmp.mkv"
+    with open(stale, "w") as f:
+        f.write("partial")
+    disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p),
+                      prune_runner=lambda a, **k: PruneResult(0, "", ""))
+    disp.dispatch("jst", _radarr_payload(path))
+    assert not os.path.exists(stale)  # cleaned before the run
+
+
+def test_jellyfin_refresh_on_ok_and_skip(tmp_path, monkeypatch):
+    monkeypatch.setattr("mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, i, **k: None)
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    jf = _RecJellyfin()
+    services.jellyfin = jf
+    # ok path
+    disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p),
+                      prune_runner=lambda a, **k: PruneResult(0, "", ""))
+    disp.dispatch("jok", _radarr_payload(_touch(tmp_path)))
+    assert jf.calls == 1
+    # skip path (clean file)
+    clean = probe_of(mk(0, "video", codec_name="hevc"), mk(1, "audio", codec_name="dts", channels=6),
+                     mk(2, "subtitle", codec_name="subrip", language="eng"))
+    disp2 = Dispatcher(services, probe_fn=lambda p: clean, prune_runner=lambda a, **k: PruneResult(0, "", ""))
+    disp2.dispatch("jsk", _radarr_payload(_touch(tmp_path)))
+    assert jf.calls == 2  # refreshed on skip too
+
+
+def test_jellyfin_not_called_on_prune_failure(tmp_path):
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    jf = _RecJellyfin()
+    services.jellyfin = jf
+    disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p),
+                      prune_runner=lambda a, **k: PruneResult(1, "", "x"))
+    with pytest.raises(DispatchError):
+        disp.dispatch("jf", _radarr_payload(_touch(tmp_path)))
+    assert jf.calls == 0
+
+
+def test_quality_finding_detail_uses_titles(tmp_path):
+    services = build_test_services(tmp_path, radarr_config(
+        enable_seasonal_shift=False, enable_prune=False))
+    services.config.ntfy.status_granularity = "off"
+    disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p), prune_runner=lambda a, **k: None)
+    disp.dispatch("jt", _radarr_payload(_touch(tmp_path)))
+    qc = next(r for r in services.audit.for_job("jt") if r["tool"] == "quality-check")
+    import json as _j
+    detail = _j.loads(qc["after"])["detail"]
+    assert "Foreign subtitles" in detail and detail != "A"  # human titles, not rule letters

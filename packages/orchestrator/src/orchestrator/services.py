@@ -14,6 +14,7 @@ from pathlib import Path
 
 from mediacore.arr.client import ArrClient, client_for
 from mediacore.audit import Audit, open_db
+from mediacore.jellyfin import JellyfinClient
 from mediacore.models import ArrInstance
 from mediacore.notify import Notifier
 from mediacore.qbit import QbitClient
@@ -34,6 +35,7 @@ class Services:
     ledger: Ledger
     cutoffs: Cutoffs
     qbit: QbitClient | None = None
+    jellyfin: JellyfinClient | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def arr_instance(self, app: str) -> ArrInstance | None:
@@ -51,6 +53,9 @@ class Services:
             self.notifier = Notifier(new_cfg.ntfy)
             self.queue.max_attempts = new_cfg.max_attempts
             self.qbit = QbitClient.from_config(new_cfg.qbit) if new_cfg.qbit else None
+            self.jellyfin = (
+                JellyfinClient.from_config(new_cfg.jellyfin) if new_cfg.jellyfin else None
+            )
 
 
 def build_services(config_path: Path) -> Services:
@@ -63,6 +68,7 @@ def build_services(config_path: Path) -> Services:
     ledger = Ledger(db)
     cutoffs = Cutoffs(db)
     qbit = QbitClient.from_config(config.qbit) if config.qbit else None
+    jellyfin = JellyfinClient.from_config(config.jellyfin) if config.jellyfin else None
     return Services(
         config=config,
         config_path=config_path,
@@ -73,4 +79,5 @@ def build_services(config_path: Path) -> Services:
         ledger=ledger,
         cutoffs=cutoffs,
         qbit=qbit,
+        jellyfin=jellyfin,
     )

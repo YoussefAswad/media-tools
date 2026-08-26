@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     attempts     INTEGER NOT NULL DEFAULT 0,
     current_step TEXT,
     error        TEXT,
+    progress     REAL,
+    progress_note TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -58,9 +60,12 @@ class Job:
     error: str | None
     created_at: str
     updated_at: str
+    progress: float | None = None
+    progress_note: str | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Job:
+        keys = row.keys()
         return cls(
             id=row["id"],
             kind=row["kind"],
@@ -72,6 +77,8 @@ class Job:
             error=row["error"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            progress=row["progress"] if "progress" in keys else None,
+            progress_note=row["progress_note"] if "progress_note" in keys else None,
         )
 
 
@@ -82,7 +89,16 @@ class JobQueue:
         self._lock = threading.Lock()
         with self._lock:
             self.db.executescript(_SCHEMA)
+            self._migrate()
             self.db.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the table's first creation (idempotent)."""
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(jobs)")}
+        if "progress" not in cols:
+            self.db.execute("ALTER TABLE jobs ADD COLUMN progress REAL")
+        if "progress_note" not in cols:
+            self.db.execute("ALTER TABLE jobs ADD COLUMN progress_note TEXT")
 
     def enqueue(self, kind: str, payload: dict[str, Any], *, label: str | None = None) -> str:
         job_id = uuid.uuid4().hex
@@ -115,16 +131,27 @@ class JobQueue:
 
     def set_step(self, job_id: str, step: str | None) -> None:
         with self._lock:
+            # a new step resets any progress from the previous one
             self.db.execute(
-                "UPDATE jobs SET current_step=?, updated_at=? WHERE id=?",
+                "UPDATE jobs SET current_step=?, progress=NULL, progress_note=NULL, updated_at=? "
+                "WHERE id=?",
                 (step, _now(), job_id),
+            )
+            self.db.commit()
+
+    def set_progress(self, job_id: str, percent: float, note: str | None = None) -> None:
+        with self._lock:
+            self.db.execute(
+                "UPDATE jobs SET progress=?, progress_note=?, updated_at=? WHERE id=?",
+                (percent, note, _now(), job_id),
             )
             self.db.commit()
 
     def mark_done(self, job_id: str) -> None:
         with self._lock:
             self.db.execute(
-                "UPDATE jobs SET status=?, current_step=NULL, error=NULL, updated_at=? WHERE id=?",
+                "UPDATE jobs SET status=?, current_step=NULL, error=NULL, progress=NULL, "
+                "progress_note=NULL, updated_at=? WHERE id=?",
                 (DONE, _now(), job_id),
             )
             self.db.commit()
@@ -136,7 +163,8 @@ class JobQueue:
             attempts = row["attempts"] if row else self.max_attempts
             status = QUEUED if attempts < self.max_attempts else DEAD
             self.db.execute(
-                "UPDATE jobs SET status=?, current_step=NULL, error=?, updated_at=? WHERE id=?",
+                "UPDATE jobs SET status=?, current_step=NULL, error=?, progress=NULL, "
+                "progress_note=NULL, updated_at=? WHERE id=?",
                 (status, error, _now(), job_id),
             )
             self.db.commit()

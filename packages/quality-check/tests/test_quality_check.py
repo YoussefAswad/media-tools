@@ -3,7 +3,7 @@ from __future__ import annotations
 from mediacore.models import PolicyConfig
 from mediacore.probe import ProbeResult, Track
 from quality_check.prune import build_mkvprune_argv, decide
-from quality_check.rules import check, foreign_image_subs, non_allowed_multichannel
+from quality_check.rules import check, foreign_subs, non_allowed_multichannel
 
 
 def mk(
@@ -56,23 +56,24 @@ def probe_of(*tracks: Track) -> ProbeResult:
 POLICY = PolicyConfig()
 
 
-def test_foreign_image_subs_selection() -> None:
+def test_foreign_subs_selection() -> None:
     pr = probe_of(
         mk(0, "video", codec_id="V_MPEGH/ISO/HEVC", codec_name="hevc"),
         mk(1, "subtitle", codec_name="hdmv_pgs_subtitle", language="fre"),  # foreign image -> drop
         mk(2, "subtitle", codec_name="hdmv_pgs_subtitle", language="eng"),  # eng image -> keep
-        mk(3, "subtitle", codec_name="subrip", language="fre"),  # text -> keep
+        mk(3, "subtitle", codec_name="subrip", language="fre"),  # foreign TEXT -> now dropped too
         mk(4, "subtitle", codec_name="hdmv_pgs_subtitle", language="und"),  # untagged -> keep (default)
         mk(5, "subtitle", codec_name="hdmv_pgs_subtitle", language="ara"),  # arabic -> keep
+        mk(6, "subtitle", codec_name="subrip", language="eng"),  # eng text -> keep
     )
-    dropped = {t.mkv_id for t in foreign_image_subs(pr, POLICY)}
-    assert dropped == {1}
+    dropped = {t.mkv_id for t in foreign_subs(pr, POLICY)}
+    assert dropped == {1, 3}  # both image AND text foreign subs
 
 
-def test_foreign_image_subs_flag_untagged() -> None:
-    pr = probe_of(mk(1, "subtitle", codec_name="hdmv_pgs_subtitle", language="und"))
+def test_foreign_subs_flag_untagged() -> None:
+    pr = probe_of(mk(1, "subtitle", codec_name="subrip", language="und"))
     policy = PolicyConfig(subtitle_flag_untagged=True)
-    assert {t.mkv_id for t in foreign_image_subs(pr, policy)} == {1}
+    assert {t.mkv_id for t in foreign_subs(pr, policy)} == {1}
 
 
 def test_non_allowed_multichannel() -> None:
@@ -101,26 +102,26 @@ def test_decide_prune() -> None:
         mk(0, "video", codec_name="hevc"),
         mk(1, "audio", codec_name="opus", channels=6),  # needs re-encode
         mk(2, "audio", codec_name="dts", channels=8),  # passthrough, kept
-        mk(3, "subtitle", codec_name="hdmv_pgs_subtitle", language="fre"),  # drop
+        mk(3, "subtitle", codec_name="hdmv_pgs_subtitle", language="fre"),  # drop (image)
         mk(4, "subtitle", codec_name="hdmv_pgs_subtitle", language="eng"),  # keep
-        mk(5, "subtitle", codec_name="subrip", language="spa"),  # keep (text)
+        mk(5, "subtitle", codec_name="subrip", language="spa"),  # drop (foreign text now)
     )
     d = decide(pr, POLICY)
     assert d.needs_work
-    assert d.keep_sub_ids == [4, 5]
+    assert d.keep_sub_ids == [4]  # only eng survives (spa text now dropped)
     assert d.audio_arg == "all"
-    assert d.subs_arg == "4,5"
+    assert d.subs_arg == "4"
     assert {t.mkv_id for t in d.audio_encode_tracks} == {1}
     argv = build_mkvprune_argv("/x/f.mkv", d)
-    assert argv == ["mkvprune", "-y", "--audio", "all", "--subs", "4,5", "/x/f.mkv"]
+    assert argv == ["mkvprune", "-y", "--audio", "all", "--subs", "4", "/x/f.mkv"]
 
 
 def test_decide_skip_when_clean() -> None:
     pr = probe_of(
         mk(0, "video", codec_name="hevc"),
         mk(1, "audio", codec_name="dts", channels=6),  # passthrough
-        mk(2, "subtitle", codec_name="subrip", language="fre"),  # text kept
-        mk(3, "subtitle", codec_name="hdmv_pgs_subtitle", language="eng"),  # eng image kept
+        mk(2, "subtitle", codec_name="subrip", language="eng"),  # eng text kept
+        mk(3, "subtitle", codec_name="hdmv_pgs_subtitle", language="ara"),  # ara image kept
     )
     d = decide(pr, POLICY)
     assert not d.needs_work

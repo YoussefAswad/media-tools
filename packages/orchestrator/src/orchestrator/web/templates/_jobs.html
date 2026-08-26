@@ -14,7 +14,13 @@
         {% else %}<span class="muted">{{ ap or "—" }}</span>{% endif %}
       </td>
       <td><span class="badge {{ job.status }}">{{ job.status }}</span></td>
-      <td class="muted">{{ job.current_step or "—" }}</td>
+      <td class="muted">
+        {{ job.current_step or "—" }}
+        {% if job.status == "processing" and job.progress is not none %}
+          <div class="jobbar"><div class="jobbar-fill" style="width: {{ job.progress }}%"></div></div>
+          <div class="jobbar-note">{{ job.progress_note or (job.progress|round)|string + "%" }}</div>
+        {% endif %}
+      </td>
       <td>{{ job.attempts }}</td>
       <td class="row-actions">
         {% if kind == "failed" %}

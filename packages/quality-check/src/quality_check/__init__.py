@@ -1,5 +1,11 @@
 from quality_check.prune import PruneDecision, build_mkvprune_argv, decide
-from quality_check.rules import Finding, check, foreign_image_subs, non_allowed_multichannel
+from quality_check.rules import (
+    Finding,
+    check,
+    foreign_image_subs,
+    foreign_subs,
+    non_allowed_multichannel,
+)
 
 __all__ = [
     "Finding",
@@ -8,5 +14,6 @@ __all__ = [
     "check",
     "decide",
     "foreign_image_subs",
+    "foreign_subs",
     "non_allowed_multichannel",
 ]

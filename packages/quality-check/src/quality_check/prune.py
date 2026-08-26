@@ -1,8 +1,8 @@
 """Compute the mkvprune invocation for a file, from policy — the pure decision layer.
 
 Policy (confirmed): **keep every audio track** (mkvprune still re-encodes only the non-Dolby/DTS
-multichannel ones to AC-3, per its own classifier), and **drop only non-eng/ara image-based
-subtitles**. This module turns a probe + policy into the exact ``--audio``/``--subs`` selection,
+multichannel ones to AC-3, per its own classifier), and **drop all non-eng/ara subtitles** (text
+and image alike). This module turns a probe + policy into the exact ``--audio``/``--subs`` selection,
 and reports whether any work is needed at all (so clean files are never remuxed).
 """
 
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from mediacore.models import PolicyConfig
 from mediacore.probe import ProbeResult, Track, classify_audio
 
-from quality_check.rules import foreign_image_subs
+from quality_check.rules import foreign_subs
 
 
 @dataclass
@@ -42,7 +42,7 @@ class PruneDecision:
         parts: list[str] = []
         if self.dropped_subs:
             langs = ", ".join(sorted({t.language or "und" for t in self.dropped_subs}))
-            parts.append(f"dropped {len(self.dropped_subs)} foreign image sub(s) [{langs}]")
+            parts.append(f"dropped {len(self.dropped_subs)} foreign sub(s) [{langs}]")
         if self.audio_encode_tracks:
             codecs = ", ".join(sorted({t.audio_codec for t in self.audio_encode_tracks}))
             parts.append(f"re-encode {len(self.audio_encode_tracks)} audio track(s) [{codecs}] → AC-3")
@@ -50,7 +50,7 @@ class PruneDecision:
 
 
 def decide(probe: ProbeResult, policy: PolicyConfig) -> PruneDecision:
-    foreign = foreign_image_subs(probe, policy)
+    foreign = foreign_subs(probe, policy)
     if policy.keep_default_subtitle:
         foreign = [t for t in foreign if not t.default]
 

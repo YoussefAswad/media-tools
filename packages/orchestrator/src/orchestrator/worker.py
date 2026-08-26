@@ -47,6 +47,7 @@ class Worker(threading.Thread):
                 job_id,
                 payload,
                 set_step=lambda s: self.services.queue.set_step(job_id, s),
+                set_progress=lambda pct, note: self.services.queue.set_progress(job_id, pct, note),
             )
             self.services.queue.mark_done(job_id)
         except Exception as exc:

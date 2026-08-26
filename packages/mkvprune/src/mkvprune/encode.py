@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -105,20 +106,30 @@ def run_encode(
     duration_s: float | None = None,
     progress: bool = False,
     verbose: bool = False,
+    on_progress: Callable[[float], None] | None = None,
 ) -> None:
-    """Execute one encode job, raising MkvPruneError on failure."""
+    """Execute one encode job, raising MkvPruneError on failure.
+
+    ``on_progress`` (if given) is called with the encode fraction (0..1) as it advances,
+    independent of the terminal progress bar — used to emit machine-readable progress.
+    """
     label = f"encode t{job.source.mkv_id} -> {os.path.basename(job.output_path)}"
     if not progress:
         print(f"  {label}")
     bar = ProgressBar(label, enabled=progress)
 
+    def _report(frac: float) -> None:
+        bar.update(frac)
+        if on_progress is not None:
+            on_progress(max(0.0, min(1.0, frac)))
+
     def on_line(line: str) -> None:
         if duration_s and line.startswith("out_time_us="):
             value = line.split("=", 1)[1].strip()
             with contextlib.suppress(ValueError):
-                bar.update(int(value) / 1_000_000 / duration_s)
+                _report(int(value) / 1_000_000 / duration_s)
         elif line.strip() == "progress=end":
-            bar.update(1.0)
+            _report(1.0)
 
     res = run_streamed(job.command, on_line=on_line, verbose=verbose)
     bar.finish(ok=res.returncode == 0)
