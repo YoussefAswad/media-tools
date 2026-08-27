@@ -1,0 +1,145 @@
+# media-tools
+
+A **uv-workspace monorepo** that consolidates three home-media tools behind one shared library
+(`mediacore`) and a **FastAPI orchestrator** service. The orchestrator receives Radarr/Sonarr
+webhooks and runs a per-file pipeline; each tool also remains usable standalone.
+
+## What this project is for (goals)
+
+The overarching goal was to automate post-import media processing that used to be a bash Custom
+Script plus a standalone renamer, and to unify three tools that had drifted apart:
+
+- **mkvprune** — remux an MKV to drop unwanted tracks and re-encode audio that isn't already
+  Dolby/DTS, while keeping DV/HDR10(+), track flags, chapters, and attachments **bit-exact**.
+- **quality-check** — probe a file and decide what mkvprune should prune (foreign subtitles,
+  non-Dolby/DTS multichannel audio, too many audio tracks) and flag findings to ntfy.
+- **seasonal-shift** — renumber anime episodes on disk (seasonal ⇄ absolute) and re-register the
+  file with Sonarr under its original episode.
+- **orchestrator** — the glue: webhook ingest → durable job queue → per-file pipeline → audit log
+  → ntfy status → a small web UI (job queue, audit actions, a downloads/bandwidth ledger, config
+  editor).
+
+All of that is **live**: deployed as a Docker container in the sibling `my-media-server` compose
+project, replacing the old bash Custom Script and standalone seasonal-shift.
+
+## Layout
+
+```
+packages/
+  mediacore/       shared: config, models, audit(db), ARR client+events, ntfy, qbit, jellyfin, probe facade
+  mkvprune/        pure-stdlib remux/encode CLI (NO network, NO deps) — invoked as a subprocess
+  quality-check/   ffprobe-based rules + prune decision (builds mkvprune argv)
+  seasonal-shift/  episode renumberer + Sonarr re-import
+  orchestrator/    FastAPI app, job queue+worker, dispatch pipeline, ledger, web UI
+deploy/            Dockerfile, compose fragment, config.example.yaml, README
+```
+
+The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — **the order matters**:
+
+1. **ledger capture** (bandwidth from qBittorrent) — FIRST, so consumed bandwidth is recorded even
+   if a later step fails or the torrent is later deleted. Idempotent upsert by infohash.
+2. **quality-check** — probe + findings → ntfy.
+3. **prune** (mkvprune) — replaces the file in place; streams live progress into the job row.
+4. **seasonal-shift** — moves/re-imports (Sonarr only); runs AFTER prune so it operates on a stable
+   path.
+5. **Jellyfin refresh** — best-effort, after prune ran (ok or skip).
+6. **status rollup** — ntfy.
+
+## Running, testing, linting
+
+- **uv is not on `$PATH`.** Always use `~/.local/bin/uv run --python 3.12 ...`.
+- **Tests:** run per package — do **not** `pytest packages/` all at once (multiple packages ship a
+  top-level `conftest.py` / same-named test modules → collection clashes). Use:
+  ```
+  ~/.local/bin/uv run --python 3.12 pytest packages/mkvprune
+  ~/.local/bin/uv run --python 3.12 pytest packages/orchestrator packages/mediacore packages/quality-check
+  ```
+- **Lint:** `~/.local/bin/uv run --python 3.12 ruff check packages` (this DOES work across all
+  packages). Config lives in the root `pyproject.toml`; `UP047`/`B008` are intentionally ignored.
+- Pyright "Import could not be resolved" warnings in the editor are just the analyzer's path config
+  (workspace packages aren't on its resolution path) — **not real errors**; the code runs fine.
+
+## Conventions
+
+- **Best-effort clients never raise.** `Notifier`, `QbitClient`, `JellyfinClient` log and return
+  `None`/`False` on any failure. A failed notification/refresh/snapshot must not fail a job.
+- **mkvprune stays pure.** Standard library only, no network, no third-party deps. It's invoked as
+  a CLI subprocess by the orchestrator, never imported for side effects. Keep it that way.
+- **mkvprune always sets the first track (per type) as default.**
+- **Config = Pydantic v2 + YAML + `${ENV}` / `${VAR:-default}` expansion.** Secrets stay as `${VAR}`
+  references in the YAML (expanded at load, never written back resolved) so the config file is safe
+  to edit in the web UI. Env vars are injected by compose from `.env`.
+- **Audit = JSONL (source of truth) + SQLite mirror (queryable index).** One SQLite file
+  (`/state/orchestrator.db`, WAL) holds jobs, actions, downloads (ledger), and cutoffs.
+- **Web UI is server-rendered** (Jinja2) with vanilla-JS `data-src` polling. **No vendored CDN
+  libraries** (CSP-safe). Theme-aware CSS. Byte values via a context-aware `bytes` Jinja filter.
+- **Schema migrations are idempotent:** `PRAGMA table_info(...)` + `ALTER TABLE ADD COLUMN` guarded
+  by a presence check (see `queue._migrate`, `audit._migrate`). Add new columns this way.
+
+## Deploy
+
+- Image `youssefaswad/media-orchestrator` on Docker Hub. Build:
+  `docker build -f deploy/orchestrator/Dockerfile -t youssefaswad/media-orchestrator:<ver> -t youssefaswad/media-orchestrator:latest .`
+  then `docker push` both tags. Bump a semver tag per change; `latest` is what compose pulls.
+- **Entrypoint is the venv console script `orchestrator`** (not `uv run`), so it works as non-root
+  (UID 1000).
+- Runs in the sibling `my-media-server` compose project. Only `/config`, `/state`, `/data` are
+  bind-mounted — **static assets (CSS/JS/templates) are baked into the image**, so any UI change
+  needs a rebuild + `docker compose up -d media-orchestrator`, and viewers must hard-refresh
+  (cached `app.js`/`app.css`).
+- Secrets in `my-media-server/.env` (gitignored; `.env.enc` is the SOPS+age-encrypted tracked copy
+  — re-encrypt with `sops --encrypt --input-type dotenv --output-type dotenv` after any change).
+- ARR points at it via a **Webhook** Connect (header `X-Webhook-Token: ${ORCH_WEBHOOK_SECRET}`,
+  triggers On Import/Upgrade/Rename).
+
+## Pitfalls to avoid (hard-won)
+
+1. **Never recreate the container while a job is processing.** A running job means an in-flight
+   mkvprune (mkvmerge/ffmpeg) doing long work. Killing it mid-mux wastes it (and used to strand a
+   `*.tmp.mkv`; that now self-heals, but it's still wasteful and interrupts imports). Before any
+   redeploy, confirm idle: no `processing`/`queued` rows in `jobs` and no `mkv`/`ffmpeg` process in
+   the container. Building the image and committing are fine any time — only the **recreate** waits.
+
+2. **The shared SQLite connection must be accessed serially.** The web threadpool and the worker
+   share one `sqlite3.Connection`; concurrent stepping of the same connection intermittently
+   returns truncated/`None` rows (symptom seen: `TypeError: 'NoneType' object is not subscriptable`
+   500s, and the Downloads "remaining" card vanishing). Fixed by `open_db` returning a
+   `_SerializedConnection` subclass that runs+buffers every statement under one lock. **Don't add
+   raw `db.execute` paths that bypass this** — go through `open_db`.
+
+3. **Never merge ffmpeg `-progress` (stdout) with `-v error` (stderr) into one pipe.** They
+   interleave at the byte level; on a **TrueHD** track (which emits many benign "non-monotonic DTS"
+   muxer warnings) the interleaving mangles error lines so the benign-pattern filter misses them,
+   causing **false verification failures (exit 3)** on a perfectly good remux. Use
+   `proc.run_streamed_split` (stdout streamed for progress, stderr drained on its own pipe) and scan
+   only the clean stderr. This is why `mkvprune/verify.py` keeps the streams separate.
+
+4. **qBittorrent (LSIO v5.2.3) WebUI login returns HTTP 204, not 200 "Ok.".** And it has
+   `HostHeaderValidation=true`, so the client must send a `Referer`. Don't treat non-200 as failure.
+
+5. **ntfy request headers are latin-1.** A UTF-8 title (em-dash, CJK, emoji) raises
+   `UnicodeEncodeError` in `requests`. `Notifier` latin-1-sanitizes header values and catches
+   `Exception` (not just `RequestException`). Keep labels ASCII-hyphenated.
+
+6. **seasonal-shift re-imports by the ORIGINAL episode number**, not the shifted one. In
+   `planner.FileOperation`, `season`/`episode` are parsed from the source filename; only
+   `destination` carries the shifted numbers. Sonarr tracks the episode by its original numbering.
+   Known limits: `EPISODE_PATTERN` is 2-digit `SxxExx` only — multi-episode files (`S01E01-E02`) and
+   >99-episode seasons don't match and are skipped.
+
+7. **GB vs GiB are different magnitudes, and both are stored as raw bytes.** `human_bytes(n, iec=)`
+   formats decimal (÷1000, "GB") or binary (÷1024, "GiB"); `parse_bytes` matches the suffix. The
+   Downloads UI has a per-browser toggle (`localStorage`). qBittorrent itself counts in GiB, so the
+   GiB view matches what qBittorrent shows.
+
+8. **Caddyfile changes need `docker compose up -d --force-recreate caddy`** (a reload isn't enough)
+   — relevant when touching the orchestrator's Caddy route in `my-media-server`.
+
+9. **Media-classification rule changes must be measured against the real library** (ffprobe hit
+   rates) before being trusted — don't ship a rule on intuition.
+
+## Origin note
+
+mkvprune and seasonal-shift were **copied** (not `git subtree`-imported) from
+`/mnt/vault/data/projects/{mkvprune,seasonal-shift}`; the copies here are the source of truth. Git
+history of the originals was not preserved.
