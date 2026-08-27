@@ -4,6 +4,7 @@ from pathlib import Path
 
 from mediacore.dashdot import SystemSnapshot
 from mediacore.docker_status import ContainerStatus
+from mediacore.scrutiny import DriveStatus
 from orchestrator.alerts import CRIT, OK, WARN
 from orchestrator.collectors import (
     _container_severity,
@@ -11,6 +12,7 @@ from orchestrator.collectors import (
     _scalar_severity,
     collect_containers,
     collect_disks,
+    collect_smart,
     collect_system,
     read_disk,
 )
@@ -165,3 +167,38 @@ def test_collect_system_unreachable() -> None:
     client = FakeDashdot(None)
     samples, evals, snap = collect_system(client, AlertRule(), AlertRule())
     assert samples == [] and evals == [] and snap is None
+
+
+class FakeScrutiny:
+    def __init__(self, drives) -> None:
+        self._drives = drives
+
+    def drives(self):
+        return self._drives
+
+
+def test_collect_smart_health_and_temp() -> None:
+    health = AlertRule(sustain_s=0)
+    temp = AlertRule(warn=50, crit=60)
+    drives = [
+        DriveStatus(name="sda", model="Seagate", passed=True, temp=38, power_on_hours=12000),
+        DriveStatus(name="nvme0n1", model="Samsung", passed=False, temp=62, power_on_hours=8000),
+    ]
+    samples, evals, out = collect_smart(FakeScrutiny(drives), health, temp)
+    assert out is not None
+    assert {"smart.temp:sda", "smart.temp:nvme0n1"} == {s.name for s in samples}
+    by_key = {e.key: e.severity for e in evals}
+    assert by_key["smart:sda"] == OK and by_key["smart:nvme0n1"] == CRIT  # failed drive
+    assert by_key["smart_temp:sda"] == OK and by_key["smart_temp:nvme0n1"] == CRIT  # 62 >= 60
+
+
+def test_collect_smart_no_temp_skips_temp_eval() -> None:
+    drives = [DriveStatus(name="sdb", model="X", passed=True, temp=None, power_on_hours=None)]
+    samples, evals, _out = collect_smart(FakeScrutiny(drives), AlertRule(sustain_s=0), AlertRule(warn=50))
+    assert samples == []  # no temp sample
+    assert {e.key for e in evals} == {"smart:sdb"}  # health only, no temp eval
+
+
+def test_collect_smart_unreachable() -> None:
+    samples, evals, out = collect_smart(FakeScrutiny(None), AlertRule(), AlertRule())
+    assert samples == [] and evals == [] and out is None

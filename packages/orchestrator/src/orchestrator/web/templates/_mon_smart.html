@@ -1,0 +1,29 @@
+{% if not enabled %}
+<div class="empty muted">SMART monitoring is off. Enable <code>monitoring.smart</code> in Config
+  (reads the Scrutiny container's API).</div>
+{% elif status is none %}
+<div class="empty muted">Collecting SMART data…</div>
+{% elif status == false %}
+<div class="empty muted">Scrutiny unreachable at the configured URL — check <code>monitoring.smart.url</code>.</div>
+{% elif not rows %}
+<div class="empty muted">No drives reported by Scrutiny yet (its collector may not have run).</div>
+{% else %}
+<table class="actions">
+  <thead>
+    <tr><th>Drive</th><th>Model</th><th>Health</th><th>Temp</th><th>Power-on</th></tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td class="nowrap">{{ r.name }}</td>
+      <td class="path">{{ r.model }}</td>
+      <td><span class="badge {{ r.tone }}">{{ r.health }}</span></td>
+      <td class="nowrap">
+        {% if r.temp_tone %}<span class="badge {{ r.temp_tone }}">{{ r.temp }}</span>{% else %}{{ r.temp }}{% endif %}
+      </td>
+      <td class="nowrap muted">{{ r.age }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}

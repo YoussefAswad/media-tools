@@ -98,6 +98,9 @@ def test_mon_partials_render(client) -> None:
     system = client.get("/ui/mon-system")
     # system monitoring is off in the test config → the partial shows the enable hint
     assert system.status_code == 200 and "monitoring.system" in system.text
+    smart = client.get("/ui/mon-smart")
+    # SMART monitoring is off in the test config → the partial shows the enable hint
+    assert smart.status_code == 200 and "monitoring.smart" in smart.text
 
 
 def test_webhook_download_enqueues(client) -> None:

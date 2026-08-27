@@ -706,6 +706,29 @@ def _container_row(c, watch: set[str]) -> dict:
             "watched": c.name in watch}
 
 
+@app.get("/ui/mon-smart", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_mon_smart(request: Request) -> HTMLResponse:
+    services = services_of(request)
+    mon = services.config.monitoring
+    snap = services.smart_snapshot
+    rows = []
+    for d in snap or []:
+        if not d.passed:
+            tone, health = "fail", "FAILED"
+        else:
+            tone, health = "ok", "passed"
+        if d.temp is None:
+            temp, temp_tone = "—", ""
+        else:
+            temp_tone = _rule_tone(d.temp, mon.smart_temp_alert)
+            temp = f"{d.temp}°C"
+        age = humanize_days(d.power_on_hours / 24) if d.power_on_hours else "—"
+        rows.append({"name": d.name, "model": d.model, "tone": tone, "health": health,
+                     "temp": temp, "temp_tone": temp_tone, "age": age})
+    ctx = {"rows": rows, "enabled": services.scrutiny is not None, "status": services.smart_ok}
+    return _TEMPLATES.TemplateResponse(request, "_mon_smart.html", ctx)
+
+
 @app.get("/ui/mon-containers", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
 def ui_mon_containers(request: Request) -> HTMLResponse:
     services = services_of(request)

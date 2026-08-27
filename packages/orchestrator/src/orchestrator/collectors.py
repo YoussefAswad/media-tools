@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from mediacore.dashdot import DashdotClient, SystemSnapshot
 from mediacore.docker_status import ContainerStatus, DockerStatusClient
+from mediacore.scrutiny import DriveStatus, ScrutinyClient
 
 from orchestrator.alerts import CRIT, OK, WARN, Evaluation
 from orchestrator.config import AlertRule, DiskWatch, DockerSource
@@ -179,3 +180,40 @@ def collect_system(
             )
         )
     return samples, evals, snap
+
+
+def collect_smart(
+    client: ScrutinyClient, health_rule: AlertRule, temp_rule: AlertRule
+) -> tuple[list[Sample], list[Evaluation], list[DriveStatus] | None]:
+    """Poll drive SMART via Scrutiny. Returns ``(samples, evaluations, drives)``; drives is None
+    when Scrutiny is unreachable. Alerts on a SMART health failure (crit) and sustained drive
+    temperature."""
+    drives = client.drives()
+    if drives is None:
+        return [], [], None
+    samples: list[Sample] = []
+    evals: list[Evaluation] = []
+    for d in drives:
+        if d.temp is not None:
+            samples.append(Sample(f"smart.temp:{d.name}", float(d.temp)))
+        if health_rule.enabled:
+            evals.append(
+                Evaluation(
+                    key=f"smart:{d.name}",
+                    label=f"{d.name} SMART",
+                    severity=OK if d.passed else CRIT,
+                    detail=f"{d.name} ({d.model}): SMART {'PASSED' if d.passed else 'FAILED'}",
+                    rule=health_rule,
+                )
+            )
+        if d.temp is not None and temp_rule.enabled:
+            evals.append(
+                Evaluation(
+                    key=f"smart_temp:{d.name}",
+                    label=f"{d.name} temp",
+                    severity=_scalar_severity(d.temp, temp_rule),
+                    detail=f"{d.name} drive temperature {d.temp}°C",
+                    rule=temp_rule,
+                )
+            )
+    return samples, evals, drives

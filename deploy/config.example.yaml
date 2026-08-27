@@ -126,6 +126,22 @@ monitoring:
     crit: 97
     sustain_s: 300
     clear_s: 120
+  # Drive SMART health + temperature, read from a Scrutiny sidecar's API. Scrutiny's own collector
+  # has the raw device access (SYS_RAWIO + the disk devices) — the orchestrator just reads its
+  # cached summary, so this poll does not spin the disks.
+  smart:
+    enabled: false             # set true once a Scrutiny container is running
+    url: http://scrutiny:8080
+    interval_s: 900            # 15 min (SMART data changes slowly)
+  smart_alert:                 # a SMART health FAILURE is urgent: crit immediately, remind daily
+    sustain_s: 0
+    clear_s: 0
+    cooldown_s: 86400
+  smart_temp_alert:
+    warn: 50                   # °C
+    crit: 60
+    sustain_s: 900
+    clear_s: 900
   # ntfy_topic: system-health  # optional override; defaults to the ntfy status topic
 
 # seasonal-shift per-show offsets (matched to a Sonarr series by `name`).

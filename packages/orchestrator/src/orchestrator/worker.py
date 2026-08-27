@@ -14,7 +14,12 @@ import time
 
 from mediacore.notify import PRIORITY_FAILURE, PRIORITY_STATUS, NtfyMessage
 
-from orchestrator.collectors import collect_containers, collect_disks, collect_system
+from orchestrator.collectors import (
+    collect_containers,
+    collect_disks,
+    collect_smart,
+    collect_system,
+)
 from orchestrator.dispatch import Dispatcher, InsufficientSpaceError
 from orchestrator.queue import DEAD
 from orchestrator.services import Services
@@ -44,6 +49,7 @@ class Worker(threading.Thread):
         self._last_disk = 0.0  # sample disks on the first idle tick
         self._last_docker = 0.0  # sample containers on the first idle tick
         self._last_system = 0.0  # sample system metrics on the first idle tick
+        self._last_smart = 0.0  # sample SMART on the first idle tick
 
     def stop(self) -> None:
         self._stop.set()
@@ -146,6 +152,14 @@ class Worker(threading.Thread):
             self._last_system = now
             with contextlib.suppress(Exception):
                 self._collect_system()
+        if (
+            mon.smart.enabled
+            and self.services.scrutiny is not None
+            and now - self._last_smart >= mon.smart.interval_s
+        ):
+            self._last_smart = now
+            with contextlib.suppress(Exception):
+                self._collect_smart()
 
     def _collect_disks(self) -> None:
         mon = self.services.config.monitoring
@@ -182,6 +196,19 @@ class Worker(threading.Thread):
             return
         self.services.system_snapshot = snap
         self.services.system_ok = True
+
+    def _collect_smart(self) -> None:
+        mon = self.services.config.monitoring
+        client = self.services.scrutiny
+        assert client is not None
+        samples, evals, drives = collect_smart(client, mon.smart_alert, mon.smart_temp_alert)
+        self.services.metrics.record_many(samples)
+        self.services.alerts.evaluate(evals, self.services.alert_channels())
+        if drives is None:  # scrutiny unreachable
+            self.services.smart_ok = False
+            return
+        self.services.smart_snapshot = drives
+        self.services.smart_ok = True
 
     # --- periodic maintenance -------------------------------------------------------
     def _maybe_maintain(self) -> None:

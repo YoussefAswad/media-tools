@@ -78,6 +78,17 @@ class SystemSource(BaseModel):
     interval_s: int = 30
 
 
+class SmartSource(BaseModel):
+    """Drive SMART health + temperature via the Scrutiny container's API. Scrutiny's own collector
+    has the raw device access; this just reads its cached summary. Disabled by default."""
+
+    enabled: bool = False
+    url: str = "http://scrutiny:8080"
+    #: how often Scrutiny's cached summary is read (seconds). Cheap — it does not spin the disks
+    #: (Scrutiny's collector polls smartctl on its own schedule). SMART data changes slowly.
+    interval_s: int = 900
+
+
 class MonitoringConfig(BaseModel):
     """System-monitoring feature: watched disks + alert timing. Phase 1 covers disk usage; later
     phases add container/system/SMART sources onto the same collect→store→alert→UI pipeline."""
@@ -105,6 +116,12 @@ class MonitoringConfig(BaseModel):
     cpu_temp_alert: AlertRule = AlertRule(warn=75, crit=85, sustain_s=300, clear_s=120)
     #: sustained high memory usage (%).
     mem_alert: AlertRule = AlertRule(warn=90, crit=97, sustain_s=300, clear_s=120)
+    #: drive SMART health + temperature via Scrutiny.
+    smart: SmartSource = SmartSource()
+    #: SMART health failure → crit immediately (no sustain); re-notify at most daily.
+    smart_alert: AlertRule = AlertRule(sustain_s=0, clear_s=0, cooldown_s=86400)
+    #: sustained high drive temperature (°C).
+    smart_temp_alert: AlertRule = AlertRule(warn=50, crit=60, sustain_s=900, clear_s=900)
     #: ntfy topic override for monitoring alerts (defaults to the status topic when unset).
     ntfy_topic: str | None = None
 

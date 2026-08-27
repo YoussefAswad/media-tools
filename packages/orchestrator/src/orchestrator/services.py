@@ -20,6 +20,7 @@ from mediacore.jellyfin import JellyfinClient
 from mediacore.models import ArrInstance
 from mediacore.notify import Notifier
 from mediacore.qbit import QbitClient
+from mediacore.scrutiny import DriveStatus, ScrutinyClient
 
 from orchestrator.alerts import AlertEngine, Channel, InAppChannel, NtfyChannel
 from orchestrator.config import (
@@ -57,6 +58,10 @@ class Services:
     #: latest host system snapshot from dashdot (same single-writer/many-readers pattern).
     system_snapshot: SystemSnapshot | None = None
     system_ok: bool | None = None
+    scrutiny: ScrutinyClient | None = None
+    #: latest SMART drive snapshot from Scrutiny (same single-writer/many-readers pattern).
+    smart_snapshot: list[DriveStatus] | None = None
+    smart_ok: bool | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def arr_instance(self, app: str) -> ArrInstance | None:
@@ -94,6 +99,10 @@ class Services:
             if self.system is None:
                 self.system_snapshot = None
                 self.system_ok = None
+            self.scrutiny = _scrutiny_client(new_cfg.monitoring)
+            if self.scrutiny is None:
+                self.smart_snapshot = None
+                self.smart_ok = None
 
 
 def build_services(config_path: Path) -> Services:
@@ -113,6 +122,7 @@ def build_services(config_path: Path) -> Services:
     jellyfin = JellyfinClient.from_config(config.jellyfin) if config.jellyfin else None
     docker = _docker_client(config.monitoring)
     system = _system_client(config.monitoring)
+    scrutiny = _scrutiny_client(config.monitoring)
     return Services(
         config=config,
         config_path=config_path,
@@ -128,6 +138,7 @@ def build_services(config_path: Path) -> Services:
         jellyfin=jellyfin,
         docker=docker,
         system=system,
+        scrutiny=scrutiny,
     )
 
 
@@ -143,3 +154,10 @@ def _system_client(mon: MonitoringConfig) -> DashdotClient | None:
     if not mon.system.enabled:
         return None
     return DashdotClient(mon.system.url)
+
+
+def _scrutiny_client(mon: MonitoringConfig) -> ScrutinyClient | None:
+    """A Scrutiny client when SMART monitoring is enabled, else None."""
+    if not mon.smart.enabled:
+        return None
+    return ScrutinyClient(mon.smart.url)
