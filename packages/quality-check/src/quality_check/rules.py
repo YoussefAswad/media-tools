@@ -5,9 +5,10 @@ by *probed codec identity* (never the track title), matching mkvprune's policy:
 
 * **Rule A** — non-Dolby/DTS multichannel audio: audio with ``channels > audio_min_channels``
   whose canonical codec is not in ``audio_allow`` (catches Opus/AAC 5.1).
-* **Rule B** — foreign image-based subtitles: subtitle whose ffprobe codec is in
-  ``subtitle_image_codecs`` and whose language is not in ``subtitle_keep_langs`` (untagged
-  counts only when ``subtitle_flag_untagged``).
+* **Rule B** — foreign subtitles: subtitle whose language is not in ``subtitle_keep_langs``,
+  regardless of codec (text SRT/ASS and image PGS/VOBSUB alike — this matches the confirmed
+  prune policy in ``quality_check.prune``). Untagged/``und`` tracks count only when
+  ``subtitle_flag_untagged`` is set.
 * **Rule C** — too many audio tracks: audio track count ``> audio_max_tracks``.
 """
 
@@ -57,7 +58,8 @@ def foreign_subs(probe: ProbeResult, policy: PolicyConfig) -> list[Track]:
     return out
 
 
-# Back-compat alias (kept so external callers/tests importing the old name still resolve).
+# Back-compat alias. NOTE: a misnomer — this flags ALL foreign-language subs, not only image-based
+# ones (Rule B stopped gating on codec). Kept so callers/tests importing the old name still resolve.
 foreign_image_subs = foreign_subs
 
 

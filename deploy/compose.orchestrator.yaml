@@ -21,6 +21,14 @@ services:
       - ./orchestrator/config:/config
       - ./orchestrator/state:/state
       - /path/to/media:/data          # SAME mount path as radarr/sonarr
+    # /readyz fails (503) if the worker loop is wedged or the db is unreachable; /healthz is
+    # liveness only. start_period covers a long in-flight prune on (re)start.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/readyz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     # cpus: "4"                        # re-encodes are CPU-heavy; cap if desired
     networks:
       - default

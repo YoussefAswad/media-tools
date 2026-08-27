@@ -44,7 +44,6 @@ policy:
   audio_allow: [ac3, eac3, truehd, mlp, dts]
   audio_min_channels: 2
   audio_max_tracks: 2
-  subtitle_image_codecs: [hdmv_pgs_subtitle, dvd_subtitle, dvb_subtitle, xsub]
   subtitle_keep_langs: [eng, en, ara, ar]
   subtitle_flag_untagged: false
   keep_default_subtitle: false     # true = never drop the current default sub, even if foreign
@@ -63,6 +62,18 @@ enable_quality_check: true
 enable_prune: true
 enable_ledger: true          # capture download bandwidth from qBittorrent at import
 max_attempts: 3
+retry_backoff_s: [30, 300, 1800]   # per-attempt requeue delay (clamped to the last entry)
+
+# Background maintenance (runs on the worker thread between jobs)
+maintenance_interval_s: 300   # how often retention / dead-revive / quota checks run
+retention_days: 90            # delete finished jobs + audit rows older than this (0 = keep; JSONL always kept)
+quota_alert_pcts: [85, 100]   # ntfy once when quota usage crosses each level (needs a cutoff limit)
+dead_revive_cooldown_s: 3600  # auto-requeue a dead job once it has sat idle this long
+dead_revive_max: 1            # times a dead job may be auto-revived (0 disables)
+
+# Prune disk-space guard
+prune_min_free_multiplier: 1.3   # require free space >= source_size * this before pruning
+prune_low_space_backoff_s: 1800  # when short, defer the job this long (no attempt consumed)
 
 # seasonal-shift per-show offsets (matched to a Sonarr series by `name`).
 shows: []

@@ -1,0 +1,19 @@
+<div class="worker-status">
+  {% if paused %}
+    <span class="badge warn">⏸ Paused</span>
+    {% if safe %}
+      <span class="badge ok">✓ idle — safe to redeploy</span>
+    {% else %}
+      <span class="badge">draining… {{ active }} active</span>
+    {% endif %}
+    <form method="post" action="/worker/resume">
+      <button class="ghost">Resume worker</button>
+    </form>
+  {% else %}
+    <span class="badge ok">▶ Running</span>
+    <form method="post" action="/worker/pause"
+          onsubmit="return confirm('Pause the worker? In-flight jobs finish; no new jobs start.')">
+      <button class="ghost">Pause worker</button>
+    </form>
+  {% endif %}
+</div>

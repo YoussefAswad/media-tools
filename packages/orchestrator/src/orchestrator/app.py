@@ -128,8 +128,27 @@ def require_ui_auth(
 
 # --- health + webhooks ------------------------------------------------------------------
 @app.get("/healthz")
-def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+def healthz(request: Request) -> dict[str, object]:
+    """Liveness: the process is up. Also reports whether the worker thread is alive."""
+    worker = getattr(request.app.state, "worker", None)
+    return {"status": "ok", "worker_alive": bool(worker and worker.is_alive())}
+
+
+@app.get("/readyz")
+def readyz(request: Request) -> JSONResponse:
+    """Readiness: the worker loop is healthy AND the db is reachable. Point the container
+    healthcheck here so a wedged worker or unreachable db actually fails the check."""
+    worker = getattr(request.app.state, "worker", None)
+    problems: list[str] = []
+    if worker is None or not worker.healthy():
+        problems.append("worker unhealthy")
+    try:
+        services_of(request).db.execute("SELECT 1").fetchone()
+    except Exception as exc:  # pragma: no cover - db failure is hard to simulate
+        problems.append(f"db: {exc}")
+    if problems:
+        return JSONResponse({"status": "unready", "problems": problems}, status_code=503)
+    return JSONResponse({"status": "ready"})
 
 
 def _check_secret(request: Request, services: Services) -> None:
@@ -191,6 +210,37 @@ def ui_summary(request: Request) -> HTMLResponse:
         ("Failed steps", ac.get("fail", 0), "fail"),
     ]
     return _TEMPLATES.TemplateResponse(request, "_summary.html", {"tiles": tiles})
+
+
+@app.get("/ui/worker", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_worker(request: Request) -> HTMLResponse:
+    q = services_of(request).queue
+    paused = q.is_paused()
+    counts = q.counts()
+    active = counts.get(QUEUED, 0) + counts.get(PROCESSING, 0)
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "_worker.html",
+        {"paused": paused, "active": active, "safe": paused and active == 0},
+    )
+
+
+@app.post("/worker/pause", dependencies=[Depends(require_ui_auth)])
+def worker_pause(request: Request) -> Response:
+    services_of(request).queue.pause()
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/worker/resume", dependencies=[Depends(require_ui_auth)])
+def worker_resume(request: Request) -> Response:
+    services_of(request).queue.resume()
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/jobs/retry-dead", dependencies=[Depends(require_ui_auth)])
+def jobs_retry_dead(request: Request) -> Response:
+    services_of(request).queue.retry_all_dead()
+    return RedirectResponse("/", status_code=303)
 
 
 def _app_filter(jobs, app: str | None):

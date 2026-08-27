@@ -236,3 +236,17 @@ class Audit:
             "SELECT * FROM actions WHERE job_id=? ORDER BY id ASC", (job_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def prune_old(self, days: int) -> int:
+        """Delete SQLite ``actions`` rows older than ``days``. The JSONL files are the durable
+        source of truth and are left untouched — this only trims the queryable mirror. Returns
+        the number of rows removed; a non-positive ``days`` disables pruning."""
+        if days <= 0:
+            return 0
+        cutoff = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(days=days)).isoformat(
+            timespec="seconds"
+        )
+        with self._lock:
+            cur = self.db.execute("DELETE FROM actions WHERE ts<=?", (cutoff,))
+            self.db.commit()
+            return cur.rowcount

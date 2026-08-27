@@ -15,12 +15,6 @@ from pydantic import BaseModel, model_validator
 
 # Canonical policy defaults, mirroring the original arr-quality-check.sh knobs.
 DEFAULT_AUDIO_ALLOW: set[str] = {"ac3", "eac3", "truehd", "mlp", "dts"}
-DEFAULT_SUBTITLE_IMAGE_CODECS: set[str] = {
-    "hdmv_pgs_subtitle",
-    "dvd_subtitle",
-    "dvb_subtitle",
-    "xsub",
-}
 DEFAULT_SUBTITLE_KEEP_LANGS: set[str] = {"eng", "en", "ara", "ar"}
 
 
@@ -70,9 +64,8 @@ class PolicyConfig(BaseModel):
     audio_allow: set[str] = set(DEFAULT_AUDIO_ALLOW)
     audio_min_channels: int = 2
     audio_max_tracks: int = 2
-    subtitle_image_codecs: set[str] = set(DEFAULT_SUBTITLE_IMAGE_CODECS)
     subtitle_keep_langs: set[str] = set(DEFAULT_SUBTITLE_KEEP_LANGS)
-    #: Whether an untagged/``und`` image subtitle counts as foreign (default: keep it).
+    #: Whether an untagged/``und`` subtitle counts as foreign (default: keep it).
     subtitle_flag_untagged: bool = False
     #: Guard: never drop the subtitle currently flagged default, even if foreign.
     keep_default_subtitle: bool = False

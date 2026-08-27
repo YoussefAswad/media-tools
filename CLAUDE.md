@@ -74,7 +74,9 @@ The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — *
 - **Web UI is server-rendered** (Jinja2) with vanilla-JS `data-src` polling. **No vendored CDN
   libraries** (CSP-safe). Theme-aware CSS. Byte values via a context-aware `bytes` Jinja filter.
 - **Schema migrations are idempotent:** `PRAGMA table_info(...)` + `ALTER TABLE ADD COLUMN` guarded
-  by a presence check (see `queue._migrate`, `audit._migrate`). Add new columns this way.
+  by a presence check (see `queue._migrate`, `audit._migrate`, `ledger.Cutoffs._migrate`). Add new
+  columns this way. Small runtime key/values (e.g. the durable pause flag, last-vacuum date) live
+  in the `meta` table via `JobQueue.get_meta/set_meta`.
 
 ## Deploy
 
@@ -99,6 +101,11 @@ The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — *
    `*.tmp.mkv`; that now self-heals, but it's still wasteful and interrupts imports). Before any
    redeploy, confirm idle: no `processing`/`queued` rows in `jobs` and no `mkv`/`ffmpeg` process in
    the container. Building the image and committing are fine any time — only the **recreate** waits.
+   The dashboard now has a **Pause worker** button (durable, stored in the `meta` table): pause
+   stops claiming new jobs while letting the in-flight one finish, and the toolbar shows
+   "idle — safe to redeploy" once the queue is drained. `/readyz` (used by the container
+   healthcheck) reports the worker loop's real liveness via a heartbeat; a long prune keeps it
+   `_busy` so a legitimate multi-minute mux does not read as unhealthy. `/healthz` is liveness-only.
 
 2. **The shared SQLite connection must be accessed serially.** The web threadpool and the worker
    share one `sqlite3.Connection`; concurrent stepping of the same connection intermittently
@@ -137,6 +144,15 @@ The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — *
 
 9. **Media-classification rule changes must be measured against the real library** (ffprobe hit
    rates) before being trusted — don't ship a rule on intuition.
+
+10. **A job stuck at `queued` may be intentionally deferred, not broken.** Two paths set a future
+    `not_before` on a `queued` row (so `claim_next` skips it until then): retry backoff after a
+    failure (`retry_backoff_s`), and the low-disk-space guard, which `defer()`s the prune
+    **without** consuming an attempt so it never dead-letters for space alone — it waits (default
+    30 min) for disk to free up. So a `queued` job that isn't being picked up is expected while its
+    `not_before` is in the future; check that column before assuming the worker is wedged. The
+    worker also runs periodic maintenance (retention prune of jobs+actions >`retention_days`,
+    bounded dead-letter auto-revive, quota-usage ntfy alerts) on its own thread between claims.
 
 ## Origin note
 

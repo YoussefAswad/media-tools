@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -40,6 +41,16 @@ log = logging.getLogger(__name__)
 
 class DispatchError(RuntimeError):
     """Fatal, retryable failure (fails the job)."""
+
+
+class InsufficientSpaceError(DispatchError):
+    """Not enough free disk space to prune this file. The worker defers the job (long backoff,
+    no attempt consumed) rather than dead-lettering — space will free up on its own (e.g. a
+    torrent is cleaned up), so the job should wait, not give up."""
+
+
+#: substring mkvprune emits when its own scratch-space precheck (replace.check_free_space) fails.
+_LOW_SPACE_MARKER = "insufficient free space"
 
 
 @dataclass
@@ -330,6 +341,8 @@ class Dispatcher:
                 os.remove(stale)
                 log.info("removed stale temp before prune: %s", stale)
 
+        self._ensure_free_space(local_path)
+
         argv = build_mkvprune_argv(
             local_path, decision, executable=self.services.config.mkvprune_executable
         )
@@ -340,10 +353,34 @@ class Dispatcher:
         result = self.prune_runner(argv, on_progress=on_progress)
         if not result.ok:
             tail = (result.stderr or result.stdout or "").strip()[-400:]
+            # mkvprune runs its own scratch-space precheck; classify that shortfall as deferrable
+            # (don't dead-letter for space) even though it surfaced as a subprocess exit.
+            if _LOW_SPACE_MARKER in tail.lower():
+                raise InsufficientSpaceError(f"mkvprune: {tail}")
             raise DispatchError(f"mkvprune exit {result.returncode}: {tail}")
 
         self._rescan(event)
         return StepResult("mkvprune", "prune", OK, decision.summary())
+
+    def _ensure_free_space(self, local_path: str) -> None:
+        """Refuse to start a prune that can't fit its temp mux. mkvprune writes a ``{stem}.tmp.mkv``
+        (~source size) alongside the source before the atomic replace, so peak occupancy is ~2x;
+        the *additional* free space required is ~1x the source. Raising here defers the job instead
+        of spawning a subprocess that would fail — and instead of dead-lettering on a condition
+        that clears itself once disk frees up."""
+        try:
+            src_size = os.path.getsize(local_path)
+            free = shutil.disk_usage(os.path.dirname(local_path) or ".").free
+        except OSError as exc:
+            log.warning("free-space check skipped for %s: %s", local_path, exc)
+            return
+        needed = int(src_size * self.services.config.prune_min_free_multiplier)
+        if free < needed:
+            from orchestrator.util import human_bytes
+
+            raise InsufficientSpaceError(
+                f"need ~{human_bytes(needed)} free to prune, have {human_bytes(free)}"
+            )
 
     def _rescan(self, event: ArrEvent) -> None:
         if event.item_id is None:

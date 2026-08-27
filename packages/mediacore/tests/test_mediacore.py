@@ -32,7 +32,6 @@ def test_config_env_expansion(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_policy_defaults() -> None:
     cfg = CoreConfig()
     assert cfg.policy.audio_allow == {"ac3", "eac3", "truehd", "mlp", "dts"}
-    assert "hdmv_pgs_subtitle" in cfg.policy.subtitle_image_codecs
     assert cfg.policy.subtitle_keep_langs == {"eng", "en", "ara", "ar"}
 
 

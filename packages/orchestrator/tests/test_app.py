@@ -16,6 +16,12 @@ class DummyWorker:
     def stop(self) -> None:
         pass
 
+    def is_alive(self) -> bool:
+        return True
+
+    def healthy(self) -> bool:
+        return True
+
 
 def _write_config(tmp_path: Path) -> Path:
     cfg = tmp_path / "config.yaml"
@@ -49,7 +55,12 @@ def client(tmp_path, monkeypatch):
 
 
 def test_healthz(client) -> None:
-    assert client.get("/healthz").json() == {"status": "ok"}
+    assert client.get("/healthz").json() == {"status": "ok", "worker_alive": True}
+
+
+def test_readyz_ok(client) -> None:
+    r = client.get("/readyz")
+    assert r.status_code == 200 and r.json()["status"] == "ready"
 
 
 def test_webhook_test_event(client) -> None:
@@ -91,6 +102,22 @@ def test_summary_and_clear_dead(client) -> None:
     # clear-dead redirects and succeeds even with nothing to clear
     r = client.post("/jobs/clear-dead", follow_redirects=False)
     assert r.status_code == 303
+
+
+def test_worker_pause_resume_flow(client) -> None:
+    panel = client.get("/ui/worker")
+    assert panel.status_code == 200 and "Running" in panel.text
+    # pause -> panel shows paused + (nothing queued) safe-to-redeploy
+    assert client.post("/worker/pause", follow_redirects=False).status_code == 303
+    paused = client.get("/ui/worker").text
+    assert "Paused" in paused and "safe to redeploy" in paused
+    # resume restores running
+    assert client.post("/worker/resume", follow_redirects=False).status_code == 303
+    assert "Running" in client.get("/ui/worker").text
+
+
+def test_retry_dead_redirects(client) -> None:
+    assert client.post("/jobs/retry-dead", follow_redirects=False).status_code == 303
 
 
 def test_dashboard_and_config_pages(client) -> None:

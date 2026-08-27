@@ -262,17 +262,33 @@ class Cutoff:
     limit_bytes: int
     note: str | None
     created_at: str
+    alerted_pct: int = 0
 
 
 class Cutoffs:
     """Period markers for the downloads ledger. The most recent cutoff defines the current
-    quota period; an optional ``limit_bytes`` drives the 'remaining' card."""
+    quota period; an optional ``limit_bytes`` drives the 'remaining' card. ``alerted_pct`` tracks
+    the highest quota-usage threshold already notified this period (so each alert fires once)."""
 
     def __init__(self, db: sqlite3.Connection) -> None:
         self.db = db
         self._lock = threading.Lock()
         with self._lock:
             self.db.executescript(_CUTOFFS_SCHEMA)
+            self._migrate()
+            self.db.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the table's first creation (idempotent)."""
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(cutoffs)")}
+        if "alerted_pct" not in cols:
+            self.db.execute("ALTER TABLE cutoffs ADD COLUMN alerted_pct INTEGER NOT NULL DEFAULT 0")
+
+    def set_alerted(self, cutoff_id: int, pct: int) -> None:
+        with self._lock:
+            self.db.execute(
+                "UPDATE cutoffs SET alerted_pct=? WHERE id=?", (pct, cutoff_id)
+            )
             self.db.commit()
 
     def add(self, *, cutoff_date: str, limit_bytes: int = 0, note: str | None = None) -> int:

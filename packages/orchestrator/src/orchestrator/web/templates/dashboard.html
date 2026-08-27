@@ -10,6 +10,10 @@
     <button data-app="radarr" class="chip">🎬 Movies</button>
     <button data-app="sonarr" class="chip">📺 Episodes</button>
   </div>
+  <div class="worker-panel" data-src="/ui/worker" data-interval="4000">Loading…</div>
+  <form method="post" action="/jobs/retry-dead" onsubmit="return confirm('Retry all dead/failed jobs now?')">
+    <button class="ghost">Retry all dead</button>
+  </form>
   <form method="post" action="/jobs/clear-dead" onsubmit="return confirm('Clear all dead/failed/canceled jobs?')">
     <button class="ghost danger">Clear dead jobs</button>
   </form>
