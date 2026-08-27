@@ -231,14 +231,9 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 .mon-list { margin-top: 14px; }
 .mon-list .remaining:last-child { margin-bottom: 0; }
 
-/* --- monitoring container dot grid --- */
-.dotgrid { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 4px; }
-.dot-item { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; }
-.dot { width: 9px; height: 9px; border-radius: 999px; background: var(--skip); flex: none; }
-.dot.ok { background: var(--ok); }
-.dot.warn { background: var(--warn); }
-.dot.fail { background: var(--fail); }
-.dot-name.watched { font-weight: 700; }
+/* --- monitoring container list: watched containers stand out --- */
+td.watched { font-weight: 700; }
+td.watched::before { content: "★ "; color: var(--warn); }
 /* Split each gauge into two equal columns so the usage bar is the SAME width on every card.
    Otherwise the label column sizes to its text and a row carrying a growth estimate
    (e.g. "+50 MB/day · >3 years to full") squeezes its bar narrower than a row without one. */

@@ -646,37 +646,38 @@ def ui_mon_alerts(request: Request) -> HTMLResponse:
     return _TEMPLATES.TemplateResponse(request, "_mon_alerts.html", {"alerts": rows})
 
 
+def _container_row(c, watch: set[str]) -> dict:
+    """Presentation for one container: state badge tone/label + human CPU/mem cells."""
+    if not c.up:
+        tone, label = "fail", c.state or "down"
+    elif c.health == "unhealthy":
+        tone, label = "warn", "unhealthy"
+    elif c.health == "starting":
+        tone, label = "queued", "starting"
+    else:
+        tone, label = "ok", (c.health or "running")
+    cpu = f"{c.cpu_pct:.1f}%" if c.cpu_pct is not None else "—"
+    if c.mem_used is not None:
+        mem_pct = (c.mem_used / c.mem_limit * 100) if c.mem_limit else 0
+        mem = f"{human_bytes(c.mem_used)}" + (f" · {mem_pct:.0f}%" if c.mem_limit else "")
+    else:
+        mem = "—"
+    return {"name": c.name, "tone": tone, "label": label, "cpu": cpu, "mem": mem,
+            "watched": c.name in watch}
+
+
 @app.get("/ui/mon-containers", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
 def ui_mon_containers(request: Request) -> HTMLResponse:
     services = services_of(request)
     watch = set(services.config.monitoring.docker.watch)
-    dots = []
-    unreachable = False
-    if services.docker is not None:
-        containers = services.docker.containers()
-        if containers is None:
-            unreachable = True
-        else:
-            for c in containers:
-                if not c.up:
-                    tone = "fail"
-                elif c.health == "unhealthy":
-                    tone = "warn"
-                else:
-                    tone = "ok"
-                dots.append(
-                    {
-                        "name": c.name,
-                        "tone": tone,
-                        "title": f"{c.name}: {c.status or c.state}",
-                        "watched": c.name in watch,
-                    }
-                )
-    return _TEMPLATES.TemplateResponse(
-        request,
-        "_mon_containers.html",
-        {"dots": dots, "unreachable": unreachable, "enabled": services.docker is not None},
-    )
+    snap = services.docker_snapshot
+    rows = [_container_row(c, watch) for c in snap] if snap else []
+    ctx = {
+        "rows": rows,
+        "enabled": services.docker is not None,
+        "status": services.docker_ok,  # None = collecting, True = ok, False = unreachable
+    }
+    return _TEMPLATES.TemplateResponse(request, "_mon_containers.html", ctx)
 
 
 @app.get("/config", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])

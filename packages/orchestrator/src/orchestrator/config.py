@@ -57,8 +57,11 @@ class DockerSource(BaseModel):
 
     enabled: bool = False
     socket: Path = Path("/var/run/docker.sock")
-    #: how often container state is polled (seconds). Cheap (a local socket call).
+    #: how often container state is polled (seconds). The state list is cheap; per-container CPU/mem
+    #: (``stats``) costs ~1s each but is fetched in parallel, so keep this comfortably above that.
     interval_s: int = 30
+    #: also collect per-container CPU % and memory (Docker stats API). Adds ~1-2s per poll.
+    stats: bool = True
     #: container names to alert on when down/unhealthy. Empty = alert on every container seen.
     #: (The UI always displays *all* containers regardless of this list.)
     watch: list[str] = Field(default_factory=list)

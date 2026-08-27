@@ -14,7 +14,7 @@ from pathlib import Path
 
 from mediacore.arr.client import ArrClient, client_for
 from mediacore.audit import Audit, open_db
-from mediacore.docker_status import DockerStatusClient
+from mediacore.docker_status import ContainerStatus, DockerStatusClient
 from mediacore.jellyfin import JellyfinClient
 from mediacore.models import ArrInstance
 from mediacore.notify import Notifier
@@ -46,6 +46,12 @@ class Services:
     qbit: QbitClient | None = None
     jellyfin: JellyfinClient | None = None
     docker: DockerStatusClient | None = None
+    #: latest container snapshot produced by the worker's docker collection (the web routes read
+    #: this instead of hitting the socket per request). ``docker_ok``: None = not collected yet,
+    #: True = last poll succeeded, False = socket unreachable. Reference swaps are atomic, so no
+    #: lock is needed for the single writer (worker) / many readers (web) pattern.
+    docker_snapshot: list[ContainerStatus] | None = None
+    docker_ok: bool | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def arr_instance(self, app: str) -> ArrInstance | None:
@@ -76,6 +82,9 @@ class Services:
                 JellyfinClient.from_config(new_cfg.jellyfin) if new_cfg.jellyfin else None
             )
             self.docker = _docker_client(new_cfg.monitoring)
+            if self.docker is None:  # disabled → drop any stale snapshot
+                self.docker_snapshot = None
+                self.docker_ok = None
 
 
 def build_services(config_path: Path) -> Services:

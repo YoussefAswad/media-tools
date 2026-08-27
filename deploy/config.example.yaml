@@ -102,7 +102,8 @@ monitoring:
   docker:
     enabled: false             # set true once the socket is mounted
     socket: /var/run/docker.sock
-    interval_s: 30             # how often container state is polled (cheap, local socket)
+    interval_s: 30             # how often container state + stats are polled
+    stats: true                # also collect per-container CPU % and memory (adds ~1-2s per poll)
     watch: []                  # names to alert on when down/unhealthy; [] = every container seen
   container_alert:             # short sustain rides out a normal restart/redeploy
     sustain_s: 60              # a container must stay down this long before alerting

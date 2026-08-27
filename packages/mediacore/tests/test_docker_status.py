@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from mediacore.docker_status import DockerStatusClient
+from mediacore.docker_status import DockerStatusClient, _compute_stats
 
 _SAMPLE = [
     {"Names": ["/radarr"], "State": "running", "Status": "Up 21 hours"},
@@ -47,3 +47,34 @@ def test_get_on_dead_socket_is_best_effort() -> None:
     # a real connect() to a missing socket must be swallowed (OSError -> None), never raised.
     client = DockerStatusClient("/no/such/docker.sock", timeout=0.5)
     assert client.containers() is None
+
+
+def test_compute_stats() -> None:
+    body = {
+        "cpu_stats": {
+            "cpu_usage": {"total_usage": 200},
+            "system_cpu_usage": 2000,
+            "online_cpus": 4,
+        },
+        "precpu_stats": {"cpu_usage": {"total_usage": 100}, "system_cpu_usage": 1000},
+        "memory_stats": {"usage": 100, "limit": 1000, "stats": {"inactive_file": 40}},
+    }
+    # cpu delta 100 / sys delta 1000 * 4 cpus * 100 = 40.0%; mem 100-40 = 60 of 1000
+    assert _compute_stats(body) == (40.0, 60, 1000)
+
+
+def test_compute_stats_malformed_returns_none() -> None:
+    assert _compute_stats({}) is None
+    assert _compute_stats({"cpu_stats": {}, "precpu_stats": {}, "memory_stats": {}}) is None
+
+
+def test_enrich_stats_fills_running_only(monkeypatch) -> None:
+    client = DockerStatusClient("/x.sock")
+    monkeypatch.setattr(client, "stats", lambda cid: (12.5, 500, 1000))
+    from mediacore.docker_status import ContainerStatus
+
+    running = ContainerStatus("a", "running", "Up", None, True, id="a1")
+    stopped = ContainerStatus("b", "exited", "Exited", None, False, id="b1")
+    client.enrich_stats([running, stopped])
+    assert running.cpu_pct == 12.5 and running.mem_used == 500
+    assert stopped.cpu_pct is None  # stopped containers are skipped

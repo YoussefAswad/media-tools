@@ -146,12 +146,20 @@ class Worker(threading.Thread):
 
     def _collect_docker(self) -> None:
         mon = self.services.config.monitoring
-        assert self.services.docker is not None
-        samples, evals, _ = collect_containers(
-            self.services.docker, mon.docker, mon.container_alert
-        )
+        client = self.services.docker
+        assert client is not None
+        samples, evals, containers = collect_containers(client, mon.docker, mon.container_alert)
         self.services.metrics.record_many(samples)
         self.services.alerts.evaluate(evals, self.services.alert_channels())
+        if containers is None:  # socket unreachable — flag it, keep last good snapshot? no: mark stale
+            self.services.docker_ok = False
+            return
+        # Per-container CPU/mem for the UI list (parallel; running containers only). The web routes
+        # read this snapshot rather than hitting the socket per request.
+        if mon.docker.stats:
+            client.enrich_stats(containers)
+        self.services.docker_snapshot = containers
+        self.services.docker_ok = True
 
     # --- periodic maintenance -------------------------------------------------------
     def _maybe_maintain(self) -> None:
