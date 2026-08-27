@@ -14,6 +14,7 @@ import time
 
 from mediacore.notify import PRIORITY_FAILURE, PRIORITY_STATUS, NtfyMessage
 
+from orchestrator.collectors import collect_disks
 from orchestrator.dispatch import Dispatcher, InsufficientSpaceError
 from orchestrator.queue import DEAD
 from orchestrator.services import Services
@@ -40,6 +41,7 @@ class Worker(threading.Thread):
         self._busy = False
         self.last_beat = time.monotonic()
         self._last_maintenance = 0.0  # run maintenance on the first idle tick
+        self._last_collect = 0.0  # sample metrics on the first idle tick
 
     def stop(self) -> None:
         self._stop.set()
@@ -60,6 +62,7 @@ class Worker(threading.Thread):
             self.last_beat = time.monotonic()
             try:
                 self._maybe_maintain()
+                self._maybe_collect()
                 job = self.services.queue.claim_next()
             except Exception as exc:  # never let the loop thread die silently
                 log.exception("worker loop error: %s", exc)
@@ -112,6 +115,26 @@ class Worker(threading.Thread):
                     )
                 )
 
+    # --- metric collection ----------------------------------------------------------
+    def _maybe_collect(self) -> None:
+        """Sample monitored metrics on their own monotonic gate (independent of maintenance),
+        best-effort — a collection error must not touch the job loop or the heartbeat."""
+        mon = self.services.config.monitoring
+        if not mon.enabled:
+            return
+        now = time.monotonic()
+        if now - self._last_collect < mon.disk_interval_s:
+            return
+        self._last_collect = now
+        with contextlib.suppress(Exception):
+            self._collect()
+
+    def _collect(self) -> None:
+        mon = self.services.config.monitoring
+        samples, evals = collect_disks(mon.disks, mon.disk_alert)
+        self.services.metrics.record_many(samples)
+        self.services.alerts.evaluate(evals, self.services.alert_channels())
+
     # --- periodic maintenance -------------------------------------------------------
     def _maybe_maintain(self) -> None:
         cfg = self.services.config
@@ -126,8 +149,13 @@ class Worker(threading.Thread):
         cfg = self.services.config
         q = self.services.queue
 
-        # 1. retention: trim finished jobs + old audit rows (JSONL kept as source of truth).
-        removed = q.prune_old(cfg.retention_days) + self.services.audit.prune_old(cfg.retention_days)
+        # 1. retention: trim finished jobs + old audit rows (JSONL kept as source of truth) and
+        #    old metric samples (their own retention window).
+        removed = (
+            q.prune_old(cfg.retention_days)
+            + self.services.audit.prune_old(cfg.retention_days)
+            + self.services.metrics.prune_old(cfg.monitoring.retention_days)
+        )
         if removed:
             log.info("retention pruned %d old rows", removed)
             self._maybe_vacuum()

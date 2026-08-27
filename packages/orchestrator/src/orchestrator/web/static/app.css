@@ -104,6 +104,7 @@ textarea {
 }
 .tile.ok { border-left-color: var(--ok); }
 .tile.fail { border-left-color: var(--fail); }
+.tile.warn { border-left-color: var(--warn); }
 .tile.queued { border-left-color: var(--accent); }
 .tile.skip { border-left-color: var(--skip); }
 .tile-value { font-size: 26px; font-weight: 700; line-height: 1; }
@@ -224,6 +225,16 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 .remaining.warn .remaining-fill { background: var(--warn); }
 .remaining.over .remaining-fill { background: var(--fail); }
 .remaining-sub { font-size: 12px; margin-top: 6px; }
+
+/* --- monitoring disk list: space the gauges off the card header, and drop the last card's
+   trailing margin so the enclosing card padding stays even --- */
+.mon-list { margin-top: 14px; }
+.mon-list .remaining:last-child { margin-bottom: 0; }
+/* Split each gauge into two equal columns so the usage bar is the SAME width on every card.
+   Otherwise the label column sizes to its text and a row carrying a growth estimate
+   (e.g. "+50 MB/day · >3 years to full") squeezes its bar narrower than a row without one. */
+.mon-list .remaining-main { flex: 1 1 0; min-width: 200px; }
+.mon-list .remaining-bar-wrap { flex: 1 1 0; }
 
 /* --- per-job live progress (active panel) --- */
 .jobbar { height: 6px; background: var(--code); border-radius: 999px; overflow: hidden; margin-top: 4px; max-width: 320px; }

@@ -19,8 +19,10 @@ from mediacore.models import ArrInstance
 from mediacore.notify import Notifier
 from mediacore.qbit import QbitClient
 
+from orchestrator.alerts import AlertEngine, Channel, InAppChannel, NtfyChannel
 from orchestrator.config import OrchestratorConfig, load_orchestrator_config
 from orchestrator.ledger import Cutoffs, Ledger
+from orchestrator.metrics import Metrics
 from orchestrator.queue import JobQueue
 
 
@@ -34,12 +36,22 @@ class Services:
     queue: JobQueue
     ledger: Ledger
     cutoffs: Cutoffs
+    metrics: Metrics
+    alerts: AlertEngine
     qbit: QbitClient | None = None
     jellyfin: JellyfinClient | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def arr_instance(self, app: str) -> ArrInstance | None:
         return getattr(self.config.arr, app, None)
+
+    def alert_channels(self) -> list[Channel]:
+        """The enabled alert delivery channels, rebuilt each call so ntfy always reflects the
+        current (hot-reloadable) config/notifier. Add Slack/email/webhook here."""
+        return [
+            InAppChannel(self.db),
+            NtfyChannel(self.notifier, self.config.monitoring.ntfy_topic),
+        ]
 
     def arr_client(self, app: str) -> ArrClient | None:
         inst = self.arr_instance(app)
@@ -70,6 +82,8 @@ def build_services(config_path: Path) -> Services:
     queue.requeue_stuck()
     ledger = Ledger(db)
     cutoffs = Cutoffs(db)
+    metrics = Metrics(db)
+    alerts = AlertEngine(db)
     qbit = QbitClient.from_config(config.qbit) if config.qbit else None
     jellyfin = JellyfinClient.from_config(config.jellyfin) if config.jellyfin else None
     return Services(
@@ -81,6 +95,8 @@ def build_services(config_path: Path) -> Services:
         queue=queue,
         ledger=ledger,
         cutoffs=cutoffs,
+        metrics=metrics,
+        alerts=alerts,
         qbit=qbit,
         jellyfin=jellyfin,
     )

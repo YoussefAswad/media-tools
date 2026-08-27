@@ -1,0 +1,27 @@
+{% for c in cards %}
+{% if c.missing %}
+<div class="remaining over">
+  <div class="remaining-main">
+    <div class="remaining-value">{{ c.label }}</div>
+    <div class="remaining-label"><span class="over-tag">unreachable</span> <span class="muted">· {{ c.path }}</span></div>
+  </div>
+</div>
+{% else %}
+<div class="remaining {{ c.tone }}">
+  <div class="remaining-main">
+    <div class="remaining-value">{{ c.label }}</div>
+    <div class="remaining-label">
+      {{ c.free }} free <span class="muted">· {{ c.used }} / {{ c.total }}</span>
+      {% if c.rate %}<span class="muted">· {{ c.rate }}</span>{% endif %}
+      {% if c.eta %}<span class="muted">· {{ c.eta }} to full</span>{% endif %}
+    </div>
+  </div>
+  <div class="remaining-bar-wrap">
+    <div class="remaining-bar"><div class="remaining-fill" style="width: {{ c.pct }}%"></div></div>
+    <div class="remaining-sub muted">{{ c.pct_label }}% used</div>
+  </div>
+</div>
+{% endif %}
+{% else %}
+<div class="empty muted">No disks configured. Add entries under <code>monitoring.disks</code> in Config.</div>
+{% endfor %}

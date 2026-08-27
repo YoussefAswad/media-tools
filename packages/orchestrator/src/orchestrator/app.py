@@ -6,6 +6,7 @@ import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, status
@@ -17,6 +18,7 @@ from jinja2 import pass_context
 from mediacore.config import find_default_config, parse_config, read_raw, save_text
 from pydantic import ValidationError
 
+from orchestrator.collectors import read_disk
 from orchestrator.config import OrchestratorConfig
 from orchestrator.ledger import MANUAL, QBITTORRENT
 from orchestrator.queue import CANCELED, DEAD, FAILED, PROCESSING, QUEUED
@@ -26,6 +28,7 @@ from orchestrator.util import (
     RANGES,
     human_bytes,
     human_duration,
+    humanize_days,
     kind_icon,
     parse_bytes,
     parse_range,
@@ -538,6 +541,101 @@ def rerun(request: Request, app_name: str = Form(...), path: str = Form(...)) ->
     }
     services.queue.enqueue("rerun", payload, label=f"re-run {Path(path).name}")
     return RedirectResponse("/", status_code=303)
+
+
+# --- monitoring -------------------------------------------------------------------------
+@app.get("/monitoring", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def monitoring_page(request: Request) -> HTMLResponse:
+    return _TEMPLATES.TemplateResponse(request, "monitoring.html", {})
+
+
+@app.get("/ui/mon-summary", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_mon_summary(request: Request) -> HTMLResponse:
+    services = services_of(request)
+    counts = services.alerts.counts()
+    crit = counts.get("crit", 0)
+    warn = counts.get("warn", 0)
+    disks = services.config.monitoring.disks
+    reports = [r for r in (read_disk(d) for d in disks) if r is not None]
+    ok_disks = sum(1 for r in reports if r.severity == "ok")
+    jc = services.queue.counts()
+    active_jobs = jc.get(QUEUED, 0) + jc.get(PROCESSING, 0)
+    tiles = [
+        ("Disks OK", f"{ok_disks}/{len(reports)}", "ok" if ok_disks == len(reports) else "fail"),
+        ("Critical", str(crit), "fail" if crit else "skip"),
+        ("Warnings", str(warn), "warn" if warn else "skip"),
+        ("Jobs active", str(active_jobs), "queued" if active_jobs else "skip"),
+    ]
+    return _TEMPLATES.TemplateResponse(request, "_summary.html", {"tiles": tiles})
+
+
+#: tone class for the reusable `.remaining` gauge, per alert severity.
+_DISK_TONE = {"ok": "", "warn": "warn", "crit": "over"}
+
+
+@app.get("/ui/mon-disks", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_mon_disks(request: Request) -> HTMLResponse:
+    services = services_of(request)
+    cards = []
+    for watch in services.config.monitoring.disks:
+        rep = read_disk(watch)
+        if rep is None:
+            cards.append({"label": watch.label, "path": str(watch.path), "missing": True})
+            continue
+        rate, eta = _disk_growth(services, rep)
+        cards.append(
+            {
+                "label": rep.label,
+                "path": rep.path,
+                "missing": False,
+                "tone": _DISK_TONE.get(rep.severity, ""),
+                "pct": min(rep.pct, 100),
+                "pct_label": round(rep.pct),
+                "free": human_bytes(rep.free),
+                "used": human_bytes(rep.used),
+                "total": human_bytes(rep.total),
+                "rate": rate,
+                "eta": eta,
+            }
+        )
+    return _TEMPLATES.TemplateResponse(request, "_mon_disks.html", {"cards": cards})
+
+
+def _disk_growth(services: Services, rep) -> tuple[str | None, str | None]:
+    """Estimate fill rate (bytes/day) and time-to-full from the last 7d of ``disk.used`` samples.
+    Returns human strings, or (None, None) when there isn't enough history / it isn't growing."""
+    series = services.metrics.series(f"disk.used:{rep.path}", since_days=7)
+    if len(series) < 2:
+        return None, None
+    (t0, v0), (t1, v1) = series[0], series[-1]
+    try:
+        span_days = (
+            datetime.fromisoformat(t1) - datetime.fromisoformat(t0)
+        ).total_seconds() / 86400
+    except ValueError:
+        return None, None
+    if span_days <= 0 or v1 <= v0:
+        return None, None
+    per_day = (v1 - v0) / span_days
+    rate = f"+{human_bytes(per_day)}/day"
+    eta = humanize_days(rep.free / per_day) if per_day > 0 else None
+    return rate, eta
+
+
+@app.get("/ui/mon-alerts", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_mon_alerts(request: Request) -> HTMLResponse:
+    alerts = services_of(request).alerts.active()
+    rows = [
+        {
+            "label": a.label,
+            "severity": a.severity,
+            "badge": "fail" if a.severity == "crit" else "warn",
+            "detail": a.detail or "",
+            "since": (a.since or "").replace("T", " ")[:16],
+        }
+        for a in alerts
+    ]
+    return _TEMPLATES.TemplateResponse(request, "_mon_alerts.html", {"alerts": rows})
 
 
 @app.get("/config", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])

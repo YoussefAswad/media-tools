@@ -6,8 +6,10 @@ from mediacore.audit import Audit, open_db
 from mediacore.models import ArrInstance, CoreConfig
 from mediacore.notify import Notifier
 from mediacore.probe import ProbeResult, Track
+from orchestrator.alerts import AlertEngine
 from orchestrator.config import OrchestratorConfig
 from orchestrator.ledger import Cutoffs, Ledger
+from orchestrator.metrics import Metrics
 from orchestrator.queue import JobQueue
 from orchestrator.services import Services
 
@@ -72,6 +74,8 @@ def build_test_services(tmp_path: Path, config: OrchestratorConfig | None = None
         queue=queue,
         ledger=Ledger(db),
         cutoffs=Cutoffs(db),
+        metrics=Metrics(db),
+        alerts=AlertEngine(db),
     )
 
 

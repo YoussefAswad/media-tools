@@ -1,0 +1,19 @@
+{% if alerts %}
+<table class="actions">
+  <thead>
+    <tr><th>Severity</th><th>What</th><th>Detail</th><th>Since</th></tr>
+  </thead>
+  <tbody>
+    {% for a in alerts %}
+    <tr>
+      <td><span class="badge {{ a.badge }}">{{ a.severity }}</span></td>
+      <td class="nowrap">{{ a.label }}</td>
+      <td>{{ a.detail }}</td>
+      <td class="nowrap muted">{{ a.since }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty muted">No active alerts — all clear.</div>
+{% endif %}

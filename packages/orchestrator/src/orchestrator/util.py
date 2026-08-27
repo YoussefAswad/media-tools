@@ -40,6 +40,24 @@ def human_duration(ms: int | float | None) -> str:
 # Two genuinely different scales: the plain form is decimal SI (GB = 1000^3), the IEC form is
 # binary (GiB = 1024^3, what qBittorrent counts in). A UI toggle picks which to render, so the
 # same byte count shows a different magnitude in each. Suffixes are matched to their scale.
+def humanize_days(days: float) -> str:
+    """A coarse human span for disk time-to-full: '~3 days', '~5 weeks', '~2 years'. Clamps a
+    very long horizon to '>1 year' so a nearly-flat disk doesn't render an absurd number."""
+    if days <= 0:
+        return ""
+    if days < 1:
+        return "<1 day"
+    if days < 14:
+        return f"~{round(days)} days"
+    if days < 90:
+        return f"~{round(days / 7)} weeks"
+    if days < 365:
+        return f"~{round(days / 30)} months"
+    if days < 365 * 3:
+        return f"~{days / 365:.1f} years"
+    return ">3 years"
+
+
 _UNITS = ["B", "KB", "MB", "GB", "TB", "PB"]
 _UNITS_IEC = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
 _UNIT_FACTORS = {

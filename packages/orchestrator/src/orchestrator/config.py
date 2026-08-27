@@ -19,8 +19,62 @@ class ServerConfig(BaseModel):
     port: int = 8000
 
 
+class DiskWatch(BaseModel):
+    """One watched filesystem, identified by a path visible *inside the container*.
+
+    A breach is raised when EITHER the fill percentage OR the absolute free space crosses its
+    threshold (whichever trips first). Absolute-free values are human strings ("300GB", "50GiB")
+    parsed with :func:`orchestrator.util.parse_bytes`. Any threshold left ``None`` is ignored.
+    """
+
+    path: Path
+    label: str
+    warn_pct: int | None = 85
+    crit_pct: int | None = 95
+    warn_free: str | None = None
+    crit_free: str | None = "50GB"
+
+
+class AlertRule(BaseModel):
+    """Debounce/hysteresis timing for a family of alerts (thresholds live on the metric itself,
+    e.g. per-``DiskWatch``; for scalar metrics ``warn``/``crit`` are the thresholds)."""
+
+    enabled: bool = True
+    warn: float | None = None
+    crit: float | None = None
+    #: the raw condition must hold this long before a (non-ok) alert fires — kills transient spikes.
+    sustain_s: int = 300
+    #: return-to-normal must hold this long before a recovery notice fires — hysteresis vs flapping.
+    clear_s: int = 120
+    #: minimum re-notify interval while a breach persists (reminder throttle).
+    cooldown_s: int = 3600
+
+
+class MonitoringConfig(BaseModel):
+    """System-monitoring feature: watched disks + alert timing. Phase 1 covers disk usage; later
+    phases add container/system/SMART sources onto the same collect→store→alert→UI pipeline."""
+
+    enabled: bool = True
+    #: how often disk usage is sampled (seconds). Cheap (one statvfs per path).
+    disk_interval_s: int = 60
+    #: delete metric samples older than this many days (0 = keep forever).
+    retention_days: int = 30
+    disks: list[DiskWatch] = Field(
+        default_factory=lambda: [
+            DiskWatch(path=Path("/data"), label="MASS"),
+            DiskWatch(path=Path("/state"), label="VAULT"),
+        ]
+    )
+    #: debounce/hysteresis for disk alerts (disks creep, so a long recovery hold + cooldown).
+    disk_alert: AlertRule = AlertRule(sustain_s=120, clear_s=300, cooldown_s=21600)
+    #: ntfy topic override for monitoring alerts (defaults to the status topic when unset).
+    ntfy_topic: str | None = None
+
+
 class OrchestratorConfig(CoreConfig):
     server: ServerConfig = ServerConfig()
+    #: system monitoring (watched disks, thresholds, alert timing).
+    monitoring: MonitoringConfig = MonitoringConfig()
     #: seasonal-shift show offsets (matched to a Sonarr series by ``name``).
     shows: list[ShowConfig] = Field(default_factory=list)
 

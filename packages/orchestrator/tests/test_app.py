@@ -39,6 +39,9 @@ webhook_secret: topsecret
 enable_seasonal_shift: false
 enable_quality_check: false
 enable_prune: false
+monitoring:
+  disks:
+    - {{ path: {tmp_path}, label: TMP }}
 """
     )
     return cfg
@@ -75,6 +78,20 @@ def test_webhook_test_event(client) -> None:
 def test_webhook_bad_secret(client) -> None:
     r = client.post("/arr/radarr", json={"eventType": "Test"}, headers={"X-Webhook-Token": "nope"})
     assert r.status_code == 401
+
+
+def test_monitoring_page(client) -> None:
+    r = client.get("/monitoring")
+    assert r.status_code == 200
+    assert "Monitoring" in r.text
+
+
+def test_mon_partials_render(client) -> None:
+    assert client.get("/ui/mon-summary").status_code == 200
+    disks = client.get("/ui/mon-disks")
+    assert disks.status_code == 200 and "TMP" in disks.text
+    alerts = client.get("/ui/mon-alerts")
+    assert alerts.status_code == 200 and "all clear" in alerts.text
 
 
 def test_webhook_download_enqueues(client) -> None:

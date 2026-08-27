@@ -75,6 +75,29 @@ dead_revive_max: 1            # times a dead job may be auto-revived (0 disables
 prune_min_free_multiplier: 1.3   # require free space >= source_size * this before pruning
 prune_low_space_backoff_s: 1800  # when short, defer the job this long (no attempt consumed)
 
+# System monitoring (Monitoring tab). Disk usage is read in-container via statvfs, so each watched
+# `path` must be one this container can see. With the default mounts, /data = the media disk and
+# /state = the config/backup disk. To watch another host filesystem, bind-mount it here first
+# (e.g. add `- /:/host:ro` to the service) and point `path` at it.
+monitoring:
+  enabled: true
+  disk_interval_s: 60          # how often disks are sampled (cheap: one statvfs per path)
+  retention_days: 30           # drop metric samples older than this (0 = keep forever)
+  disks:
+    - { path: /data,  label: MASS,  warn_pct: 85, crit_pct: 95, crit_free: 50GB }
+    - { path: /state, label: VAULT, warn_pct: 85, crit_pct: 95, crit_free: 20GB }
+    # To watch the HOST ROOT (system) disk, bind-mount the host root read-only into the
+    # container first (add `- /:/host:ro` to the media-orchestrator service, as the dashdot
+    # container does) and point a watch at it:
+    # - { path: /host, label: ROOT, warn_pct: 85, crit_pct: 95, crit_free: 5GB }
+  # A breach is raised when EITHER the fill % OR the absolute free space crosses its threshold.
+  # Any threshold left unset/null is ignored. warn_free/crit_free accept "50GB", "20GiB", etc.
+  disk_alert:                  # debounce/hysteresis (disks creep, so long holds avoid flapping)
+    sustain_s: 120             # breach must persist this long before alerting
+    clear_s: 300               # recovery must hold this long before "back to normal"
+    cooldown_s: 21600          # min re-notify interval while still breached (6h)
+  # ntfy_topic: system-health  # optional override; defaults to the ntfy status topic
+
 # seasonal-shift per-show offsets (matched to a Sonarr series by `name`).
 shows: []
 #  - name: "Some Anime"

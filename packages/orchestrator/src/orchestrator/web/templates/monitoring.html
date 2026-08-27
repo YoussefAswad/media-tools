@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block nav_mon %}active{% endblock %}
+{% block content %}
+<div class="summary" data-src="/ui/mon-summary" data-interval="5000">Loading…</div>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Active alerts</h2>
+  </div>
+  <div data-src="/ui/mon-alerts" data-interval="10000">Loading…</div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Disks</h2>
+    <span class="muted">fill % · free / total · growth</span>
+  </div>
+  <div class="mon-list" data-src="/ui/mon-disks" data-interval="60000">Loading…</div>
+</section>
+{% endblock %}
