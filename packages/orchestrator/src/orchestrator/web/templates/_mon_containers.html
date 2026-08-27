@@ -1,0 +1,18 @@
+{% if not enabled %}
+<div class="empty muted">Container monitoring is off. Enable <code>monitoring.docker</code> in Config
+  (needs the Docker socket bind-mounted).</div>
+{% elif unreachable %}
+<div class="empty muted">Docker socket unreachable — check the <code>/var/run/docker.sock</code> mount
+  and that the process is in the socket's group.</div>
+{% elif not dots %}
+<div class="empty muted">No containers reported.</div>
+{% else %}
+<div class="dotgrid">
+  {% for d in dots %}
+  <span class="dot-item" title="{{ d.title }}">
+    <span class="dot {{ d.tone }}"></span>
+    <span class="dot-name{% if d.watched %} watched{% endif %}">{{ d.name }}</span>
+  </span>
+  {% endfor %}
+</div>
+{% endif %}

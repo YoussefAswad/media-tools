@@ -566,6 +566,14 @@ def ui_mon_summary(request: Request) -> HTMLResponse:
         ("Warnings", str(warn), "warn" if warn else "skip"),
         ("Jobs active", str(active_jobs), "queued" if active_jobs else "skip"),
     ]
+    if services.docker is not None:
+        containers = services.docker.containers()
+        if containers is not None:
+            up = sum(1 for c in containers if c.up)
+            tiles.append(
+                ("Containers up", f"{up}/{len(containers)}",
+                 "ok" if up == len(containers) else "fail")
+            )
     return _TEMPLATES.TemplateResponse(request, "_summary.html", {"tiles": tiles})
 
 
@@ -636,6 +644,39 @@ def ui_mon_alerts(request: Request) -> HTMLResponse:
         for a in alerts
     ]
     return _TEMPLATES.TemplateResponse(request, "_mon_alerts.html", {"alerts": rows})
+
+
+@app.get("/ui/mon-containers", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_mon_containers(request: Request) -> HTMLResponse:
+    services = services_of(request)
+    watch = set(services.config.monitoring.docker.watch)
+    dots = []
+    unreachable = False
+    if services.docker is not None:
+        containers = services.docker.containers()
+        if containers is None:
+            unreachable = True
+        else:
+            for c in containers:
+                if not c.up:
+                    tone = "fail"
+                elif c.health == "unhealthy":
+                    tone = "warn"
+                else:
+                    tone = "ok"
+                dots.append(
+                    {
+                        "name": c.name,
+                        "tone": tone,
+                        "title": f"{c.name}: {c.status or c.state}",
+                        "watched": c.name in watch,
+                    }
+                )
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "_mon_containers.html",
+        {"dots": dots, "unreachable": unreachable, "enabled": services.docker is not None},
+    )
 
 
 @app.get("/config", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])

@@ -14,13 +14,18 @@ from pathlib import Path
 
 from mediacore.arr.client import ArrClient, client_for
 from mediacore.audit import Audit, open_db
+from mediacore.docker_status import DockerStatusClient
 from mediacore.jellyfin import JellyfinClient
 from mediacore.models import ArrInstance
 from mediacore.notify import Notifier
 from mediacore.qbit import QbitClient
 
 from orchestrator.alerts import AlertEngine, Channel, InAppChannel, NtfyChannel
-from orchestrator.config import OrchestratorConfig, load_orchestrator_config
+from orchestrator.config import (
+    MonitoringConfig,
+    OrchestratorConfig,
+    load_orchestrator_config,
+)
 from orchestrator.ledger import Cutoffs, Ledger
 from orchestrator.metrics import Metrics
 from orchestrator.queue import JobQueue
@@ -40,6 +45,7 @@ class Services:
     alerts: AlertEngine
     qbit: QbitClient | None = None
     jellyfin: JellyfinClient | None = None
+    docker: DockerStatusClient | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def arr_instance(self, app: str) -> ArrInstance | None:
@@ -69,6 +75,7 @@ class Services:
             self.jellyfin = (
                 JellyfinClient.from_config(new_cfg.jellyfin) if new_cfg.jellyfin else None
             )
+            self.docker = _docker_client(new_cfg.monitoring)
 
 
 def build_services(config_path: Path) -> Services:
@@ -86,6 +93,7 @@ def build_services(config_path: Path) -> Services:
     alerts = AlertEngine(db)
     qbit = QbitClient.from_config(config.qbit) if config.qbit else None
     jellyfin = JellyfinClient.from_config(config.jellyfin) if config.jellyfin else None
+    docker = _docker_client(config.monitoring)
     return Services(
         config=config,
         config_path=config_path,
@@ -99,4 +107,12 @@ def build_services(config_path: Path) -> Services:
         alerts=alerts,
         qbit=qbit,
         jellyfin=jellyfin,
+        docker=docker,
     )
+
+
+def _docker_client(mon: MonitoringConfig) -> DockerStatusClient | None:
+    """A Docker socket client when container monitoring is enabled, else None."""
+    if not mon.docker.enabled:
+        return None
+    return DockerStatusClient(str(mon.docker.socket))

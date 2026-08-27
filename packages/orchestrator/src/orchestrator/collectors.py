@@ -9,8 +9,10 @@ import logging
 import shutil
 from dataclasses import dataclass
 
+from mediacore.docker_status import ContainerStatus, DockerStatusClient
+
 from orchestrator.alerts import CRIT, OK, WARN, Evaluation
-from orchestrator.config import AlertRule, DiskWatch
+from orchestrator.config import AlertRule, DiskWatch, DockerSource
 from orchestrator.metrics import Sample
 from orchestrator.util import human_bytes, parse_bytes
 
@@ -88,3 +90,39 @@ def collect_disks(
             )
         )
     return samples, evals
+
+
+def _container_severity(c: ContainerStatus) -> str:
+    """down = crit; up-but-unhealthy = warn; up (healthy / starting / no healthcheck) = ok."""
+    if not c.up:
+        return CRIT
+    if c.health == "unhealthy":
+        return WARN
+    return OK
+
+
+def collect_containers(
+    client: DockerStatusClient, cfg: DockerSource, rule: AlertRule
+) -> tuple[list[Sample], list[Evaluation], list[ContainerStatus] | None]:
+    """Poll container state. Returns ``(samples, evaluations, containers)``. ``containers`` is the
+    full list for the UI (None when the socket is unreachable — best-effort, no alert). Alerting is
+    limited to ``cfg.watch`` (all containers when the list is empty)."""
+    containers = client.containers()
+    if containers is None:
+        return [], [], None
+    up = sum(1 for c in containers if c.up)
+    samples = [
+        Sample("docker.containers_up", float(up)),
+        Sample("docker.containers_total", float(len(containers))),
+    ]
+    watch = set(cfg.watch)
+    evals: list[Evaluation] = []
+    for c in containers:
+        if watch and c.name not in watch:
+            continue
+        sev = _container_severity(c)
+        detail = f"{c.name}: {c.status}" if c.status else f"{c.name}: {c.state}"
+        evals.append(
+            Evaluation(key=f"container:{c.name}", label=c.name, severity=sev, detail=detail, rule=rule)
+        )
+    return samples, evals, containers

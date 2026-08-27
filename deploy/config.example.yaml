@@ -96,6 +96,18 @@ monitoring:
     sustain_s: 120             # breach must persist this long before alerting
     clear_s: 300               # recovery must hold this long before "back to normal"
     cooldown_s: 21600          # min re-notify interval while still breached (6h)
+  # Container up/down monitoring via the Docker Engine API. Requires the socket bind-mounted into
+  # this container (add `- /var/run/docker.sock:/var/run/docker.sock:ro` to the service) and,
+  # since it runs unprivileged, membership in the socket's group (`group_add: ["<docker gid>"]`).
+  docker:
+    enabled: false             # set true once the socket is mounted
+    socket: /var/run/docker.sock
+    interval_s: 30             # how often container state is polled (cheap, local socket)
+    watch: []                  # names to alert on when down/unhealthy; [] = every container seen
+  container_alert:             # short sustain rides out a normal restart/redeploy
+    sustain_s: 60              # a container must stay down this long before alerting
+    clear_s: 0                 # recover as soon as it's back
+    cooldown_s: 1800           # min re-notify interval while still down (30m)
   # ntfy_topic: system-health  # optional override; defaults to the ntfy status topic
 
 # seasonal-shift per-show offsets (matched to a Sonarr series by `name`).

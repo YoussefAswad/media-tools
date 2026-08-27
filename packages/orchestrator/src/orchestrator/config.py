@@ -50,6 +50,20 @@ class AlertRule(BaseModel):
     cooldown_s: int = 3600
 
 
+class DockerSource(BaseModel):
+    """Container up/down monitoring via the Docker Engine API over the local UNIX socket. The
+    socket must be bind-mounted into the container (read-only is enough) and the process must be
+    in its group. Disabled by default — enabling it requires that mount."""
+
+    enabled: bool = False
+    socket: Path = Path("/var/run/docker.sock")
+    #: how often container state is polled (seconds). Cheap (a local socket call).
+    interval_s: int = 30
+    #: container names to alert on when down/unhealthy. Empty = alert on every container seen.
+    #: (The UI always displays *all* containers regardless of this list.)
+    watch: list[str] = Field(default_factory=list)
+
+
 class MonitoringConfig(BaseModel):
     """System-monitoring feature: watched disks + alert timing. Phase 1 covers disk usage; later
     phases add container/system/SMART sources onto the same collect→store→alert→UI pipeline."""
@@ -67,6 +81,10 @@ class MonitoringConfig(BaseModel):
     )
     #: debounce/hysteresis for disk alerts (disks creep, so a long recovery hold + cooldown).
     disk_alert: AlertRule = AlertRule(sustain_s=120, clear_s=300, cooldown_s=21600)
+    #: container up/down monitoring (needs the docker socket bind-mounted).
+    docker: DockerSource = DockerSource()
+    #: debounce/hysteresis for container alerts (short sustain survives a restart/redeploy).
+    container_alert: AlertRule = AlertRule(sustain_s=60, clear_s=0, cooldown_s=1800)
     #: ntfy topic override for monitoring alerts (defaults to the status topic when unset).
     ntfy_topic: str | None = None
 

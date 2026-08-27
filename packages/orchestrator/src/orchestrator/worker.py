@@ -14,7 +14,7 @@ import time
 
 from mediacore.notify import PRIORITY_FAILURE, PRIORITY_STATUS, NtfyMessage
 
-from orchestrator.collectors import collect_disks
+from orchestrator.collectors import collect_containers, collect_disks
 from orchestrator.dispatch import Dispatcher, InsufficientSpaceError
 from orchestrator.queue import DEAD
 from orchestrator.services import Services
@@ -41,7 +41,8 @@ class Worker(threading.Thread):
         self._busy = False
         self.last_beat = time.monotonic()
         self._last_maintenance = 0.0  # run maintenance on the first idle tick
-        self._last_collect = 0.0  # sample metrics on the first idle tick
+        self._last_disk = 0.0  # sample disks on the first idle tick
+        self._last_docker = 0.0  # sample containers on the first idle tick
 
     def stop(self) -> None:
         self._stop.set()
@@ -117,21 +118,38 @@ class Worker(threading.Thread):
 
     # --- metric collection ----------------------------------------------------------
     def _maybe_collect(self) -> None:
-        """Sample monitored metrics on their own monotonic gate (independent of maintenance),
-        best-effort — a collection error must not touch the job loop or the heartbeat."""
+        """Sample monitored metrics, each source on its own monotonic gate (independent of
+        maintenance and of each other). Best-effort — a collection error must not touch the job
+        loop or the heartbeat."""
         mon = self.services.config.monitoring
         if not mon.enabled:
             return
         now = time.monotonic()
-        if now - self._last_collect < mon.disk_interval_s:
-            return
-        self._last_collect = now
-        with contextlib.suppress(Exception):
-            self._collect()
+        if now - self._last_disk >= mon.disk_interval_s:
+            self._last_disk = now
+            with contextlib.suppress(Exception):
+                self._collect_disks()
+        if (
+            mon.docker.enabled
+            and self.services.docker is not None
+            and now - self._last_docker >= mon.docker.interval_s
+        ):
+            self._last_docker = now
+            with contextlib.suppress(Exception):
+                self._collect_docker()
 
-    def _collect(self) -> None:
+    def _collect_disks(self) -> None:
         mon = self.services.config.monitoring
         samples, evals = collect_disks(mon.disks, mon.disk_alert)
+        self.services.metrics.record_many(samples)
+        self.services.alerts.evaluate(evals, self.services.alert_channels())
+
+    def _collect_docker(self) -> None:
+        mon = self.services.config.monitoring
+        assert self.services.docker is not None
+        samples, evals, _ = collect_containers(
+            self.services.docker, mon.docker, mon.container_alert
+        )
         self.services.metrics.record_many(samples)
         self.services.alerts.evaluate(evals, self.services.alert_channels())
 
