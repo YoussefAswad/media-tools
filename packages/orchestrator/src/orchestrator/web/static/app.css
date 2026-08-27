@@ -133,10 +133,13 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 .card-head h2 a::after { content: " →"; color: var(--muted); font-weight: 400; }
 /* three-across row of compact widgets (collapses on small screens). Two-class selector so it
    wins over the single-class `.grid` mobile rules below. */
-/* align-items:start so a short widget (e.g. the worker's single pill) doesn't stretch to match
-   the tallest card in the row */
-.grid.grid-3 { grid-template-columns: repeat(3, 1fr); align-items: start; }
+.grid.grid-3 { grid-template-columns: repeat(3, 1fr); }
 @media (max-width: 760px) { .grid.grid-3 { grid-template-columns: 1fr; } }
+/* equal-height cards (default stretch); a short widget (worker pill, container count) centers its
+   content vertically so it fills the card cleanly instead of clinging under the header */
+.grid.grid-3 > .card { display: flex; flex-direction: column; }
+.grid.grid-3 > .card > [data-src] { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; }
+.grid.grid-3 .remaining { margin-bottom: 0; }
 /* compact container-widget problem list (overview) */
 .prob-list { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
 
