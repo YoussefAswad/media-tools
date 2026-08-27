@@ -154,6 +154,31 @@ The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — *
     worker also runs periodic maintenance (retention prune of jobs+actions >`retention_days`,
     bounded dead-letter auto-revive, quota-usage ntfy alerts) on its own thread between claims.
 
+11. **Monitoring metrics come from other containers, not the orchestrator's own namespace.** The
+    Monitoring tab (`monitoring.*` config) reads external best-effort clients in `mediacore`
+    (`docker_status`, `dashdot`, `scrutiny`), each collected by the worker on its own interval gate
+    and cached as a snapshot on `Services` (the web routes read the snapshot, never the socket/API
+    per request). Hard-won gotchas when extending it:
+    - **dashdot on the compose bridge reports its OWN container's network**, not the host NIC — its
+      `network` widget is useless there (CPU/temp/RAM are fine, they come from its `/:/mnt/host`
+      mount). Real host throughput needs dashdot in `network_mode: host`; then it loses its compose
+      DNS name, so **every bridge consumer must switch to `host.docker.internal`** (needs
+      `extra_hosts: ["host.docker.internal:host-gateway"]`) — that's the orchestrator AND the Caddy
+      route (`reverse_proxy host.docker.internal:${DASH_PORT}`, then force-recreate caddy per
+      pitfall 8). `DASHDOT_PORT` sets its host port so the existing URL/route is preserved.
+    - **The Docker socket is `root:docker` (gid 964 on this host)** — the UID-1000 orchestrator
+      needs `group_add: ["<gid>"]` to read `/var/run/docker.sock:ro`. Per-container CPU/mem needs
+      the stats API (~1s each) so it's fetched in parallel for running containers only.
+    - **Scrutiny's `/api/summary` nests devices under `data.summary.<wwn>`** (one level deeper than
+      its docs imply). **USB-bridge drives (e.g. Seagate Expansion) usually don't expose SMART** —
+      the internal NVMe/SATA disks do; don't expect the USB media disk to appear.
+    - **Alert thresholds are host-specific — measure before trusting** (see pitfall 9's spirit): the
+      Ryzen 7 5800H's Tctl sensor idles ~82-86°C, so the default 75/85 CPU-temp thresholds page
+      constantly; this host runs 92/97. The alert engine (`orchestrator/alerts.py`) debounces
+      (`sustain_s`), applies recovery hysteresis (`clear_s`), de-dupes, and throttles reminders
+      (`cooldown_s`) — a config file edited on disk is **not** hot-reloaded (only the Config-tab
+      save calls `reload_config`); a direct edit needs a container restart/recreate.
+
 ## Origin note
 
 mkvprune and seasonal-shift were **copied** (not `git subtree`-imported) from

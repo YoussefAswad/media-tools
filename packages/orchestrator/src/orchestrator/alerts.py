@@ -290,6 +290,25 @@ class AlertEngine:
         ).fetchall()
         return {r["active"]: r["c"] for r in rows}
 
+    def recent_events(self, *, limit: int = 50) -> list[dict]:
+        """Most recent alert transitions (alert / escalate / recovery / reminder …), newest first."""
+        rows = self.db.execute(
+            "SELECT ts, label, severity, detail, kind FROM alert_events ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def prune_old(self, days: int) -> int:
+        """Delete alert_events older than ``days`` (the state table is kept — it's current status).
+        Returns rows removed; non-positive disables."""
+        if days <= 0:
+            return 0
+        cutoff = _iso(_now() - _dt.timedelta(days=days))
+        with self._lock:
+            cur = self.db.execute("DELETE FROM alert_events WHERE ts<=?", (cutoff,))
+            self.db.commit()
+            return cur.rowcount
+
 
 def _transition_kind(old: str, new: str) -> str:
     if new == OK:

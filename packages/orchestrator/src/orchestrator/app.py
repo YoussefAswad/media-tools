@@ -647,6 +647,26 @@ def ui_mon_alerts(request: Request) -> HTMLResponse:
     return _TEMPLATES.TemplateResponse(request, "_mon_alerts.html", {"alerts": rows})
 
 
+#: alert-event kind → badge tone (recovery reads as "ok", everything else by severity).
+_EVENT_TONE = {"recovery": "ok", "deescalate": "warn"}
+
+
+@app.get("/ui/mon-events", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_mon_events(request: Request) -> HTMLResponse:
+    events = services_of(request).alerts.recent_events(limit=50)
+    rows = [
+        {
+            "when": (e["ts"] or "").replace("T", " ")[:16],
+            "label": e["label"],
+            "kind": e["kind"],
+            "badge": _EVENT_TONE.get(e["kind"]) or ("fail" if e["severity"] == "crit" else "warn"),
+            "detail": e["detail"] or "",
+        }
+        for e in events
+    ]
+    return _TEMPLATES.TemplateResponse(request, "_mon_events.html", {"events": rows})
+
+
 def _rule_tone(value: float, rule) -> str:
     """Tile tone (ok/warn/fail) for a higher-is-worse value against a warn/crit rule."""
     if rule.crit is not None and value >= rule.crit:

@@ -1,0 +1,21 @@
+{% if events %}
+<div class="scroll-y">
+  <table class="actions">
+    <thead>
+      <tr><th>When</th><th>What</th><th>Event</th><th>Detail</th></tr>
+    </thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td class="nowrap muted">{{ e.when }}</td>
+        <td class="nowrap">{{ e.label }}</td>
+        <td><span class="badge {{ e.badge }}">{{ e.kind }}</span></td>
+        <td>{{ e.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty muted">No alert events recorded yet.</div>
+{% endif %}

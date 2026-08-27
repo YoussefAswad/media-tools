@@ -63,6 +63,26 @@ orchestrator.example.com {
 docker compose up -d --force-recreate caddy
 ```
 
+## Monitoring tab
+
+The web UI's **Monitoring** tab watches disk usage, host system metrics, container up/down, and
+drive SMART, with threshold alerting to ntfy + an in-app view. Everything is configured under the
+`monitoring:` block in `config.yaml` (see `config.example.yaml` for the full annotated schema) and
+is **off by default per source** except disk usage. Each source is a best-effort client — if it's
+unreachable the tab shows a hint and the worker keeps running.
+
+| Source | Needs | Notes |
+|---|---|---|
+| **Disks** | nothing (uses paths already mounted) | watch any path the container can `stat`; % or absolute-free thresholds. To watch the host root, bind-mount it (e.g. `- /etc:/hostroot:ro`) and point a watch at it. |
+| **Containers** | `- /var/run/docker.sock:/var/run/docker.sock:ro` + `group_add: ["<docker gid>"]` | up/down + per-container CPU/mem. `docker.watch` limits *alerting* (the list always shows all). |
+| **System** (CPU/RAM/temps/net) | a reachable **dashdot** container | reads dashdot's REST API — no host access granted to the orchestrator. **dashdot must run `network_mode: host`** for the network widget to read the real NIC (on the bridge it only sees its own interface); then reach it via `host.docker.internal` (`extra_hosts: ["host.docker.internal:host-gateway"]`). |
+| **Drives (SMART)** | a **Scrutiny** sidecar (`SYS_RAWIO`/`SYS_ADMIN` + disk devices) | reads Scrutiny's API — the collector holds the raw device access. USB-bridge drives often don't expose SMART. |
+
+Alert rules debounce (`sustain_s`), apply recovery hysteresis (`clear_s`), de-dupe, and throttle
+reminders (`cooldown_s`); **thresholds are host-specific — calibrate against real readings** (e.g.
+a Ryzen Tctl sensor idles hot, so raise the CPU-temp thresholds). Editing `config.yaml` on disk is
+not hot-reloaded — save via the Config tab, or restart the container.
+
 ## Standalone tools
 
 Each tool still runs on its own (outside the orchestrator):

@@ -116,6 +116,22 @@ def test_disabled_rule_does_not_fire(tmp_path, monkeypatch) -> None:
     assert cap.events == []
 
 
+def test_recent_events_and_prune(tmp_path, monkeypatch) -> None:
+    eng, clock = _engine(tmp_path, monkeypatch)
+    inapp = InAppChannel(eng.db)
+    eng.evaluate([_ev(WARN)], [inapp])
+    clock.advance(130)
+    eng.evaluate([_ev(WARN)], [inapp])  # alert event logged
+    events = eng.recent_events(limit=10)
+    assert len(events) == 1
+    assert events[0]["kind"] == "alert" and events[0]["label"] == "D"
+    # prune: the event is "now"; a 1-day prune keeps it, and advancing the clock past it removes it
+    assert eng.prune_old(1) == 0
+    clock.advance(2 * 86400)
+    assert eng.prune_old(1) == 1
+    assert eng.recent_events() == []
+
+
 def test_inapp_channel_logs_and_active_read(tmp_path, monkeypatch) -> None:
     eng, clock = _engine(tmp_path, monkeypatch)
     inapp = InAppChannel(eng.db)

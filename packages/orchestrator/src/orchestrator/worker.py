@@ -230,6 +230,7 @@ class Worker(threading.Thread):
             q.prune_old(cfg.retention_days)
             + self.services.audit.prune_old(cfg.retention_days)
             + self.services.metrics.prune_old(cfg.monitoring.retention_days)
+            + self.services.alerts.prune_old(cfg.monitoring.retention_days)
         )
         if removed:
             log.info("retention pruned %d old rows", removed)

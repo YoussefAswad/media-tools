@@ -101,6 +101,8 @@ def test_mon_partials_render(client) -> None:
     smart = client.get("/ui/mon-smart")
     # SMART monitoring is off in the test config → the partial shows the enable hint
     assert smart.status_code == 200 and "monitoring.smart" in smart.text
+    events = client.get("/ui/mon-events")
+    assert events.status_code == 200 and "No alert events" in events.text
 
 
 def test_webhook_download_enqueues(client) -> None:
