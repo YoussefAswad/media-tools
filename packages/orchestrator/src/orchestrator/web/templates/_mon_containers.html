@@ -9,19 +9,21 @@
 {% elif not rows %}
 <div class="empty muted">No containers reported.</div>
 {% else %}
-<table class="actions">
-  <thead>
-    <tr><th>Container</th><th>State</th><th>CPU</th><th>Memory</th></tr>
-  </thead>
-  <tbody>
-    {% for r in rows %}
-    <tr>
-      <td class="nowrap{% if r.watched %} watched{% endif %}">{{ r.name }}</td>
-      <td><span class="badge {{ r.tone }}">{{ r.label }}</span></td>
-      <td class="nowrap">{{ r.cpu }}</td>
-      <td class="nowrap">{{ r.mem }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="scroll-y">
+  <table class="actions">
+    <thead>
+      <tr><th>Container</th><th>State</th><th>CPU</th><th>Memory</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="nowrap{% if r.watched %} watched{% endif %}">{{ r.name }}</td>
+        <td><span class="badge {{ r.tone }}">{{ r.label }}</span></td>
+        <td class="nowrap">{{ r.cpu }}</td>
+        <td class="nowrap">{{ r.mem }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endif %}

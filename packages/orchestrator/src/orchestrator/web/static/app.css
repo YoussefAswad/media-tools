@@ -234,6 +234,12 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 /* --- monitoring container list: watched containers stand out --- */
 td.watched { font-weight: 700; }
 td.watched::before { content: "★ "; color: var(--warn); }
+/* cap the container list height; scroll inside with the header pinned */
+.scroll-y { max-height: 360px; overflow-y: auto; }
+.scroll-y thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--card); box-shadow: inset 0 -1px 0 var(--border);
+}
 /* Split each gauge into two equal columns so the usage bar is the SAME width on every card.
    Otherwise the label column sizes to its text and a row carrying a growth estimate
    (e.g. "+50 MB/day · >3 years to full") squeezes its bar narrower than a row without one. */

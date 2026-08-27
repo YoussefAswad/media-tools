@@ -63,15 +63,23 @@
       .then(function (r) { return r.ok ? r.text() : null; })
       .then(function (html) {
         if (html === null || html === el._lastHtml) return;  // unchanged: don't touch the DOM
-        // preserve the inner table's horizontal scroll across the swap (on mobile the table
-        // itself is the overflow-x scroller, so a naive innerHTML reset would jump it to 0)
+        // preserve scroll across the swap: horizontal on the inner table (on mobile the table
+        // itself is the overflow-x scroller), and vertical on a .scroll-y container (the
+        // monitoring container list refreshes its HTML every poll, which would otherwise jump
+        // the reader back to the top)
         var scroller = el.querySelector("table.jobs, table.actions, table.ledger");
+        var vscroller = el.querySelector(".scroll-y");
         var sx = scroller ? scroller.scrollLeft : 0;
+        var sy = vscroller ? vscroller.scrollTop : 0;
         el.innerHTML = html;
         el._lastHtml = html;
         if (sx) {
           var next = el.querySelector("table.jobs, table.actions, table.ledger");
           if (next) next.scrollLeft = sx;
+        }
+        if (sy) {
+          var vnext = el.querySelector(".scroll-y");
+          if (vnext) vnext.scrollTop = sy;
         }
       })
       .catch(function () {});
