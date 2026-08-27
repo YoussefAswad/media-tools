@@ -29,9 +29,12 @@
 <section class="card">
   <div class="card-head">
     <h2>Disks</h2>
-    <span class="muted">fill % · free / total · growth</span>
+    <div class="filters" id="unit-filter" title="Display units: GB = decimal (1000), GiB = binary (1024)">
+      <button data-units="" class="chip active">GB</button>
+      <button data-units="iec" class="chip">GiB</button>
+    </div>
   </div>
-  <div class="mon-list" data-src="/ui/mon-disks" data-interval="60000">Loading…</div>
+  <div class="mon-list" data-src="/ui/mon-disks" data-interval="60000" data-unit-aware>Loading…</div>
 </section>
 
 <section class="card">

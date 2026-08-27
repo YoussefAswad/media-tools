@@ -594,15 +594,16 @@ _DISK_TONE = {"ok": "", "warn": "warn", "crit": "over"}
 
 
 @app.get("/ui/mon-disks", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
-def ui_mon_disks(request: Request) -> HTMLResponse:
+def ui_mon_disks(request: Request, units: str | None = None) -> HTMLResponse:
     services = services_of(request)
+    iec = _use_iec(units)
     cards = []
     for watch in services.config.monitoring.disks:
         rep = read_disk(watch)
         if rep is None:
             cards.append({"label": watch.label, "path": str(watch.path), "missing": True})
             continue
-        rate, eta = _disk_growth(services, rep)
+        rate, eta = _disk_growth(services, rep, iec=iec)
         cards.append(
             {
                 "label": rep.label,
@@ -611,9 +612,9 @@ def ui_mon_disks(request: Request) -> HTMLResponse:
                 "tone": _DISK_TONE.get(rep.severity, ""),
                 "pct": min(rep.pct, 100),
                 "pct_label": round(rep.pct),
-                "free": human_bytes(rep.free),
-                "used": human_bytes(rep.used),
-                "total": human_bytes(rep.total),
+                "free": human_bytes(rep.free, iec=iec),
+                "used": human_bytes(rep.used, iec=iec),
+                "total": human_bytes(rep.total, iec=iec),
                 "rate": rate,
                 "eta": eta,
             }
@@ -621,7 +622,7 @@ def ui_mon_disks(request: Request) -> HTMLResponse:
     return _TEMPLATES.TemplateResponse(request, "_mon_disks.html", {"cards": cards})
 
 
-def _disk_growth(services: Services, rep) -> tuple[str | None, str | None]:
+def _disk_growth(services: Services, rep, *, iec: bool = False) -> tuple[str | None, str | None]:
     """Estimate fill rate (bytes/day) and time-to-full from the last 7d of ``disk.used`` samples.
     Returns human strings, or (None, None) when there isn't enough history / it isn't growing."""
     series = services.metrics.series(f"disk.used:{rep.path}", since_days=7)
@@ -637,7 +638,7 @@ def _disk_growth(services: Services, rep) -> tuple[str | None, str | None]:
     if span_days <= 0 or v1 <= v0:
         return None, None
     per_day = (v1 - v0) / span_days
-    rate = f"+{human_bytes(per_day)}/day"
+    rate = f"+{human_bytes(per_day, iec=iec)}/day"
     eta = humanize_days(rep.free / per_day) if per_day > 0 else None
     return rate, eta
 
