@@ -52,7 +52,8 @@ class ScrutinyClient:
         data = self._get_json("/api/summary")
         if not isinstance(data, dict):
             return None
-        payload = data.get("data")
+        # shape: {"success": true, "data": {"summary": {"<wwn>": {device, smart, ...}}}}
+        payload = (data.get("data") or {}).get("summary")
         if not isinstance(payload, dict):
             return None
         out: list[DriveStatus] = []

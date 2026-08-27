@@ -2,17 +2,20 @@ from __future__ import annotations
 
 from mediacore.scrutiny import ScrutinyClient
 
+# real Scrutiny shape: data -> summary -> {wwn: {device, smart}}
 _SUMMARY = {
     "success": True,
     "data": {
-        "0xabc": {
-            "device": {"device_name": "sda", "model_name": "Seagate", "device_status": 0},
-            "smart": {"temp": 38, "power_on_hours": 12000},
-        },
-        "0xdef": {
-            "device": {"device_name": "nvme0n1", "model_name": "Samsung", "device_status": 2},
-            "smart": {"temp": 45, "power_on_hours": 8000},
-        },
+        "summary": {
+            "0xabc": {
+                "device": {"device_name": "sda", "model_name": "Seagate", "device_status": 0},
+                "smart": {"temp": 38, "power_on_hours": 12000},
+            },
+            "0xdef": {
+                "device": {"device_name": "nvme0n1", "model_name": "Samsung", "device_status": 2},
+                "smart": {"temp": 45, "power_on_hours": 8000},
+            },
+        }
     },
 }
 
@@ -39,9 +42,10 @@ def test_drives_unreachable(monkeypatch) -> None:
 
 def test_drives_unexpected_body(monkeypatch) -> None:
     assert _client(monkeypatch, {"success": False}).drives() is None  # no "data"
+    assert _client(monkeypatch, {"data": {}}).drives() is None  # no "summary"
 
 
 def test_drives_missing_smart_block(monkeypatch) -> None:
-    payload = {"data": {"0x1": {"device": {"device_name": "sdb", "device_status": 0}}}}
+    payload = {"data": {"summary": {"0x1": {"device": {"device_name": "sdb", "device_status": 0}}}}}
     drives = _client(monkeypatch, payload).drives()
     assert drives is not None and drives[0].temp is None and drives[0].power_on_hours is None
