@@ -171,6 +171,12 @@ class Dispatcher:
             outcome.steps.append(step)
             self._record(job_id, event, step, local_path)
             pruned_ran = True  # reached only if prune didn't raise (ok/skip)
+            # A cross-format remux (mp4→mkv) writes a sibling .mkv and removes the source, so the
+            # rest of the pipeline (seasonal-shift, jellyfin, final_local_path) must follow the new
+            # path. Self-verifying: only reassign when the .mkv exists and the source is gone.
+            new_local = os.path.splitext(local_path)[0] + ".mkv"
+            if new_local != local_path and os.path.exists(new_local) and not os.path.exists(local_path):
+                local_path = new_local
 
         # 4. seasonal-shift (moves the now-pruned file to its final numbering) -------
         if cfg.enable_seasonal_shift and event.app == "sonarr":

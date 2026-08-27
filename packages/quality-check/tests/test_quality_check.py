@@ -43,9 +43,9 @@ def mk(
     )
 
 
-def probe_of(*tracks: Track) -> ProbeResult:
+def probe_of(*tracks: Track, path: str = "/x/f.mkv") -> ProbeResult:
     return ProbeResult(
-        path="/x/f.mkv",
+        path=path,
         tracks=list(tracks),
         duration_s=100.0,
         chapter_entries=0,
@@ -126,6 +126,55 @@ def test_decide_skip_when_clean() -> None:
     d = decide(pr, POLICY)
     assert not d.needs_work
     assert d.subs_arg == "all"
+
+
+def _clean_tracks():
+    # a clean file: no foreign subs, no re-encode needed
+    return (
+        mk(0, "video", codec_name="hevc"),
+        mk(1, "audio", codec_name="dts", channels=6),  # passthrough
+        mk(2, "subtitle", codec_name="subrip", language="eng"),
+    )
+
+
+REMUX = PolicyConfig(remux_to_mkv=True)
+
+
+def test_remux_forces_work_on_clean_mp4() -> None:
+    d = decide(probe_of(*_clean_tracks(), path="/x/movie.mp4"), REMUX)
+    assert d.remux and d.needs_work
+    assert d.audio_arg == "all" and d.subs_arg == "all"  # keep everything
+    assert "remux" in d.summary()
+
+
+def test_remux_not_forced_on_clean_mkv() -> None:
+    d = decide(probe_of(*_clean_tracks(), path="/x/movie.mkv"), REMUX)
+    assert not d.remux and not d.needs_work
+
+
+def test_remux_ignores_unsupported_container() -> None:
+    # .avi is not an accepted mkvprune input — never force a remux that would just fail
+    d = decide(probe_of(*_clean_tracks(), path="/x/movie.avi"), REMUX)
+    assert not d.remux and not d.needs_work
+
+
+def test_remux_toggle_off_leaves_clean_mp4_alone() -> None:
+    d = decide(probe_of(*_clean_tracks(), path="/x/movie.mp4"), POLICY)  # remux_to_mkv False
+    assert not d.remux and not d.needs_work
+
+
+def test_remux_mp4_also_applies_subs_and_audio_policy() -> None:
+    # an mp4 that ALSO trips the existing rules still drops foreign subs + re-encodes
+    pr = probe_of(
+        mk(0, "video", codec_name="hevc"),
+        mk(1, "audio", codec_name="opus", channels=6),  # re-encode
+        mk(2, "subtitle", codec_name="subrip", language="fre"),  # drop
+        mk(3, "subtitle", codec_name="subrip", language="eng"),  # keep
+        path="/x/movie.mp4",
+    )
+    d = decide(pr, REMUX)
+    assert d.remux and d.needs_work
+    assert d.subs_arg == "3" and {t.mkv_id for t in d.audio_encode_tracks} == {1}
 
 
 def test_decide_keep_default_subtitle_guard() -> None:

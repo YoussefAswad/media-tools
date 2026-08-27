@@ -44,6 +44,8 @@ policy:
   audio_allow: [ac3, eac3, truehd, mlp, dts]
   audio_min_channels: 2
   audio_max_tracks: 2
+  remux_to_mkv: false          # true = always remux mp4/m4v/mov imports to MKV (pure-MKV library);
+                               # the subtitle/audio policies below still apply on top
   subtitle_keep_langs: [eng, en, ara, ar]
   subtitle_flag_untagged: false
   keep_default_subtitle: false     # true = never drop the current default sub, even if foreign

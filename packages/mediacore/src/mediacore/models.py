@@ -69,6 +69,9 @@ class PolicyConfig(BaseModel):
     subtitle_flag_untagged: bool = False
     #: Guard: never drop the subtitle currently flagged default, even if foreign.
     keep_default_subtitle: bool = False
+    #: Remux mp4-family containers (.mp4/.m4v/.mov) to MKV even when nothing else needs pruning,
+    #: so the library stays pure-MKV. The usual subtitle/audio policies still apply on top.
+    remux_to_mkv: bool = False
 
 
 class QbitConfig(BaseModel):

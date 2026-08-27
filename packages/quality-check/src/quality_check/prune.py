@@ -8,6 +8,7 @@ and reports whether any work is needed at all (so clean files are never remuxed)
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from mediacore.models import PolicyConfig
@@ -15,16 +16,22 @@ from mediacore.probe import ProbeResult, Track, classify_audio
 
 from quality_check.rules import foreign_subs
 
+#: mp4-family containers mkvprune can remux to MKV (its accepted inputs minus .mkv).
+REMUX_EXTS = {".mp4", ".m4v", ".mov"}
+
 
 @dataclass
 class PruneDecision:
     keep_sub_ids: list[int]
     dropped_subs: list[Track] = field(default_factory=list)
     audio_encode_tracks: list[Track] = field(default_factory=list)
+    #: container-only conversion to MKV is required (a non-mkv source under ``remux_to_mkv``),
+    #: even if no subs/audio work is needed.
+    remux: bool = False
 
     @property
     def needs_work(self) -> bool:
-        return bool(self.dropped_subs) or bool(self.audio_encode_tracks)
+        return self.remux or bool(self.dropped_subs) or bool(self.audio_encode_tracks)
 
     @property
     def audio_arg(self) -> str:
@@ -40,6 +47,8 @@ class PruneDecision:
 
     def summary(self) -> str:
         parts: list[str] = []
+        if self.remux:
+            parts.append("remux → mkv")
         if self.dropped_subs:
             langs = ", ".join(sorted({t.language or "und" for t in self.dropped_subs}))
             parts.append(f"dropped {len(self.dropped_subs)} foreign sub(s) [{langs}]")
@@ -59,10 +68,13 @@ def decide(probe: ProbeResult, policy: PolicyConfig) -> PruneDecision:
 
     audio_encode = [t for t in probe.audio if classify_audio(t).is_encode]
 
+    remux = policy.remux_to_mkv and os.path.splitext(probe.path)[1].lower() in REMUX_EXTS
+
     return PruneDecision(
         keep_sub_ids=keep_ids,
         dropped_subs=foreign,
         audio_encode_tracks=audio_encode,
+        remux=remux,
     )
 
 

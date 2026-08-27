@@ -88,6 +88,64 @@ def test_prune_skips_when_clean(tmp_path, monkeypatch):
     assert calls == []  # no rescan when nothing changed
 
 
+def test_remux_mp4_to_mkv(tmp_path, monkeypatch):
+    """A clean .mp4 under remux_to_mkv is converted: prune runs, the source becomes .mkv, the
+    job's final path follows, and the arr is rescanned."""
+    calls: list = []
+    monkeypatch.setattr(
+        "mediacore.arr.client.RadarrClient.rescan_and_wait",
+        lambda self, item_id, **kw: calls.append(item_id),
+    )
+    cfg = radarr_config(enable_seasonal_shift=False)
+    cfg.policy.remux_to_mkv = True
+    services = build_test_services(tmp_path, cfg)
+    mp4 = tmp_path / "movie.mp4"
+    mp4.write_bytes(b"x")
+    path = str(mp4)
+    clean = probe_of(  # nothing to prune, but .mp4 → remux forced
+        mk(0, "video", codec_name="hevc"),
+        mk(1, "audio", codec_name="dts", channels=6),
+        mk(2, "subtitle", codec_name="subrip", language="eng"),
+        path=path,
+    )
+
+    def fake_runner(argv, **k):  # simulate mkvprune's cross-format replace
+        out = os.path.splitext(argv[-1])[0] + ".mkv"
+        with open(out, "w") as f:
+            f.write("mkv")
+        os.remove(argv[-1])  # source .mp4 removed after verified write
+        return PruneResult(0, f"Done: {out}", "")
+
+    disp = Dispatcher(services, probe_fn=lambda p: clean, prune_runner=fake_runner)
+    outcome = disp.dispatch("jremux", _radarr_payload(path))
+
+    prune = next(s for s in outcome.steps if s.tool == "mkvprune")
+    assert prune.result == OK and "remux" in prune.detail
+    assert outcome.final_local_path.endswith("movie.mkv")
+    assert calls == [5]  # rescanned so Radarr adopts the .mkv
+    assert (tmp_path / "movie.mkv").exists() and not (tmp_path / "movie.mp4").exists()
+
+
+def test_remux_disabled_leaves_clean_mp4(tmp_path, monkeypatch):
+    """With remux_to_mkv off, a clean .mp4 still skips (existing behavior)."""
+    monkeypatch.setattr(
+        "mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, item_id, **kw: None
+    )
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    mp4 = tmp_path / "movie.mp4"
+    mp4.write_bytes(b"x")
+    clean = probe_of(
+        mk(0, "video", codec_name="hevc"),
+        mk(1, "audio", codec_name="dts", channels=6),
+        mk(2, "subtitle", codec_name="subrip", language="eng"),
+        path=str(mp4),
+    )
+    disp = Dispatcher(services, probe_fn=lambda p: clean, prune_runner=lambda a, **k: PruneResult(0, "", ""))
+    outcome = disp.dispatch("jno", _radarr_payload(str(mp4)))
+    prune = next(s for s in outcome.steps if s.tool == "mkvprune")
+    assert prune.result == SKIP and mp4.exists()
+
+
 def test_prune_dedup_second_run(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, item_id, **kw: None
