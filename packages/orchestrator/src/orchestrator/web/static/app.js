@@ -88,10 +88,32 @@
   var panels = Array.prototype.slice.call(document.querySelectorAll("[data-src]"));
   function refreshAll() { panels.forEach(refresh); }
 
+  // "refresh in Ns" countdown: any element with data-countdown-for="<panel id>" tracks that
+  // panel's poll cycle, so the label always matches the real interval.
+  function attachCountdown(el, interval) {
+    if (!el.id) return null;
+    var label = document.querySelector('[data-countdown-for="' + el.id + '"]');
+    if (!label) return null;
+    var next = Date.now() + interval;
+    var tick = function () {
+      var left = Math.max(0, Math.round((next - Date.now()) / 1000));
+      label.textContent = "refresh in " + left + "s";
+    };
+    tick();
+    setInterval(tick, 1000);
+    return function () { next = Date.now() + interval; tick(); };
+  }
+
   panels.forEach(function (el) {
     refresh(el);
     var interval = parseInt(el.dataset.interval || "3000", 10);
-    if (interval > 0) setInterval(function () { refresh(el); }, interval);
+    if (interval > 0) {
+      var reset = attachCountdown(el, interval);
+      setInterval(function () {
+        refresh(el);
+        if (reset) reset();
+      }, interval);
+    }
   });
 
   if (searchEl) {
