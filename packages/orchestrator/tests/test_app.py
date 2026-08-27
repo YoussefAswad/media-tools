@@ -144,12 +144,53 @@ def test_worker_pause_resume_flow(client) -> None:
     assert "Running" in client.get("/ui/worker").text
 
 
-def test_retry_dead_redirects(client) -> None:
-    assert client.post("/jobs/retry-dead", follow_redirects=False).status_code == 303
+def test_retry_dead_redirects_to_jobs(client) -> None:
+    r = client.post("/jobs/retry-dead", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/jobs"
 
 
-def test_dashboard_and_config_pages(client) -> None:
-    assert client.get("/").status_code == 200
+def test_job_actions_redirect_to_jobs(client) -> None:
+    # worker + rerun actions land back on the Jobs tab, not the overview
+    for path in ("/worker/pause", "/worker/resume", "/jobs/clear-dead"):
+        r = client.post(path, follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/jobs"
+
+
+def test_overview_dashboard(client) -> None:
+    r = client.get("/")
+    assert r.status_code == 200
+    # the overview composes widgets from the other tabs via data-src
+    for src in ("/ui/summary", "/ui/mon-system", "/ui/mon-disks", "/ui/mon-alerts",
+                "/ui/mon-containers-summary", "/ui/worker?readonly=1", "/ui/actions?limit=10"):
+        assert src in r.text
+
+
+def test_jobs_page(client) -> None:
+    r = client.get("/jobs")
+    assert r.status_code == 200
+    # the job queue moved here: search box + active/failed panels
+    assert 'id="search"' in r.text and "/ui/active" in r.text and "/ui/failed" in r.text
+
+
+def test_worker_readonly_hides_controls(client) -> None:
+    # overview worker widget is read-only: status shown, no pause/resume form
+    ro = client.get("/ui/worker", params={"readonly": "1"}).text
+    assert "Running" in ro and "/worker/pause" not in ro
+    # the Jobs-tab worker widget keeps the controls
+    assert "/worker/pause" in client.get("/ui/worker").text
+
+
+def test_actions_limit(client) -> None:
+    assert client.get("/ui/actions", params={"limit": "5"}).status_code == 200
+
+
+def test_containers_summary_widget(client) -> None:
+    # docker off in the test config → the compact widget shows the enable hint
+    r = client.get("/ui/mon-containers-summary")
+    assert r.status_code == 200 and "monitoring.docker" in r.text
+
+
+def test_config_page(client) -> None:
     cfg = client.get("/config")
     assert cfg.status_code == 200 and "Configuration" in cfg.text
 

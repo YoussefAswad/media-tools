@@ -1,0 +1,17 @@
+{% if not enabled %}
+<div class="empty muted">Off — enable <code>monitoring.docker</code>.</div>
+{% elif status is none %}
+<div class="empty muted">Collecting…</div>
+{% elif status == false %}
+<div class="empty muted">Docker socket unreachable.</div>
+{% else %}
+<div class="tile-value">{{ up }}<span class="muted" style="font-size:15px">/{{ total }} up</span></div>
+<div class="tile-label">containers running</div>
+{% if problems %}
+<div class="prob-list">
+  {% for p in problems %}
+  <div><span class="badge {{ p.tone }}">{{ p.label }}</span> {{ p.name }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endif %}

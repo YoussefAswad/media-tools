@@ -127,6 +127,16 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .card-head h2 { margin: 0; }
+/* linked widget headers on the overview dashboard (click → the widget's full tab) */
+.card-head h2 a { color: inherit; text-decoration: none; }
+.card-head h2 a:hover { color: var(--accent); }
+.card-head h2 a::after { content: " →"; color: var(--muted); font-weight: 400; }
+/* three-across row of compact widgets (collapses on small screens). Two-class selector so it
+   wins over the single-class `.grid` mobile rules below. */
+.grid.grid-3 { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 760px) { .grid.grid-3 { grid-template-columns: 1fr; } }
+/* compact container-widget problem list (overview) */
+.prob-list { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
 
 /* --- app + change cells --- */
 .app { font-size: 13px; font-weight: 600; white-space: nowrap; }

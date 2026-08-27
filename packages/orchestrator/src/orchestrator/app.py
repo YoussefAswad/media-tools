@@ -197,7 +197,14 @@ async def arr_sonarr(request: Request) -> JSONResponse:
 # --- web UI -----------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
 def dashboard(request: Request) -> HTMLResponse:
+    """Overview dashboard: at-a-glance widgets composed from the other tabs' partials."""
     return _TEMPLATES.TemplateResponse(request, "dashboard.html", {})
+
+
+@app.get("/jobs", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def jobs_page(request: Request) -> HTMLResponse:
+    """The job queue: active/failed, recent actions, worker controls, search + filters."""
+    return _TEMPLATES.TemplateResponse(request, "jobs.html", {})
 
 
 @app.get("/ui/summary", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
@@ -217,7 +224,9 @@ def ui_summary(request: Request) -> HTMLResponse:
 
 
 @app.get("/ui/worker", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
-def ui_worker(request: Request) -> HTMLResponse:
+def ui_worker(request: Request, readonly: bool = False) -> HTMLResponse:
+    """Worker status. ``readonly`` (used by the overview) hides the pause/resume controls, which
+    live on the Jobs tab."""
     q = services_of(request).queue
     paused = q.is_paused()
     counts = q.counts()
@@ -225,26 +234,26 @@ def ui_worker(request: Request) -> HTMLResponse:
     return _TEMPLATES.TemplateResponse(
         request,
         "_worker.html",
-        {"paused": paused, "active": active, "safe": paused and active == 0},
+        {"paused": paused, "active": active, "safe": paused and active == 0, "readonly": readonly},
     )
 
 
 @app.post("/worker/pause", dependencies=[Depends(require_ui_auth)])
 def worker_pause(request: Request) -> Response:
     services_of(request).queue.pause()
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/jobs", status_code=303)
 
 
 @app.post("/worker/resume", dependencies=[Depends(require_ui_auth)])
 def worker_resume(request: Request) -> Response:
     services_of(request).queue.resume()
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/jobs", status_code=303)
 
 
 @app.post("/jobs/retry-dead", dependencies=[Depends(require_ui_auth)])
 def jobs_retry_dead(request: Request) -> Response:
     services_of(request).queue.retry_all_dead()
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/jobs", status_code=303)
 
 
 def _app_filter(jobs, app: str | None):
@@ -275,10 +284,12 @@ def ui_actions(
     q: str | None = None,
     result: str | None = None,
     app: str | None = None,
+    limit: int = 80,
 ) -> HTMLResponse:
     results = [result] if result in ("ok", "skip", "fail") else None
     app = app if app in ("radarr", "sonarr") else None
-    actions = services_of(request).audit.recent(limit=80, q=q, results=results, app=app)
+    limit = max(1, min(limit, 200))
+    actions = services_of(request).audit.recent(limit=limit, q=q, results=results, app=app)
     return _TEMPLATES.TemplateResponse(
         request, "_actions.html", {"actions": [_decorate(a) for a in actions]}
     )
@@ -299,25 +310,25 @@ def job_detail(request: Request, job_id: str) -> HTMLResponse:
 @app.post("/jobs/{job_id}/retry", dependencies=[Depends(require_ui_auth)])
 def job_retry(request: Request, job_id: str) -> Response:
     services_of(request).queue.retry(job_id)
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/jobs", status_code=303)
 
 
 @app.post("/jobs/{job_id}/cancel", dependencies=[Depends(require_ui_auth)])
 def job_cancel(request: Request, job_id: str) -> Response:
     services_of(request).queue.cancel(job_id)
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/jobs", status_code=303)
 
 
 @app.post("/jobs/{job_id}/delete", dependencies=[Depends(require_ui_auth)])
 def job_delete(request: Request, job_id: str) -> Response:
     services_of(request).queue.delete(job_id)
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/jobs", status_code=303)
 
 
 @app.post("/jobs/clear-dead", dependencies=[Depends(require_ui_auth)])
 def jobs_clear_dead(request: Request) -> Response:
     services_of(request).queue.clear_dead()
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/jobs", status_code=303)
 
 
 # --- downloads bandwidth ledger ---------------------------------------------------------
@@ -541,7 +552,7 @@ def rerun(request: Request, app_name: str = Form(...), path: str = Form(...)) ->
         else {"eventType": "Download", "episodeFile": {"path": path}, "series": {"title": ""}},
     }
     services.queue.enqueue("rerun", payload, label=f"re-run {Path(path).name}")
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse("/jobs", status_code=303)
 
 
 # --- monitoring -------------------------------------------------------------------------
@@ -761,6 +772,35 @@ def ui_mon_containers(request: Request) -> HTMLResponse:
         "status": services.docker_ok,  # None = collecting, True = ok, False = unreachable
     }
     return _TEMPLATES.TemplateResponse(request, "_mon_containers.html", ctx)
+
+
+@app.get(
+    "/ui/mon-containers-summary",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_ui_auth)],
+)
+def ui_mon_containers_summary(request: Request) -> HTMLResponse:
+    """Compact container widget for the overview: an up/total count plus any down/unhealthy names."""
+    services = services_of(request)
+    snap = services.docker_snapshot
+    up = total = 0
+    problems: list[dict] = []
+    if snap:
+        total = len(snap)
+        up = sum(1 for c in snap if c.up)
+        for c in snap:
+            if not c.up:
+                problems.append({"name": c.name, "tone": "fail", "label": c.state or "down"})
+            elif c.health == "unhealthy":
+                problems.append({"name": c.name, "tone": "warn", "label": "unhealthy"})
+    ctx = {
+        "enabled": services.docker is not None,
+        "status": services.docker_ok,
+        "up": up,
+        "total": total,
+        "problems": problems,
+    }
+    return _TEMPLATES.TemplateResponse(request, "_mon_containers_summary.html", ctx)
 
 
 @app.get("/config", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])

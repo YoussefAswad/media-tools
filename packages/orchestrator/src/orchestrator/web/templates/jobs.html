@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block nav_jobs %}active{% endblock %}
+{% block content %}
+<div class="summary" data-src="/ui/summary" data-interval="4000">Loading…</div>
+
+<div class="toolbar">
+  <input type="search" id="search" placeholder="Search jobs & actions… (title, file, change)" autocomplete="off">
+  <div class="filters" id="app-filter">
+    <button data-app="" class="chip active">All</button>
+    <button data-app="radarr" class="chip">🎬 Movies</button>
+    <button data-app="sonarr" class="chip">📺 Episodes</button>
+  </div>
+  <div class="worker-panel" data-src="/ui/worker" data-interval="4000">Loading…</div>
+  <form method="post" action="/jobs/retry-dead" onsubmit="return confirm('Retry all dead/failed jobs now?')">
+    <button class="ghost">Retry all dead</button>
+  </form>
+  <form method="post" action="/jobs/clear-dead" onsubmit="return confirm('Clear all dead/failed/canceled jobs?')">
+    <button class="ghost danger">Clear dead jobs</button>
+  </form>
+</div>
+
+<div class="grid">
+  <section class="card">
+    <h2>Active <span class="muted">/ queued</span></h2>
+    <div data-src="/ui/active" data-interval="2000" data-searchable>Loading…</div>
+  </section>
+  <section class="card">
+    <h2>Failed <span class="muted">/ dead-letter</span></h2>
+    <div data-src="/ui/failed" data-interval="3000" data-searchable>Loading…</div>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Recent actions</h2>
+    <div class="filters" id="action-filters">
+      <button data-result="" class="chip active">All</button>
+      <button data-result="ok" class="chip">Changed</button>
+      <button data-result="skip" class="chip">Skipped</button>
+      <button data-result="fail" class="chip">Failed</button>
+    </div>
+  </div>
+  <div data-src="/ui/actions" data-interval="3000" data-searchable data-filtered="action-filters">Loading…</div>
+</section>
+{% endblock %}

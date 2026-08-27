@@ -6,14 +6,18 @@
     {% else %}
       <span class="badge">draining… {{ active }} active</span>
     {% endif %}
+    {% if not readonly %}
     <form method="post" action="/worker/resume">
       <button class="ghost">Resume worker</button>
     </form>
+    {% endif %}
   {% else %}
     <span class="badge ok">▶ Running</span>
+    {% if not readonly %}
     <form method="post" action="/worker/pause"
           onsubmit="return confirm('Pause the worker? In-flight jobs finish; no new jobs start.')">
       <button class="ghost">Pause worker</button>
     </form>
+    {% endif %}
   {% endif %}
 </div>
