@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from mediacore.dashdot import SystemSnapshot
 from mediacore.docker_status import ContainerStatus
 from orchestrator.alerts import CRIT, OK, WARN
 from orchestrator.collectors import (
     _container_severity,
     _disk_severity,
+    _scalar_severity,
     collect_containers,
     collect_disks,
+    collect_system,
     read_disk,
 )
 from orchestrator.config import AlertRule, DiskWatch, DockerSource
@@ -113,3 +116,52 @@ def test_collect_containers_unreachable() -> None:
     docker = FakeDocker(None)
     samples, evals, containers = collect_containers(docker, DockerSource(enabled=True), AlertRule())
     assert samples == [] and evals == [] and containers is None
+
+
+class FakeDashdot:
+    def __init__(self, snap) -> None:
+        self._snap = snap
+
+    def snapshot(self):
+        return self._snap
+
+
+def test_scalar_severity() -> None:
+    rule = AlertRule(warn=75, crit=85)
+    assert _scalar_severity(50, rule) == OK
+    assert _scalar_severity(80, rule) == WARN
+    assert _scalar_severity(90, rule) == CRIT
+
+
+def _snap(cpu_temp=70.0, mem_used=8, mem_total=16):
+    return SystemSnapshot(
+        cpu_load=20.0, cpu_temp=cpu_temp, core_count=2, mem_used=mem_used,
+        mem_total=mem_total, net_up=1, net_down=2, uptime_s=100.0, cpu_model="X",
+    )
+
+
+def test_collect_system_samples_and_alerts() -> None:
+    temp_rule = AlertRule(warn=75, crit=85)
+    mem_rule = AlertRule(warn=90, crit=97)
+    # mem 15/16 ≈ 94% -> warn; temp 88 -> crit
+    client = FakeDashdot(_snap(cpu_temp=88.0, mem_used=15, mem_total=16))
+    samples, evals, snap = collect_system(client, temp_rule, mem_rule)
+    assert snap is not None
+    names = {s.name for s in samples}
+    assert {"cpu.load", "mem.pct", "mem.used", "net.up", "net.down", "cpu.temp"} <= names
+    by_key = {e.key: e.severity for e in evals}
+    assert by_key["cpu_temp"] == CRIT
+    assert by_key["mem"] == WARN
+
+
+def test_collect_system_no_temp_skips_temp_eval() -> None:
+    client = FakeDashdot(_snap(cpu_temp=None))
+    _s, evals, _out = collect_system(client, AlertRule(warn=75), AlertRule(warn=90))
+    assert "cpu_temp" not in {e.key for e in evals}
+    assert "mem" in {e.key for e in evals}
+
+
+def test_collect_system_unreachable() -> None:
+    client = FakeDashdot(None)
+    samples, evals, snap = collect_system(client, AlertRule(), AlertRule())
+    assert samples == [] and evals == [] and snap is None

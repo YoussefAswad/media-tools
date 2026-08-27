@@ -28,6 +28,7 @@ from orchestrator.util import (
     RANGES,
     human_bytes,
     human_duration,
+    human_uptime,
     humanize_days,
     kind_icon,
     parse_bytes,
@@ -644,6 +645,45 @@ def ui_mon_alerts(request: Request) -> HTMLResponse:
         for a in alerts
     ]
     return _TEMPLATES.TemplateResponse(request, "_mon_alerts.html", {"alerts": rows})
+
+
+def _rule_tone(value: float, rule) -> str:
+    """Tile tone (ok/warn/fail) for a higher-is-worse value against a warn/crit rule."""
+    if rule.crit is not None and value >= rule.crit:
+        return "fail"
+    if rule.warn is not None and value >= rule.warn:
+        return "warn"
+    return "ok"
+
+
+@app.get("/ui/mon-system", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_mon_system(request: Request) -> HTMLResponse:
+    services = services_of(request)
+    mon = services.config.monitoring
+    if services.system is None:
+        return _TEMPLATES.TemplateResponse(request, "_mon_system.html", {"enabled": False})
+    snap = services.system_snapshot
+    tiles: list = []
+    cpu_model = ""
+    if snap is not None:
+        cpu_model = snap.cpu_model
+        tiles.append(("CPU load", f"{snap.cpu_load:.0f}%", "queued"))
+        if snap.cpu_temp is not None:
+            tiles.append(
+                ("CPU temp", f"{snap.cpu_temp:.0f}°C", _rule_tone(snap.cpu_temp, mon.cpu_temp_alert))
+            )
+        tiles.append(
+            (f"RAM · {human_bytes(snap.mem_used)}/{human_bytes(snap.mem_total)}",
+             f"{snap.mem_pct:.0f}%", _rule_tone(snap.mem_pct, mon.mem_alert))
+        )
+        tiles.append(("Net down", f"{human_bytes(snap.net_down)}/s", "skip"))
+        tiles.append(("Net up", f"{human_bytes(snap.net_up)}/s", "skip"))
+        tiles.append(("Uptime", human_uptime(snap.uptime_s) or "—", "skip"))
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "_mon_system.html",
+        {"enabled": True, "status": services.system_ok, "tiles": tiles, "cpu_model": cpu_model},
+    )
 
 
 def _container_row(c, watch: set[str]) -> dict:

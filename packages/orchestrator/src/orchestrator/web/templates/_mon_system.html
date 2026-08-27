@@ -1,0 +1,18 @@
+{% if not enabled %}
+<div class="empty muted">System monitoring is off. Enable <code>monitoring.system</code> in Config
+  (reads the dashdot container's API).</div>
+{% elif status is none %}
+<div class="empty muted">Collecting system metrics…</div>
+{% elif status == false %}
+<div class="empty muted">dashdot unreachable at the configured URL — check <code>monitoring.system.url</code>.</div>
+{% else %}
+<div class="summary sys">
+  {% for label, value, tone in tiles %}
+  <div class="tile {{ tone }}">
+    <div class="tile-value">{{ value }}</div>
+    <div class="tile-label">{{ label }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% if cpu_model %}<div class="muted sys-cpu">{{ cpu_model }}</div>{% endif %}
+{% endif %}

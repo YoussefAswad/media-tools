@@ -234,6 +234,10 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 /* --- monitoring container list: watched containers stand out --- */
 td.watched { font-weight: 700; }
 td.watched::before { content: "★ "; color: var(--warn); }
+/* --- monitoring system tiles (inside the System card) --- */
+.summary.sys { margin-bottom: 0; }
+.sys-cpu { margin-top: 12px; font-size: 12px; }
+
 /* cap the container list height; scroll inside with the header pinned */
 .scroll-y { max-height: 360px; overflow-y: auto; }
 .scroll-y thead th {

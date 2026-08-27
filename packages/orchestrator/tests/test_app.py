@@ -95,6 +95,9 @@ def test_mon_partials_render(client) -> None:
     containers = client.get("/ui/mon-containers")
     # docker monitoring is off in the test config → the partial shows the enable hint
     assert containers.status_code == 200 and "monitoring.docker" in containers.text
+    system = client.get("/ui/mon-system")
+    # system monitoring is off in the test config → the partial shows the enable hint
+    assert system.status_code == 200 and "monitoring.system" in system.text
 
 
 def test_webhook_download_enqueues(client) -> None:

@@ -14,7 +14,7 @@ import time
 
 from mediacore.notify import PRIORITY_FAILURE, PRIORITY_STATUS, NtfyMessage
 
-from orchestrator.collectors import collect_containers, collect_disks
+from orchestrator.collectors import collect_containers, collect_disks, collect_system
 from orchestrator.dispatch import Dispatcher, InsufficientSpaceError
 from orchestrator.queue import DEAD
 from orchestrator.services import Services
@@ -43,6 +43,7 @@ class Worker(threading.Thread):
         self._last_maintenance = 0.0  # run maintenance on the first idle tick
         self._last_disk = 0.0  # sample disks on the first idle tick
         self._last_docker = 0.0  # sample containers on the first idle tick
+        self._last_system = 0.0  # sample system metrics on the first idle tick
 
     def stop(self) -> None:
         self._stop.set()
@@ -137,6 +138,14 @@ class Worker(threading.Thread):
             self._last_docker = now
             with contextlib.suppress(Exception):
                 self._collect_docker()
+        if (
+            mon.system.enabled
+            and self.services.system is not None
+            and now - self._last_system >= mon.system.interval_s
+        ):
+            self._last_system = now
+            with contextlib.suppress(Exception):
+                self._collect_system()
 
     def _collect_disks(self) -> None:
         mon = self.services.config.monitoring
@@ -160,6 +169,19 @@ class Worker(threading.Thread):
             client.enrich_stats(containers)
         self.services.docker_snapshot = containers
         self.services.docker_ok = True
+
+    def _collect_system(self) -> None:
+        mon = self.services.config.monitoring
+        client = self.services.system
+        assert client is not None
+        samples, evals, snap = collect_system(client, mon.cpu_temp_alert, mon.mem_alert)
+        self.services.metrics.record_many(samples)
+        self.services.alerts.evaluate(evals, self.services.alert_channels())
+        if snap is None:  # dashdot unreachable
+            self.services.system_ok = False
+            return
+        self.services.system_snapshot = snap
+        self.services.system_ok = True
 
     # --- periodic maintenance -------------------------------------------------------
     def _maybe_maintain(self) -> None:

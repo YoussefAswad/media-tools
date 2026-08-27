@@ -40,6 +40,21 @@ def human_duration(ms: int | float | None) -> str:
 # Two genuinely different scales: the plain form is decimal SI (GB = 1000^3), the IEC form is
 # binary (GiB = 1024^3, what qBittorrent counts in). A UI toggle picks which to render, so the
 # same byte count shows a different magnitude in each. Suffixes are matched to their scale.
+def human_uptime(seconds: float | None) -> str:
+    """Seconds -> a compact uptime string: '10d 22h', '3h 12m', '8m'. Empty for missing."""
+    if seconds is None or seconds < 0:
+        return ""
+    s = int(seconds)
+    d, rem = divmod(s, 86400)
+    h, rem = divmod(rem, 3600)
+    m, _ = divmod(rem, 60)
+    if d:
+        return f"{d}d {h}h"
+    if h:
+        return f"{h}h {m:02d}m"
+    return f"{m}m"
+
+
 def humanize_days(days: float) -> str:
     """A coarse human span for disk time-to-full: '~3 days', '~5 weeks', '~2 years'. Clamps a
     very long horizon to '>1 year' so a nearly-flat disk doesn't render an absurd number."""

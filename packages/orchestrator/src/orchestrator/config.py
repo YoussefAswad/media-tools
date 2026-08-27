@@ -67,6 +67,17 @@ class DockerSource(BaseModel):
     watch: list[str] = Field(default_factory=list)
 
 
+class SystemSource(BaseModel):
+    """Host CPU / RAM / temps / network via the dashdot container's REST API. Reads dashdot (which
+    already has privileged host access) instead of granting this container /proc + /sys. Disabled
+    by default; enabling it needs dashdot reachable at ``url`` on the compose network."""
+
+    enabled: bool = False
+    url: str = "http://dash:3001"
+    #: how often system metrics are polled (seconds). Cheap (a few small HTTP GETs).
+    interval_s: int = 30
+
+
 class MonitoringConfig(BaseModel):
     """System-monitoring feature: watched disks + alert timing. Phase 1 covers disk usage; later
     phases add container/system/SMART sources onto the same collect→store→alert→UI pipeline."""
@@ -88,6 +99,12 @@ class MonitoringConfig(BaseModel):
     docker: DockerSource = DockerSource()
     #: debounce/hysteresis for container alerts (short sustain survives a restart/redeploy).
     container_alert: AlertRule = AlertRule(sustain_s=60, clear_s=0, cooldown_s=1800)
+    #: host system metrics via dashdot (CPU / RAM / temps / network).
+    system: SystemSource = SystemSource()
+    #: sustained high CPU temperature (°C). Long sustain ignores transient encode/prune spikes.
+    cpu_temp_alert: AlertRule = AlertRule(warn=75, crit=85, sustain_s=300, clear_s=120)
+    #: sustained high memory usage (%).
+    mem_alert: AlertRule = AlertRule(warn=90, crit=97, sustain_s=300, clear_s=120)
     #: ntfy topic override for monitoring alerts (defaults to the status topic when unset).
     ntfy_topic: str | None = None
 

@@ -9,6 +9,7 @@ import logging
 import shutil
 from dataclasses import dataclass
 
+from mediacore.dashdot import DashdotClient, SystemSnapshot
 from mediacore.docker_status import ContainerStatus, DockerStatusClient
 
 from orchestrator.alerts import CRIT, OK, WARN, Evaluation
@@ -126,3 +127,55 @@ def collect_containers(
             Evaluation(key=f"container:{c.name}", label=c.name, severity=sev, detail=detail, rule=rule)
         )
     return samples, evals, containers
+
+
+def _scalar_severity(value: float, rule: AlertRule) -> str:
+    """Severity for a higher-is-worse scalar (temp, mem %) against a rule's warn/crit."""
+    if rule.crit is not None and value >= rule.crit:
+        return CRIT
+    if rule.warn is not None and value >= rule.warn:
+        return WARN
+    return OK
+
+
+def collect_system(
+    client: DashdotClient, temp_rule: AlertRule, mem_rule: AlertRule
+) -> tuple[list[Sample], list[Evaluation], SystemSnapshot | None]:
+    """Poll host system metrics via dashdot. Returns ``(samples, evaluations, snapshot)``; the
+    snapshot is None when dashdot is unreachable (best-effort, no alert). Alerts on sustained
+    CPU temperature and memory usage; CPU load / network are recorded + displayed only (load
+    spikes during transcodes/prunes are normal, not alert-worthy)."""
+    snap = client.snapshot()
+    if snap is None:
+        return [], [], None
+    samples = [
+        Sample("cpu.load", snap.cpu_load),
+        Sample("mem.pct", round(snap.mem_pct, 2)),
+        Sample("mem.used", float(snap.mem_used)),
+        Sample("net.up", float(snap.net_up)),
+        Sample("net.down", float(snap.net_down)),
+    ]
+    evals: list[Evaluation] = []
+    if snap.cpu_temp is not None and temp_rule.enabled:
+        samples.append(Sample("cpu.temp", snap.cpu_temp))
+        evals.append(
+            Evaluation(
+                key="cpu_temp",
+                label="CPU temp",
+                severity=_scalar_severity(snap.cpu_temp, temp_rule),
+                detail=f"CPU temperature {snap.cpu_temp:.0f}°C",
+                rule=temp_rule,
+            )
+        )
+    if mem_rule.enabled:
+        evals.append(
+            Evaluation(
+                key="mem",
+                label="Memory",
+                severity=_scalar_severity(snap.mem_pct, mem_rule),
+                detail=f"Memory {snap.mem_pct:.0f}% "
+                f"({human_bytes(snap.mem_used)} of {human_bytes(snap.mem_total)})",
+                rule=mem_rule,
+            )
+        )
+    return samples, evals, snap

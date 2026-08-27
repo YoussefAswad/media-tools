@@ -14,6 +14,7 @@ from pathlib import Path
 
 from mediacore.arr.client import ArrClient, client_for
 from mediacore.audit import Audit, open_db
+from mediacore.dashdot import DashdotClient, SystemSnapshot
 from mediacore.docker_status import ContainerStatus, DockerStatusClient
 from mediacore.jellyfin import JellyfinClient
 from mediacore.models import ArrInstance
@@ -46,12 +47,16 @@ class Services:
     qbit: QbitClient | None = None
     jellyfin: JellyfinClient | None = None
     docker: DockerStatusClient | None = None
+    system: DashdotClient | None = None
     #: latest container snapshot produced by the worker's docker collection (the web routes read
     #: this instead of hitting the socket per request). ``docker_ok``: None = not collected yet,
     #: True = last poll succeeded, False = socket unreachable. Reference swaps are atomic, so no
     #: lock is needed for the single writer (worker) / many readers (web) pattern.
     docker_snapshot: list[ContainerStatus] | None = None
     docker_ok: bool | None = None
+    #: latest host system snapshot from dashdot (same single-writer/many-readers pattern).
+    system_snapshot: SystemSnapshot | None = None
+    system_ok: bool | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def arr_instance(self, app: str) -> ArrInstance | None:
@@ -85,6 +90,10 @@ class Services:
             if self.docker is None:  # disabled → drop any stale snapshot
                 self.docker_snapshot = None
                 self.docker_ok = None
+            self.system = _system_client(new_cfg.monitoring)
+            if self.system is None:
+                self.system_snapshot = None
+                self.system_ok = None
 
 
 def build_services(config_path: Path) -> Services:
@@ -103,6 +112,7 @@ def build_services(config_path: Path) -> Services:
     qbit = QbitClient.from_config(config.qbit) if config.qbit else None
     jellyfin = JellyfinClient.from_config(config.jellyfin) if config.jellyfin else None
     docker = _docker_client(config.monitoring)
+    system = _system_client(config.monitoring)
     return Services(
         config=config,
         config_path=config_path,
@@ -117,6 +127,7 @@ def build_services(config_path: Path) -> Services:
         qbit=qbit,
         jellyfin=jellyfin,
         docker=docker,
+        system=system,
     )
 
 
@@ -125,3 +136,10 @@ def _docker_client(mon: MonitoringConfig) -> DockerStatusClient | None:
     if not mon.docker.enabled:
         return None
     return DockerStatusClient(str(mon.docker.socket))
+
+
+def _system_client(mon: MonitoringConfig) -> DashdotClient | None:
+    """A dashdot client when system monitoring is enabled, else None."""
+    if not mon.system.enabled:
+        return None
+    return DashdotClient(mon.system.url)

@@ -109,6 +109,23 @@ monitoring:
     sustain_s: 60              # a container must stay down this long before alerting
     clear_s: 0                 # recover as soon as it's back
     cooldown_s: 1800           # min re-notify interval while still down (30m)
+  # Host CPU / RAM / temps / network, read from the dashdot container's REST API (dashdot already
+  # has privileged host access — this avoids granting it to the orchestrator). Reachable by service
+  # name on the compose network.
+  system:
+    enabled: false             # set true if dashdot is running and reachable
+    url: http://dash:3001      # dashdot's internal address (service name : container port)
+    interval_s: 30
+  cpu_temp_alert:              # long sustain ignores transient encode/prune temperature spikes
+    warn: 75                   # °C
+    crit: 85
+    sustain_s: 300
+    clear_s: 120
+  mem_alert:
+    warn: 90                   # %
+    crit: 97
+    sustain_s: 300
+    clear_s: 120
   # ntfy_topic: system-health  # optional override; defaults to the ntfy status topic
 
 # seasonal-shift per-show offsets (matched to a Sonarr series by `name`).
