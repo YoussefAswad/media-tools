@@ -83,7 +83,7 @@ prune_low_space_backoff_s: 1800  # when short, defer the job this long (no attem
 # (e.g. add `- /:/host:ro` to the service) and point `path` at it.
 monitoring:
   enabled: true
-  disk_interval_s: 60          # how often disks are sampled (cheap: one statvfs per path)
+  disk_interval_s: 30          # how often disks are sampled (cheap: one statvfs per path)
   retention_days: 30           # drop metric samples older than this (0 = keep forever)
   disks:
     - { path: /data,  label: MASS,  warn_pct: 85, crit_pct: 95, crit_free: 50GB }
@@ -117,7 +117,7 @@ monitoring:
   system:
     enabled: false             # set true if dashdot is running and reachable
     url: http://dash:3001      # dashdot's internal address (service name : container port)
-    interval_s: 30
+    interval_s: 15             # CPU/RAM/temps/net move fast; cheap (a few small HTTP GETs)
   cpu_temp_alert:              # long sustain ignores transient encode/prune temperature spikes
     warn: 75                   # °C
     crit: 85

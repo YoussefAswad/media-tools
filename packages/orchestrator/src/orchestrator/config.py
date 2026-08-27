@@ -75,7 +75,7 @@ class SystemSource(BaseModel):
     enabled: bool = False
     url: str = "http://dash:3001"
     #: how often system metrics are polled (seconds). Cheap (a few small HTTP GETs).
-    interval_s: int = 30
+    interval_s: int = 15
 
 
 class SmartSource(BaseModel):
@@ -95,7 +95,7 @@ class MonitoringConfig(BaseModel):
 
     enabled: bool = True
     #: how often disk usage is sampled (seconds). Cheap (one statvfs per path).
-    disk_interval_s: int = 60
+    disk_interval_s: int = 30
     #: delete metric samples older than this many days (0 = keep forever).
     retention_days: int = 30
     disks: list[DiskWatch] = Field(
