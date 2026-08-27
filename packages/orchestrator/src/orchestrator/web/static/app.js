@@ -174,6 +174,14 @@
     var esc = function (s) {
       return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     };
+    // color a single scalar value (already html-escaped) as bool / number / string
+    var colorScalar = function (v) {
+      var t = v.trim();
+      if (t === "") return v;
+      if (/^(true|false|null|~)$/i.test(t)) return '<span class="y-bool">' + v + "</span>";
+      if (/^-?\d+(\.\d+)?$/.test(t)) return '<span class="y-num">' + v + "</span>";
+      return '<span class="y-str">' + v + "</span>";
+    };
     var highlight = function (src) {
       return src.split("\n").map(function (line) {
         var e = esc(line);
@@ -191,6 +199,19 @@
             return sp + r;
           });
           return m[1] + '<span class="y-key">' + m[2] + "</span>" + '<span class="y-punc">:</span>' + val;
+        }
+        // inline flow map:  - { key: val, key: val }
+        var fm = e.match(/^(\s*(?:- )?)(\{)(.*)(\})(\s*)$/);
+        if (fm) {
+          var inner = fm[3].replace(
+            /([A-Za-z0-9_.-]+)(\s*)(:)(\s*)([^,}]*)/g,
+            function (_a, k, s1, colon, s2, val2) {
+              return '<span class="y-key">' + k + "</span>" + s1 +
+                '<span class="y-punc">' + colon + "</span>" + s2 + colorScalar(val2);
+            }
+          );
+          return fm[1] + '<span class="y-punc">{</span>' + inner +
+            '<span class="y-punc">}</span>' + fm[5];
         }
         return e;
       }).join("\n");
