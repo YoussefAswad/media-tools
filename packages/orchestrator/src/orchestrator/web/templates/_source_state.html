@@ -1,0 +1,28 @@
+{#
+  The off / collecting / unreachable / empty guard every monitored source needs before it can
+  render anything. Each source used to spell out the same four-branch preamble; only the wording
+  ever differed.
+
+  Callers build their messages with {% set msg %}...{% endset %}, which produces Markup under
+  autoescape, so the <code> fragments in them survive without a |safe.
+
+    {% from "_source_state.html" import panel %}
+    {% set off %}Container monitoring is off. Enable <code>monitoring.docker</code>.{% endset %}
+    {% call panel(enabled, status, off, unreachable, empty=not rows) %}
+      ...the real content...
+    {% endcall %}
+#}
+{% macro panel(enabled, status, off_msg, unreachable_msg, empty=false,
+               empty_msg="Nothing to show.", collecting_msg="Collecting…") %}
+  {%- if not enabled -%}
+    <div class="empty muted">{{ off_msg }}</div>
+  {%- elif status is none -%}
+    <div class="empty muted">{{ collecting_msg }}</div>
+  {%- elif status == false -%}
+    <div class="empty muted">{{ unreachable_msg }}</div>
+  {%- elif empty -%}
+    <div class="empty muted">{{ empty_msg }}</div>
+  {%- else -%}
+    {{ caller() }}
+  {%- endif -%}
+{% endmacro %}

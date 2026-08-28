@@ -1,14 +1,11 @@
-{% if not enabled %}
-<div class="empty muted">Container monitoring is off. Enable <code>monitoring.docker</code> in Config
-  (needs the Docker socket bind-mounted).</div>
-{% elif status is none %}
-<div class="empty muted">Collecting container stats…</div>
-{% elif status == false %}
-<div class="empty muted">Docker socket unreachable — check the <code>/var/run/docker.sock</code> mount
-  and that the process is in the socket's group.</div>
-{% elif not rows %}
-<div class="empty muted">No containers reported.</div>
-{% else %}
+{% from "_source_state.html" import panel %}
+{% set off %}Container monitoring is off. Enable <code>monitoring.docker</code> in Config
+  (needs the Docker socket bind-mounted).{% endset %}
+{% set unreachable %}Docker socket unreachable — check the <code>/var/run/docker.sock</code> mount
+  and that the process is in the socket's group.{% endset %}
+{% call panel(enabled, status, off, unreachable, empty=not rows,
+              empty_msg="No containers reported.",
+              collecting_msg="Collecting container stats…") %}
 <div class="scroll-y">
   <table class="actions">
     <thead>
@@ -26,4 +23,4 @@
     </tbody>
   </table>
 </div>
-{% endif %}
+{% endcall %}

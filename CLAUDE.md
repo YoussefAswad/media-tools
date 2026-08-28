@@ -216,9 +216,16 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
 
 11. **Monitoring metrics come from other containers, not the orchestrator's own namespace.** The
     Monitoring tab (`monitoring.*` config) reads external best-effort clients in `mediacore`
-    (`docker_status`, `dashdot`, `scrutiny`), each collected by the worker on its own interval gate
-    and cached as a snapshot on `Services` (the web routes read the snapshot, never the socket/API
-    per request). Hard-won gotchas when extending it:
+    (`docker_status`, `dashdot`, `scrutiny`). Each is wrapped by a **source** in
+    `orchestrator/monitor/` that declares its own `name`, `enabled` and `interval_s` and knows how
+    to `collect()`; the worker loops over `build_sources()` with one generic gate and stores the
+    result in `services.snapshots[name]`. **The web routes read the snapshot, never the socket/API
+    per request** — `/ui/mon-summary` regressed on exactly this once, calling `containers()` live
+    on a partial that polls every 5s. Read it via `services.snapshot(name)`, whose `ok` is
+    `None` = never collected / `True` = fine / `False` = unreachable; the shared
+    `_source_state.html` macro turns those three plus "switched off" into the panel preamble.
+    **Adding a source** = one class in `orchestrator/monitor/`, one entry in `build_sources()`,
+    one config block, one partial. Hard-won gotchas when extending it:
     - **dashdot on the compose bridge reports its OWN container's network**, not the host NIC — its
       `network` widget is useless there (CPU/temp/RAM are fine, they come from its `/:/mnt/host`
       mount). Real host throughput needs dashdot in `network_mode: host`; then it loses its compose

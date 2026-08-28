@@ -6,17 +6,17 @@ from mediacore.dashdot import SystemSnapshot
 from mediacore.docker_status import ContainerStatus
 from mediacore.scrutiny import DriveStatus
 from orchestrator.alerts import CRIT, OK, WARN
-from orchestrator.collectors import (
-    _container_severity,
-    _disk_severity,
-    _scalar_severity,
+from orchestrator.config import AlertRule, DiskWatch, DockerSource
+from orchestrator.monitor import (
     collect_containers,
     collect_disks,
     collect_smart,
     collect_system,
     read_disk,
+    scalar_severity,
 )
-from orchestrator.config import AlertRule, DiskWatch, DockerSource
+from orchestrator.monitor.disk import _disk_severity
+from orchestrator.monitor.docker import _container_severity
 
 
 class FakeDocker:
@@ -128,11 +128,11 @@ class FakeDashdot:
         return self._snap
 
 
-def test_scalar_severity() -> None:
+def testscalar_severity() -> None:
     rule = AlertRule(warn=75, crit=85)
-    assert _scalar_severity(50, rule) == OK
-    assert _scalar_severity(80, rule) == WARN
-    assert _scalar_severity(90, rule) == CRIT
+    assert scalar_severity(50, rule) == OK
+    assert scalar_severity(80, rule) == WARN
+    assert scalar_severity(90, rule) == CRIT
 
 
 def _snap(cpu_temp=70.0, mem_used=8, mem_total=16):
@@ -202,3 +202,129 @@ def test_collect_smart_no_temp_skips_temp_eval() -> None:
 def test_collect_smart_unreachable() -> None:
     samples, evals, out = collect_smart(FakeScrutiny(None), AlertRule(), AlertRule())
     assert samples == [] and evals == [] and out is None
+
+
+# --- the source registry -------------------------------------------------------------------
+def _mon(**kw):
+    from orchestrator.config import MonitoringConfig
+
+    return MonitoringConfig(**kw)
+
+
+def test_build_sources_lists_every_source_enabled_or_not() -> None:
+    """A disabled source stays in the list so the UI can tell "switched off" from "never
+    collected" without a second lookup."""
+    from orchestrator.monitor import build_sources
+
+    names = [s.name for s in build_sources(_mon())]
+    assert names == ["disk", "docker", "system", "smart"]
+
+
+def test_only_configured_sources_report_enabled() -> None:
+    from orchestrator.config import DockerSource, SmartSource, SystemSource
+    from orchestrator.monitor import build_sources
+
+    off = {s.name: s.enabled for s in build_sources(_mon())}
+    assert off == {"disk": True, "docker": False, "system": False, "smart": False}
+
+    on = {
+        s.name: s.enabled
+        for s in build_sources(
+            _mon(
+                docker=DockerSource(enabled=True),
+                system=SystemSource(enabled=True),
+                smart=SmartSource(enabled=True),
+            )
+        )
+    }
+    assert all(on.values())
+
+
+def test_each_source_reports_its_own_interval() -> None:
+    from orchestrator.config import SmartSource
+    from orchestrator.monitor import build_sources
+
+    by_name = {s.name: s for s in build_sources(_mon(disk_interval_s=11, smart=SmartSource(interval_s=999)))}
+    assert by_name["disk"].interval_s == 11
+    assert by_name["smart"].interval_s == 999
+
+
+class _FakeSource:
+    """A source that reports whatever it is handed, and counts its collections."""
+
+    name = "fake"
+    silent = False
+
+    def __init__(self, data, *, interval_s: int = 0):
+        self._data = data
+        self._interval = interval_s
+        self.calls = 0
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
+    @property
+    def interval_s(self) -> int:
+        return self._interval
+
+    def collect(self):
+        self.calls += 1
+        return [], [], self._data
+
+
+def test_the_worker_records_a_snapshot_and_its_reachability(tmp_path) -> None:
+    """``data is None`` means the service is unreachable, and must be recorded as such — leaving
+    the last good numbers on screen would show them as if they were live."""
+    from conftest import build_test_services
+    from orchestrator.config import OrchestratorConfig
+    from orchestrator.worker import Worker
+
+    services = build_test_services(tmp_path, OrchestratorConfig())
+    worker = Worker(services)
+
+    good = _FakeSource(["a", "b"])
+    worker._collect(good)
+    assert services.snapshot("fake").ok is True
+    assert services.snapshot("fake").rows == ["a", "b"]
+
+    worker._collect(_FakeSource(None))
+    assert services.snapshot("fake").ok is False
+    assert services.snapshot("fake").rows == []
+
+    # a source nobody has collected yet is neither ok nor failed
+    assert services.snapshot("never-heard-of-it").ok is None
+
+
+def test_a_source_is_only_collected_once_per_interval(tmp_path) -> None:
+    """One generic gate replaced four hand-rolled _last_* timers."""
+    from conftest import build_test_services
+    from orchestrator.config import OrchestratorConfig
+    from orchestrator.worker import Worker
+
+    services = build_test_services(tmp_path, OrchestratorConfig())
+    src = _FakeSource(["x"], interval_s=3600)
+    services.sources = [src]
+
+    worker = Worker(services)
+    worker._maybe_collect()
+    worker._maybe_collect()
+    worker._maybe_collect()
+    assert src.calls == 1  # the first tick collects; the rest are inside the interval
+
+
+def test_a_disabled_source_is_never_collected(tmp_path) -> None:
+    from conftest import build_test_services
+    from orchestrator.config import OrchestratorConfig
+    from orchestrator.worker import Worker
+
+    class Off(_FakeSource):
+        @property
+        def enabled(self) -> bool:
+            return False
+
+    services = build_test_services(tmp_path, OrchestratorConfig())
+    src = Off(["x"])
+    services.sources = [src]
+    Worker(services)._maybe_collect()
+    assert src.calls == 0

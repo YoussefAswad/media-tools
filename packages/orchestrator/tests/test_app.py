@@ -503,3 +503,71 @@ def test_the_job_lists_are_scrollable(client) -> None:
             continue
         assert '<div class="scroll-y">' in html, f"{path} is not scrollable"
         assert html.index('<div class="scroll-y">') < html.index("<table"), "scroller must wrap"
+
+
+# --- monitoring routes read snapshots, never the source ------------------------------------
+def test_mon_summary_reads_the_snapshot_and_never_the_docker_socket(client) -> None:
+    """This partial polls every 5s on two pages. It used to call services.docker.containers()
+    live, so every poll from every viewer was a Docker socket round-trip — exactly what the
+    worker's snapshot exists to avoid."""
+    from mediacore.docker_status import ContainerStatus
+    from orchestrator.monitor import SourceSnapshot
+
+    services = client.app.state.services
+
+    class Exploding:
+        name = "docker"
+
+        @property
+        def enabled(self) -> bool:
+            return True
+
+        @property
+        def interval_s(self) -> int:
+            return 30
+
+        def collect(self):
+            raise AssertionError("a web route must not collect from a source")
+
+    services.sources = [Exploding()]
+    services.snapshots["docker"] = SourceSnapshot(
+        data=[
+            ContainerStatus(name="radarr", state="running", status="Up", health=None, up=True),
+            ContainerStatus(name="sonarr", state="exited", status="Exited", health=None, up=False),
+        ],
+        ok=True,
+    )
+
+    body = client.get("/ui/mon-summary").text
+    assert "Containers up" in body and "1/2" in body
+
+
+def test_an_unreachable_source_says_so_instead_of_showing_stale_rows(client) -> None:
+    """ok=False must reach the UI as its own state. Rendering the last good snapshot would
+    present numbers from an unknown time ago as if they were current."""
+    from orchestrator.monitor import SourceSnapshot
+
+    services = client.app.state.services
+
+    class On:
+        name = "smart"
+        enabled = True
+        interval_s = 900
+
+        def collect(self):  # pragma: no cover - never called by a route
+            raise AssertionError
+
+    services.sources = [On()]
+    services.snapshots["smart"] = SourceSnapshot(data=None, ok=False)
+    assert "Scrutiny unreachable" in client.get("/ui/mon-smart").text
+
+    services.snapshots.pop("smart")
+    assert "Collecting SMART data" in client.get("/ui/mon-smart").text
+
+
+def test_a_source_switched_off_says_off_not_collecting(client) -> None:
+    services = client.app.state.services
+    services.sources = []  # nothing configured at all
+    assert "SMART monitoring is off" in client.get("/ui/mon-smart").text
+    assert "Container monitoring is off" in client.get("/ui/mon-containers").text
+    assert "System monitoring is off" in client.get("/ui/mon-system").text

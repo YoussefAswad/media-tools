@@ -1,11 +1,10 @@
-{% if not enabled %}
-<div class="empty muted">System monitoring is off. Enable <code>monitoring.system</code> in Config
-  (reads the dashdot container's API).</div>
-{% elif status is none %}
-<div class="empty muted">Collecting system metrics…</div>
-{% elif status == false %}
-<div class="empty muted">dashdot unreachable at the configured URL — check <code>monitoring.system.url</code>.</div>
-{% else %}
+{% from "_source_state.html" import panel %}
+{% set off %}System monitoring is off. Enable <code>monitoring.system</code> in Config
+  (reads the dashdot container's API).{% endset %}
+{% set unreachable %}dashdot unreachable at the configured URL — check
+  <code>monitoring.system.url</code>.{% endset %}
+{% call panel(enabled, status, off, unreachable,
+              collecting_msg="Collecting system metrics…") %}
 <div class="summary sys">
   {% for label, value, tone in tiles %}
   <div class="tile {{ tone }}">
@@ -15,4 +14,4 @@
   {% endfor %}
 </div>
 {% if cpu_model %}<div class="muted sys-cpu">{{ cpu_model }}</div>{% endif %}
-{% endif %}
+{% endcall %}

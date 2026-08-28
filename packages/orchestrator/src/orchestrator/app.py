@@ -19,11 +19,11 @@ from mediacore.config import find_default_config, parse_config, read_raw, save_t
 from mediacore.paths import to_local
 from pydantic import ValidationError
 
-from orchestrator.collectors import read_disk
 from orchestrator.config import OrchestratorConfig
 from orchestrator.dispatch import LIBRARY_SCAN, RERUN
 from orchestrator.ledger import MANUAL, QBITTORRENT
 from orchestrator.library import DEFAULT_SORT, resolve_roots
+from orchestrator.monitor import read_disk
 from orchestrator.queue import CANCELED, DEAD, FAILED, PROCESSING, QUEUED, Job
 from orchestrator.services import Services, build_services
 from orchestrator.util import (
@@ -777,9 +777,11 @@ def ui_mon_summary(request: Request) -> HTMLResponse:
         ("Warnings", str(warn), "warn" if warn else "skip"),
         ("Jobs active", str(active_jobs), "queued" if active_jobs else "skip"),
     ]
-    if services.docker is not None:
-        containers = services.docker.containers()
-        if containers is not None:
+    # Read the worker's snapshot, never the socket: this partial polls every 5s, and a live
+    # containers() call here meant a Docker round-trip per poll per viewer.
+    if services.source_enabled("docker"):
+        containers = services.snapshot("docker").rows
+        if containers:
             up = sum(1 for c in containers if c.up)
             tiles.append(
                 ("Containers up", f"{up}/{len(containers)}",
@@ -891,9 +893,9 @@ def _rule_tone(value: float, rule) -> str:
 def ui_mon_system(request: Request) -> HTMLResponse:
     services = services_of(request)
     mon = services.config.monitoring
-    if services.system is None:
+    if not services.source_enabled("system"):
         return _TEMPLATES.TemplateResponse(request, "_mon_system.html", {"enabled": False})
-    snap = services.system_snapshot
+    snap = services.snapshot("system").data
     tiles: list = []
     cpu_model = ""
     if snap is not None:
@@ -913,7 +915,12 @@ def ui_mon_system(request: Request) -> HTMLResponse:
     return _TEMPLATES.TemplateResponse(
         request,
         "_mon_system.html",
-        {"enabled": True, "status": services.system_ok, "tiles": tiles, "cpu_model": cpu_model},
+        {
+            "enabled": True,
+            "status": services.snapshot("system").ok,
+            "tiles": tiles,
+            "cpu_model": cpu_model,
+        },
     )
 
 
@@ -941,9 +948,9 @@ def _container_row(c, watch: set[str]) -> dict:
 def ui_mon_smart(request: Request) -> HTMLResponse:
     services = services_of(request)
     mon = services.config.monitoring
-    snap = services.smart_snapshot
+    smart = services.snapshot("smart")
     rows = []
-    for d in snap or []:
+    for d in smart.rows:
         if not d.passed:
             tone, health = "fail", "FAILED"
         else:
@@ -956,7 +963,7 @@ def ui_mon_smart(request: Request) -> HTMLResponse:
         age = humanize_days(d.power_on_hours / 24) if d.power_on_hours else "—"
         rows.append({"name": d.name, "model": d.model, "tone": tone, "health": health,
                      "temp": temp, "temp_tone": temp_tone, "age": age})
-    ctx = {"rows": rows, "enabled": services.scrutiny is not None, "status": services.smart_ok}
+    ctx = {"rows": rows, "enabled": services.source_enabled("smart"), "status": smart.ok}
     return _TEMPLATES.TemplateResponse(request, "_mon_smart.html", ctx)
 
 
@@ -964,12 +971,11 @@ def ui_mon_smart(request: Request) -> HTMLResponse:
 def ui_mon_containers(request: Request) -> HTMLResponse:
     services = services_of(request)
     watch = set(services.config.monitoring.docker.watch)
-    snap = services.docker_snapshot
-    rows = [_container_row(c, watch) for c in snap] if snap else []
+    docker = services.snapshot("docker")
     ctx = {
-        "rows": rows,
-        "enabled": services.docker is not None,
-        "status": services.docker_ok,  # None = collecting, True = ok, False = unreachable
+        "rows": [_container_row(c, watch) for c in docker.rows],
+        "enabled": services.source_enabled("docker"),
+        "status": docker.ok,  # None = collecting, True = ok, False = unreachable
     }
     return _TEMPLATES.TemplateResponse(request, "_mon_containers.html", ctx)
 
@@ -982,20 +988,21 @@ def ui_mon_containers(request: Request) -> HTMLResponse:
 def ui_mon_containers_summary(request: Request) -> HTMLResponse:
     """Compact container widget for the overview: an up/total count plus any down/unhealthy names."""
     services = services_of(request)
-    snap = services.docker_snapshot
+    docker = services.snapshot("docker")
+    containers = docker.rows
     up = total = 0
     problems: list[dict] = []
-    if snap:
-        total = len(snap)
-        up = sum(1 for c in snap if c.up)
-        for c in snap:
+    if containers:
+        total = len(containers)
+        up = sum(1 for c in containers if c.up)
+        for c in containers:
             if not c.up:
                 problems.append({"name": c.name, "tone": "fail", "label": c.state or "down"})
             elif c.health == "unhealthy":
                 problems.append({"name": c.name, "tone": "warn", "label": "unhealthy"})
     ctx = {
-        "enabled": services.docker is not None,
-        "status": services.docker_ok,
+        "enabled": services.source_enabled("docker"),
+        "status": docker.ok,
         "up": up,
         "total": total,
         "problems": problems,

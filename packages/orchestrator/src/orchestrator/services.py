@@ -14,24 +14,18 @@ from pathlib import Path
 
 from mediacore.arr.client import ArrClient, client_for
 from mediacore.audit import Audit
-from mediacore.dashdot import DashdotClient, SystemSnapshot
 from mediacore.db import open_db
-from mediacore.docker_status import ContainerStatus, DockerStatusClient
 from mediacore.jellyfin import JellyfinClient
 from mediacore.models import ArrInstance
 from mediacore.notify import Notifier
 from mediacore.qbit import QbitClient
-from mediacore.scrutiny import DriveStatus, ScrutinyClient
 
 from orchestrator.alerts import AlertEngine, Channel, InAppChannel, NtfyChannel
-from orchestrator.config import (
-    MonitoringConfig,
-    OrchestratorConfig,
-    load_orchestrator_config,
-)
+from orchestrator.config import OrchestratorConfig, load_orchestrator_config
 from orchestrator.ledger import Cutoffs, Ledger
 from orchestrator.library import LibraryIndex
 from orchestrator.metrics import Metrics
+from orchestrator.monitor import MISSING, MonitorSource, SourceSnapshot, build_sources
 from orchestrator.queue import JobQueue
 from orchestrator.titles import TitleIndex
 
@@ -54,25 +48,26 @@ class Services:
     titles: TitleIndex = field(init=False)
     qbit: QbitClient | None = None
     jellyfin: JellyfinClient | None = None
-    docker: DockerStatusClient | None = None
-    system: DashdotClient | None = None
-    #: latest container snapshot produced by the worker's docker collection (the web routes read
-    #: this instead of hitting the socket per request). ``docker_ok``: None = not collected yet,
-    #: True = last poll succeeded, False = socket unreachable. Reference swaps are atomic, so no
-    #: lock is needed for the single writer (worker) / many readers (web) pattern.
-    docker_snapshot: list[ContainerStatus] | None = None
-    docker_ok: bool | None = None
-    #: latest host system snapshot from dashdot (same single-writer/many-readers pattern).
-    system_snapshot: SystemSnapshot | None = None
-    system_ok: bool | None = None
-    scrutiny: ScrutinyClient | None = None
-    #: latest SMART drive snapshot from Scrutiny (same single-writer/many-readers pattern).
-    smart_snapshot: list[DriveStatus] | None = None
-    smart_ok: bool | None = None
+    #: every monitored source, enabled or not, each knowing its own interval.
+    sources: list[MonitorSource] = field(default_factory=list)
+    #: source name -> its last collection. Written only by the worker, read by the web
+    #: threadpool; entries are replaced rather than mutated, so no lock is needed.
+    snapshots: dict[str, SourceSnapshot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
         self.titles = TitleIndex(self)
+
+    def snapshot(self, name: str) -> SourceSnapshot:
+        """The named source's last collection, or a never-collected placeholder."""
+        return self.snapshots.get(name, MISSING)
+
+    def source(self, name: str) -> MonitorSource | None:
+        return next((s for s in self.sources if s.name == name), None)
+
+    def source_enabled(self, name: str) -> bool:
+        src = self.source(name)
+        return bool(src and src.enabled)
 
     def arr_instance(self, app: str) -> ArrInstance | None:
         return getattr(self.config.arr, app, None)
@@ -101,18 +96,13 @@ class Services:
             self.jellyfin = (
                 JellyfinClient.from_config(new_cfg.jellyfin) if new_cfg.jellyfin else None
             )
-            self.docker = _docker_client(new_cfg.monitoring)
-            if self.docker is None:  # disabled → drop any stale snapshot
-                self.docker_snapshot = None
-                self.docker_ok = None
-            self.system = _system_client(new_cfg.monitoring)
-            if self.system is None:
-                self.system_snapshot = None
-                self.system_ok = None
-            self.scrutiny = _scrutiny_client(new_cfg.monitoring)
-            if self.scrutiny is None:
-                self.smart_snapshot = None
-                self.smart_ok = None
+            # Rebuild every source against the new config, and drop the snapshot of any source
+            # that is now switched off — keeping it would render stale numbers as if they were
+            # live, which is exactly what the ok flag exists to prevent.
+            self.sources = build_sources(new_cfg.monitoring)
+            for src in self.sources:
+                if not src.enabled:
+                    self.snapshots.pop(src.name, None)
 
 
 def build_services(config_path: Path) -> Services:
@@ -131,9 +121,6 @@ def build_services(config_path: Path) -> Services:
     alerts = AlertEngine(db)
     qbit = QbitClient.from_config(config.qbit) if config.qbit else None
     jellyfin = JellyfinClient.from_config(config.jellyfin) if config.jellyfin else None
-    docker = _docker_client(config.monitoring)
-    system = _system_client(config.monitoring)
-    scrutiny = _scrutiny_client(config.monitoring)
     return Services(
         config=config,
         config_path=config_path,
@@ -148,28 +135,5 @@ def build_services(config_path: Path) -> Services:
         alerts=alerts,
         qbit=qbit,
         jellyfin=jellyfin,
-        docker=docker,
-        system=system,
-        scrutiny=scrutiny,
+        sources=build_sources(config.monitoring),
     )
-
-
-def _docker_client(mon: MonitoringConfig) -> DockerStatusClient | None:
-    """A Docker socket client when container monitoring is enabled, else None."""
-    if not mon.docker.enabled:
-        return None
-    return DockerStatusClient(str(mon.docker.socket))
-
-
-def _system_client(mon: MonitoringConfig) -> DashdotClient | None:
-    """A dashdot client when system monitoring is enabled, else None."""
-    if not mon.system.enabled:
-        return None
-    return DashdotClient(mon.system.url)
-
-
-def _scrutiny_client(mon: MonitoringConfig) -> ScrutinyClient | None:
-    """A Scrutiny client when SMART monitoring is enabled, else None."""
-    if not mon.smart.enabled:
-        return None
-    return ScrutinyClient(mon.smart.url)

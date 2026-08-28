@@ -14,13 +14,8 @@ import time
 
 from mediacore.notify import PRIORITY_FAILURE, PRIORITY_STATUS, NtfyMessage
 
-from orchestrator.collectors import (
-    collect_containers,
-    collect_disks,
-    collect_smart,
-    collect_system,
-)
 from orchestrator.dispatch import ARR_EVENT, Dispatcher, InsufficientSpaceError
+from orchestrator.monitor import MonitorSource, SourceSnapshot
 from orchestrator.queue import DEAD
 from orchestrator.services import Services
 from orchestrator.util import human_bytes
@@ -46,10 +41,9 @@ class Worker(threading.Thread):
         self._busy = False
         self.last_beat = time.monotonic()
         self._last_maintenance = 0.0  # run maintenance on the first idle tick
-        self._last_disk = 0.0  # sample disks on the first idle tick
-        self._last_docker = 0.0  # sample containers on the first idle tick
-        self._last_system = 0.0  # sample system metrics on the first idle tick
-        self._last_smart = 0.0  # sample SMART on the first idle tick
+        #: source name -> monotonic time of its last collection. Empty, so every source is
+        #: sampled on the first idle tick.
+        self._last_collect: dict[str, float] = {}
 
     def stop(self) -> None:
         self._stop.set()
@@ -128,90 +122,31 @@ class Worker(threading.Thread):
 
     # --- metric collection ----------------------------------------------------------
     def _maybe_collect(self) -> None:
-        """Sample monitored metrics, each source on its own monotonic gate (independent of
-        maintenance and of each other). Best-effort — a collection error must not touch the job
-        loop or the heartbeat."""
+        """Sample every monitored source that is due, each on its own interval gate. Best-effort:
+        a collection error must not touch the job loop or the heartbeat."""
         mon = self.services.config.monitoring
         if not mon.enabled:
             return
         now = time.monotonic()
-        if now - self._last_disk >= mon.disk_interval_s:
-            self._last_disk = now
+        for source in self.services.sources:
+            if not source.enabled:
+                continue
+            if now - self._last_collect.get(source.name, 0.0) < source.interval_s:
+                continue
+            self._last_collect[source.name] = now
             with contextlib.suppress(Exception):
-                self._collect_disks()
-        if (
-            mon.docker.enabled
-            and self.services.docker is not None
-            and now - self._last_docker >= mon.docker.interval_s
-        ):
-            self._last_docker = now
-            with contextlib.suppress(Exception):
-                self._collect_docker()
-        if (
-            mon.system.enabled
-            and self.services.system is not None
-            and now - self._last_system >= mon.system.interval_s
-        ):
-            self._last_system = now
-            with contextlib.suppress(Exception):
-                self._collect_system()
-        if (
-            mon.smart.enabled
-            and self.services.scrutiny is not None
-            and now - self._last_smart >= mon.smart.interval_s
-        ):
-            self._last_smart = now
-            with contextlib.suppress(Exception):
-                self._collect_smart()
+                self._collect(source)
 
-    def _collect_disks(self) -> None:
-        mon = self.services.config.monitoring
-        samples, evals = collect_disks(mon.disks, mon.disk_alert)
+    def _collect(self, source: MonitorSource) -> None:
+        """Store one source's samples, alert on its evaluations, publish its snapshot.
+
+        ``data is None`` means the underlying service is unreachable: recorded as ``ok=False``
+        so the UI says so, rather than leaving the last good numbers on screen looking live.
+        """
+        samples, evals, data = source.collect()
         self.services.metrics.record_many(samples)
         self.services.alerts.evaluate(evals, self.services.alert_channels())
-
-    def _collect_docker(self) -> None:
-        mon = self.services.config.monitoring
-        client = self.services.docker
-        assert client is not None
-        samples, evals, containers = collect_containers(client, mon.docker, mon.container_alert)
-        self.services.metrics.record_many(samples)
-        self.services.alerts.evaluate(evals, self.services.alert_channels())
-        if containers is None:  # socket unreachable — flag it, keep last good snapshot? no: mark stale
-            self.services.docker_ok = False
-            return
-        # Per-container CPU/mem for the UI list (parallel; running containers only). The web routes
-        # read this snapshot rather than hitting the socket per request.
-        if mon.docker.stats:
-            client.enrich_stats(containers)
-        self.services.docker_snapshot = containers
-        self.services.docker_ok = True
-
-    def _collect_system(self) -> None:
-        mon = self.services.config.monitoring
-        client = self.services.system
-        assert client is not None
-        samples, evals, snap = collect_system(client, mon.cpu_temp_alert, mon.mem_alert)
-        self.services.metrics.record_many(samples)
-        self.services.alerts.evaluate(evals, self.services.alert_channels())
-        if snap is None:  # dashdot unreachable
-            self.services.system_ok = False
-            return
-        self.services.system_snapshot = snap
-        self.services.system_ok = True
-
-    def _collect_smart(self) -> None:
-        mon = self.services.config.monitoring
-        client = self.services.scrutiny
-        assert client is not None
-        samples, evals, drives = collect_smart(client, mon.smart_alert, mon.smart_temp_alert)
-        self.services.metrics.record_many(samples)
-        self.services.alerts.evaluate(evals, self.services.alert_channels())
-        if drives is None:  # scrutiny unreachable
-            self.services.smart_ok = False
-            return
-        self.services.smart_snapshot = drives
-        self.services.smart_ok = True
+        self.services.snapshots[source.name] = SourceSnapshot(data=data, ok=data is not None)
 
     # --- periodic maintenance -------------------------------------------------------
     def _maybe_maintain(self) -> None:
