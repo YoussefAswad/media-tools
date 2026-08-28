@@ -68,6 +68,26 @@ class PolicyConfig(BaseModel):
     audio_allow: set[str] = set(DEFAULT_AUDIO_ALLOW)
     audio_min_channels: int = 2
     audio_max_tracks: int = 2
+
+    # --- audio language filter ---------------------------------------------------------
+    # Off by default: unlike the subtitle rules, getting this wrong removes audio, so it has to
+    # be a deliberate choice rather than something an upgrade switches on.
+    #: Drop audio tracks whose language is neither wanted nor original.
+    audio_language_filter: bool = False
+    #: Languages always kept, on top of the original language (ISO-639-2 or IETF).
+    audio_keep_langs: set[str] = {"eng", "ara"}
+    #: Also keep the title's original language, from the arr's ``originalLanguage``. When it can't
+    #: be resolved (arr unreachable, title not in the arr, placeholder value) the filter keeps
+    #: every track rather than guessing.
+    audio_keep_original: bool = True
+    #: Never drop an untagged track (``und``/``mis``/``zxx``): its language is unknown, which is
+    #: not the same as unwanted. Measured on a real library, 0.5% of files have one and dropping
+    #: it would have left them silent.
+    audio_keep_untagged: bool = True
+    #: Per-title original-language overrides, keyed by the arr title, for the cases where the
+    #: metadata's "production origin" isn't the audio you want — e.g. ``Star Wars: Visions`` is
+    #: an English-original Lucasfilm production whose Japanese track is the authentic one.
+    audio_original_overrides: dict[str, list[str]] = Field(default_factory=dict)
     subtitle_keep_langs: set[str] = set(DEFAULT_SUBTITLE_KEEP_LANGS)
     #: Which foreign-language subtitles to drop. ``all`` drops every codec; ``image`` drops only
     #: bitmap subs (PGS/VobSub) and leaves foreign SRT/ASS in place — the right scope when the

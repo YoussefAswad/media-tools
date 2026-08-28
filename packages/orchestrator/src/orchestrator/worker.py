@@ -20,7 +20,7 @@ from orchestrator.collectors import (
     collect_smart,
     collect_system,
 )
-from orchestrator.dispatch import Dispatcher, InsufficientSpaceError
+from orchestrator.dispatch import ARR_EVENT, Dispatcher, InsufficientSpaceError
 from orchestrator.queue import DEAD
 from orchestrator.services import Services
 from orchestrator.util import human_bytes
@@ -81,17 +81,20 @@ class Worker(threading.Thread):
                 continue
             self._busy = True
             try:
-                self._process_one(job.id, job.payload, job.label)
+                self._process_one(job.id, job.payload, job.label, job.kind)
             finally:
                 self._busy = False
         log.info("worker stopped")
 
     # --- job handling ---------------------------------------------------------------
-    def _process_one(self, job_id: str, payload: dict, label: str | None) -> None:
+    def _process_one(
+        self, job_id: str, payload: dict, label: str | None, kind: str = ARR_EVENT
+    ) -> None:
         try:
             self.dispatcher.dispatch(
                 job_id,
                 payload,
+                kind=kind,
                 set_step=lambda s: self.services.queue.set_step(job_id, s),
                 set_progress=lambda pct, note: self.services.queue.set_progress(job_id, pct, note),
             )

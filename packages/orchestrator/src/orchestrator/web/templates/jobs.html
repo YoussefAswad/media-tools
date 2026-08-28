@@ -19,16 +19,17 @@
   </form>
 </div>
 
-<div class="grid">
-  <section class="card">
-    <h2>Active <span class="muted">/ queued</span></h2>
-    <div data-src="/ui/active" data-interval="2000" data-searchable>Loading…</div>
-  </section>
-  <section class="card">
-    <h2>Failed <span class="muted">/ dead-letter</span></h2>
-    <div data-src="/ui/failed" data-interval="3000" data-searchable>Loading…</div>
-  </section>
-</div>
+{# The queue is the working surface and runs to hundreds of rows, while the dead-letter list is
+   usually short or empty — side by side, half the width went to nothing and the item names wrapped
+   to three lines. Full width keeps them on one line. #}
+<section class="card">
+  <h2>Active <span class="muted">/ queued</span></h2>
+  <div data-src="/ui/active" data-interval="2000" data-searchable>Loading…</div>
+</section>
+<section class="card">
+  <h2>Failed <span class="muted">/ dead-letter</span></h2>
+  <div data-src="/ui/failed" data-interval="3000" data-searchable>Loading…</div>
+</section>
 
 <section class="card">
   <div class="card-head">

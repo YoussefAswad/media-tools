@@ -188,15 +188,22 @@ class Audit:
             self.db.commit()
             return int(cur.lastrowid or 0)
 
-    def already_done(self, path: str, action: str, mtime: float | None) -> bool:
-        """True if this exact file (by path+mtime) already had this action succeed."""
+    def last_done_at(self, path: str, action: str, mtime: float | None) -> str | None:
+        """Timestamp of the most recent successful ``action`` on this exact file (by path+mtime),
+        or None. Matching on mtime is what makes it file-identity rather than path-identity: a
+        file replaced since is a different question."""
         if mtime is None:
-            return False
+            return None
         row = self.db.execute(
-            "SELECT 1 FROM actions WHERE path=? AND action=? AND result=? AND mtime=? LIMIT 1",
+            "SELECT ts FROM actions WHERE path=? AND action=? AND result=? AND mtime=? "
+            "ORDER BY ts DESC LIMIT 1",
             (path, action, OK, mtime),
         ).fetchone()
-        return row is not None
+        return row["ts"] if row else None
+
+    def already_done(self, path: str, action: str, mtime: float | None) -> bool:
+        """True if this exact file (by path+mtime) already had this action succeed."""
+        return self.last_done_at(path, action, mtime) is not None
 
     def recent(
         self,

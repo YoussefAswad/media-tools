@@ -318,3 +318,112 @@ def test_ledger_type_column_has_icons(client) -> None:
                                                  downloaded_bytes=1, uploaded_bytes=0)
     body = client.get("/ui/ledger", params={"range": "all"}).text
     assert "🎮" in body and "EldenRing" in body
+
+
+# --- library tab -------------------------------------------------------------------------
+def _index_row(services, path: str, *, needs_work: int = 1, app: str = "radarr"):
+    from orchestrator.library import LibraryRow
+
+    services.library.upsert(
+        LibraryRow(
+            path=path,
+            app=app,
+            root="/lib",
+            name=Path(path).name,
+            size_bytes=1000,
+            mtime=1.0,
+            needs_work=needs_work,
+            reasons="subs" if needs_work else "",
+            summary="dropped 1 foreign sub(s) [fre]" if needs_work else "nothing to do",
+            drop_subs=needs_work,
+            scanned_at="2026-01-01T00:00:00.000000+00:00",
+        )
+    )
+
+
+def test_library_page_and_partials_render(client) -> None:
+    services = client.app.state.services
+    _index_row(services, "/lib/a.mkv")
+
+    page = client.get("/library")
+    assert page.status_code == 200
+    assert "Scan library" in page.text
+
+    table = client.get("/ui/library", params={"status": "needs"})
+    assert table.status_code == 200
+    assert "a.mkv" in table.text
+
+    summary = client.get("/ui/library-summary")
+    assert summary.status_code == 200
+    assert "Need work" in summary.text
+
+
+def test_library_scan_queues_one_job_at_a_time(client) -> None:
+    from orchestrator.dispatch import LIBRARY_SCAN
+
+    services = client.app.state.services
+    client.post("/library/scan", data={"root": "", "full": ""}, follow_redirects=False)
+    client.post("/library/scan", data={"root": "", "full": ""}, follow_redirects=False)
+    scans = [j for j in services.queue.list(limit=50) if j.kind == LIBRARY_SCAN]
+    assert len(scans) == 1
+    assert scans[0].payload == {"root": None, "full": False}
+
+
+def test_library_enqueue_ignores_paths_that_are_not_indexed(client) -> None:
+    services = client.app.state.services
+    _index_row(services, "/lib/a.mkv")
+
+    resp = client.post(
+        "/library/enqueue",
+        data={"paths": ["/lib/a.mkv", "/etc/passwd"]},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    labels = [j.label for j in services.queue.list(limit=50)]
+    assert labels == ["re-run a.mkv"]
+    assert services.library.get("/lib/a.mkv").enqueued_at is not None
+
+
+def test_library_enqueue_select_all_uses_the_filters_and_the_cap(client) -> None:
+    services = client.app.state.services
+    services.config.library.max_enqueue = 2
+    for i in range(4):
+        _index_row(services, f"/lib/movie{i}.mkv")
+    _index_row(services, "/lib/clean.mkv", needs_work=0)
+
+    client.post(
+        "/library/enqueue",
+        data={"select_all": "1", "status": "needs", "q": "movie"},
+        follow_redirects=False,
+    )
+    jobs = services.queue.list(limit=50)
+    assert len(jobs) == 2  # capped
+    assert all("movie" in (j.label or "") for j in jobs)
+
+
+def test_library_queued_badge_clears_when_the_job_is_cancelled(client) -> None:
+    """End to end: queue a file, cancel the job, and the Library tab must stop counting it."""
+    services = client.app.state.services
+    _index_row(services, "/lib/a.mkv")
+    client.post("/library/enqueue", data={"paths": ["/lib/a.mkv"]}, follow_redirects=False)
+    assert 'tile-label">Queued<' in client.get("/ui/library-summary").text
+
+    job = services.queue.list(limit=10)[0]
+    services.queue.cancel(job.id)
+    assert 'tile-label">Queued<' not in client.get("/ui/library-summary").text
+    assert "needs work" in client.get("/ui/library", params={"status": "needs"}).text
+
+
+def test_the_job_lists_are_scrollable(client) -> None:
+    """A 95-job queue made the card thousands of pixels tall. The scroller has to live INSIDE the
+    partial: on the panel element itself, app.js can't find it to restore scrollTop, and a 2s
+    poll would yank the reader back to the top."""
+    services = client.app.state.services
+    for i in range(3):
+        services.queue.enqueue("rerun", {"app": "sonarr", "payload": {}}, label=f"job {i}")
+    for path in ("/ui/active", "/ui/failed"):
+        html = client.get(path).text
+        if "table" not in html:
+            continue
+        assert '<div class="scroll-y">' in html, f"{path} is not scrollable"
+        assert html.index('<div class="scroll-y">') < html.index("<table"), "scroller must wrap"

@@ -82,6 +82,10 @@ class ArrClient:
 class RadarrClient(ArrClient):
     app = "radarr"
 
+    def titles(self) -> list[dict[str, Any]]:
+        """Every movie, for the path -> original-language index."""
+        return self._get("/api/v3/movie") or []
+
     def rescan(self, item_id: int) -> dict[str, Any]:
         return self.command("RescanMovie", movieIds=[item_id])
 
@@ -91,6 +95,10 @@ class RadarrClient(ArrClient):
 
 class SonarrClient(ArrClient):
     app = "sonarr"
+
+    def titles(self) -> list[dict[str, Any]]:
+        """Every series, for the path -> original-language index."""
+        return self._get("/api/v3/series") or []
 
     def rescan(self, item_id: int) -> dict[str, Any]:
         return self.command("RescanSeries", seriesId=item_id)

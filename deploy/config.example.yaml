@@ -58,6 +58,22 @@ policy:
   audio_max_tracks: 2
   remux_to_mkv: false          # true = always remux mp4/m4v/mov imports to MKV (pure-MKV library);
                                # the subtitle/audio policies below still apply on top
+  # Audio language filter — keep English/Arabic plus the title's ORIGINAL language and drop other
+  # dubs. Off by default: unlike the subtitle rules, getting this wrong removes audio.
+  # The original language comes from the arr's `originalLanguage`: already in the webhook payload
+  # (no extra API call at import), and resolved by matching the file's path against the arr's
+  # library folders for the Library tab / re-runs.
+  # Three rails stop this ever silencing a file: an unresolved original language keeps every
+  # track, untagged (und) tracks are kept, and a selection that would drop ALL audio is abandoned.
+  audio_language_filter: false
+  audio_keep_langs: [eng, ara]
+  audio_keep_original: true
+  audio_keep_untagged: true        # `und` means unknown, not unwanted
+  # For titles whose production origin isn't the audio you want — Star Wars: Visions is an
+  # English-original Lucasfilm production whose Japanese track is the authentic one.
+  audio_original_overrides: {}
+  # audio_original_overrides:
+  #   "Star Wars: Visions": [jpn]
   subtitle_keep_langs: [eng, en, ara, ar]
   # Which foreign-language subs to drop:
   #   all   - every codec, text (SRT/ASS) and image (PGS/VobSub) alike

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from mediacore.config import find_default_config, load_config
 from mediacore.models import CoreConfig
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from seasonal_shift.models import ShowConfig
 
 
@@ -126,10 +126,62 @@ class MonitoringConfig(BaseModel):
     ntfy_topic: str | None = None
 
 
+class LibraryRoot(BaseModel):
+    """One library tree to index, as a path visible *inside the container*.
+
+    ``app`` decides which arr a re-run from this root is addressed to (it shapes the synthesized
+    event), so a root that mixes movies and episodes needs to be listed twice, once per subtree.
+    """
+
+    path: Path
+    app: str = "radarr"
+    label: str | None = None
+
+    @field_validator("app")
+    @classmethod
+    def _known_app(cls, v: str) -> str:
+        if v not in ("radarr", "sonarr"):
+            raise ValueError("app must be 'radarr' or 'sonarr'")
+        return v
+
+
+class LibraryConfig(BaseModel):
+    """The Library tab's back-catalogue index: which trees to walk, what counts as a media file,
+    and how much a single bulk enqueue is allowed to queue at once."""
+
+    enabled: bool = True
+    #: trees to walk. Empty = derive one per configured arr instance from its
+    #: ``local_media_root`` (falling back to ``media_root`` when the mounts are identical).
+    roots: list[LibraryRoot] = Field(default_factory=list)
+    #: file extensions the pipeline can act on (mkvprune's accepted inputs).
+    extensions: list[str] = Field(default_factory=lambda: [".mkv", ".mp4", ".m4v", ".mov"])
+    #: ignore anything smaller than this — samples, featurettes, stray artwork.
+    min_size: str = "100MB"
+    #: hard cap on one bulk enqueue, so a mis-click can't queue the whole library.
+    max_enqueue: int = 200
+    #: rows per page in the Library table.
+    page_size: int = 100
+
+    @field_validator("min_size", mode="before")
+    @classmethod
+    def _size_as_text(cls, v: object) -> object:
+        """Accept a bare number from YAML (``min_size: 0``) as well as "100MB" — otherwise the
+        obvious way to switch the floor off fails config validation at startup."""
+        return str(v) if isinstance(v, int | float) else v
+
+    @property
+    def min_size_bytes(self) -> int:
+        from orchestrator.util import parse_bytes
+
+        return parse_bytes(self.min_size)
+
+
 class OrchestratorConfig(CoreConfig):
     server: ServerConfig = ServerConfig()
     #: system monitoring (watched disks, thresholds, alert timing).
     monitoring: MonitoringConfig = MonitoringConfig()
+    #: the Library tab's index of files already on disk (backfill source).
+    library: LibraryConfig = LibraryConfig()
     #: seasonal-shift show offsets (matched to a Sonarr series by ``name``).
     shows: list[ShowConfig] = Field(default_factory=list)
 

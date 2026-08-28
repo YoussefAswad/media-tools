@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import types
 from pathlib import Path
 
 import pytest
@@ -353,11 +355,25 @@ def test_prune_runs_before_seasonal_shift(tmp_path, monkeypatch):
 
 
 class _RecJellyfin:
-    def __init__(self):
-        self.calls = 0
+    """Stands in for JellyfinClient. ``item_id=None`` models a path Jellyfin doesn't know, which
+    is what makes the pipeline fall back to a library scan."""
+
+    def __init__(self, item_id: str | None = None):
+        self.calls = 0  # refreshes of either kind
+        self.item_refreshes: list[str] = []
+        self.library_refreshes = 0
+        self.item_id = item_id
+
+    def refresh_path(self, local_path):
+        if self.item_id is None:
+            return None
+        self.calls += 1
+        self.item_refreshes.append(local_path)
+        return self.item_id
 
     def refresh_library(self):
         self.calls += 1
+        self.library_refreshes += 1
         return True
 
 
@@ -435,3 +451,305 @@ def test_quality_finding_detail_uses_titles(tmp_path):
     import json as _j
     detail = _j.loads(qc["after"])["detail"]
     assert "Foreign subtitles" in detail and detail != "A"  # human titles, not rule letters
+
+
+def test_library_scan_job_indexes_without_touching_files(tmp_path):
+    """The scan kind branches before the per-file pipeline: it probes, records one audit action,
+    and leaves every file exactly as it found it."""
+    from orchestrator.config import LibraryRoot
+    from orchestrator.dispatch import LIBRARY_SCAN
+
+    root = tmp_path / "lib"
+    root.mkdir()
+    movie = root / "movie.mkv"
+    movie.write_bytes(b"x" * 500)
+    before = movie.read_bytes()
+
+    cfg = radarr_config()
+    cfg.library.roots = [LibraryRoot(path=root, app="radarr")]
+    cfg.library.min_size = "0"
+    services = build_test_services(tmp_path, cfg)
+    dispatcher = Dispatcher(services, probe_fn=_dirty_probe)
+
+    steps: list[str] = []
+    outcome = dispatcher.dispatch(
+        "job-scan", {"root": None, "full": False}, kind=LIBRARY_SCAN, set_step=steps.append
+    )
+
+    assert steps == ["scan"]
+    assert outcome.steps[0].result == OK
+    assert "1 need work" in outcome.steps[0].detail
+    assert movie.read_bytes() == before
+
+    row = services.library.get(str(movie))
+    assert row.needs_work == 1 and "subs" in row.reasons
+    actions = services.audit.for_job("job-scan")
+    assert [(a["tool"], a["action"]) for a in actions] == [("library", "scan")]
+
+
+def _library_row_for(services, path: str):
+    from orchestrator.library import LibraryRow
+
+    services.library.upsert(
+        LibraryRow(
+            path=path, app="radarr", root=str(Path(path).parent), name=Path(path).name,
+            size_bytes=1, mtime=0.0, needs_work=1, reasons="subs", summary="dropped 1 sub",
+            drop_subs=1, enqueued_at="2026-01-01T00:00:00+00:00",
+            scanned_at="2026-01-01T00:00:00.000000+00:00",
+        )
+    )
+
+
+def test_prune_settles_the_library_row_it_came_from(tmp_path, monkeypatch):
+    """A file queued from the Library tab must stop showing its pre-prune decision (and its
+    'queued' badge) the moment the job finishes — without waiting for the next scan."""
+    path = _touch(tmp_path)
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    _library_row_for(services, path)
+
+    def runner(argv, **kw):
+        return PruneResult(0, "", "")
+
+    dispatcher = Dispatcher(services, probe_fn=_dirty_probe, prune_runner=runner)
+    dispatcher.dispatch("job-1", _radarr_payload(path))
+
+    row = services.library.get(path)
+    assert row.needs_work == 0
+    assert row.enqueued_at is None
+    assert row.pruned_at is not None
+    assert row.status == "done"
+
+
+def test_a_failed_prune_leaves_the_library_row_alone(tmp_path, monkeypatch):
+    path = _touch(tmp_path)
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    _library_row_for(services, path)
+
+    def runner(argv, **kw):
+        return PruneResult(2, "", "boom")
+
+    dispatcher = Dispatcher(services, probe_fn=_dirty_probe, prune_runner=runner)
+    with pytest.raises(DispatchError):
+        dispatcher.dispatch("job-1", _radarr_payload(path))
+
+    assert services.library.get(path).needs_work == 1
+
+
+def test_a_remux_drops_the_row_for_the_old_filename(tmp_path, monkeypatch):
+    """mp4 -> mkv writes a sibling and removes the source: the old path no longer exists, so its
+    row goes and the next scan indexes the .mkv."""
+    src = tmp_path / "movie.mp4"
+    src.write_bytes(b"x")
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    _library_row_for(services, str(src))
+
+    def runner(argv, **kw):
+        (tmp_path / "movie.mkv").write_bytes(b"x")
+        src.unlink()
+        return PruneResult(0, "", "")
+
+    dispatcher = Dispatcher(services, probe_fn=_dirty_probe, prune_runner=runner)
+    dispatcher.dispatch("job-1", _radarr_payload(str(src)))
+
+    assert services.library.get(str(src)) is None
+
+
+# --- audio language filter, end to end ----------------------------------------------------
+def _multi_dub_probe(path: str):
+    return probe_of(
+        mk(0, "video", codec_name="hevc"),
+        mk(1, "audio", codec_name="ac3", channels=6, language="jpn"),
+        mk(2, "audio", codec_name="ac3", channels=6, language="eng"),
+        mk(3, "audio", codec_name="ac3", channels=6, language="fre"),
+        mk(4, "audio", codec_name="ac3", channels=6, language="ger"),
+        path=path,
+    )
+
+
+def _sonarr_payload(path: str, original: str | None = "Japanese") -> dict:
+    series = {"id": 7, "title": "Some Anime"}
+    if original:
+        series["originalLanguage"] = {"id": 8, "name": original}
+    return {
+        "app": "sonarr",
+        "payload": {
+            "eventType": "Download",
+            "series": series,
+            "episodeFile": {"path": path},
+            "episodes": [{"seasonNumber": 1, "episodeNumber": 3}],
+        },
+    }
+
+
+def _filter_config():
+    cfg = radarr_config(enable_seasonal_shift=False)
+    cfg.policy.audio_language_filter = True
+    cfg.policy.audio_keep_langs = {"eng", "ara"}
+    return cfg
+
+
+def test_webhook_original_language_reaches_the_mkvprune_argv(tmp_path):
+    """The whole point: Sonarr says Japanese, so the French and German dubs are dropped and the
+    Japanese + English tracks survive — with no arr API call anywhere in the path."""
+    path = _touch(tmp_path)
+    services = build_test_services(tmp_path, _filter_config())
+    seen: list[list[str]] = []
+
+    def runner(argv, **kw):
+        seen.append(argv)
+        return PruneResult(0, "", "")
+
+    disp = Dispatcher(services, probe_fn=_multi_dub_probe, prune_runner=runner)
+    disp.dispatch("job-1", _sonarr_payload(path))
+
+    assert seen, "mkvprune was never invoked"
+    argv = seen[0]
+    assert argv[argv.index("--audio") + 1] == "1,2"
+
+
+def test_no_original_language_in_the_payload_keeps_every_track(tmp_path):
+    """A payload without originalLanguage and no arr to ask must not narrow to eng/ara only."""
+    path = _touch(tmp_path)
+    services = build_test_services(tmp_path, _filter_config())
+    seen: list[list[str]] = []
+    disp = Dispatcher(
+        services,
+        probe_fn=_multi_dub_probe,
+        prune_runner=lambda argv, **kw: (seen.append(argv), PruneResult(0, "", ""))[1],
+    )
+    disp.dispatch("job-1", _sonarr_payload(path, original=None))
+    # nothing to do at all: no subs to drop, no re-encode, and the filter has no opinion
+    assert not seen
+
+
+def test_a_rerun_falls_back_to_the_title_index(tmp_path):
+    """A Library-tab re-run synthesizes an event with no originalLanguage, so the path index is
+    what makes the filter work off the back catalogue."""
+    path = _touch(tmp_path)
+    services = build_test_services(tmp_path, _filter_config())
+
+    class FakeSonarr:
+        def titles(self):
+            return [{"path": str(tmp_path), "title": "Some Anime",
+                     "originalLanguage": {"name": "Japanese"}}]
+
+    services.arr_client = lambda app: FakeSonarr() if app == "sonarr" else None
+    services.arr_instance = lambda app: None
+
+    seen: list[list[str]] = []
+    disp = Dispatcher(
+        services,
+        probe_fn=_multi_dub_probe,
+        prune_runner=lambda argv, **kw: (seen.append(argv), PruneResult(0, "", ""))[1],
+    )
+    disp.dispatch("job-1", {"app": "sonarr", "payload": {
+        "eventType": "Download", "series": {"title": ""},
+        "episodeFile": {"path": path}, "episodes": []}})
+
+    assert seen and seen[0][seen[0].index("--audio") + 1] == "1,2"
+
+
+def test_the_filter_never_asks_the_arr_when_it_is_off(tmp_path):
+    path = _touch(tmp_path)
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+
+    def boom(app):
+        raise AssertionError("the title index must not be consulted when the filter is off")
+
+    services.arr_client = boom
+    disp = Dispatcher(services, probe_fn=_multi_dub_probe,
+                      prune_runner=lambda argv, **kw: PruneResult(0, "", ""))
+    disp.dispatch("job-1", _sonarr_payload(path))
+
+
+# --- jellyfin: refresh the file, not the whole library --------------------------------------
+def test_jellyfin_refreshes_the_changed_item_not_the_library(tmp_path, monkeypatch):
+    """A library scan is a file-presence walk: it never re-probes a file rewritten in place, so
+    the pruned file must be refreshed by item id (the API behind "Refresh metadata")."""
+    monkeypatch.setattr("mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, i, **k: None)
+    path = _touch(tmp_path)
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    jf = _RecJellyfin(item_id="abc123")
+    services.jellyfin = jf
+
+    disp = Dispatcher(services, probe_fn=_dirty_probe,
+                      prune_runner=lambda a, **k: PruneResult(0, "", ""))
+    disp.dispatch("j1", _radarr_payload(path))
+
+    assert jf.item_refreshes == [path]
+    assert jf.library_refreshes == 0
+    detail = next(a for a in services.audit.for_job("j1") if a["tool"] == "jellyfin")
+    assert "abc123" in json.loads(detail["after"])["detail"]
+
+
+def test_jellyfin_falls_back_to_a_scan_for_a_path_it_does_not_know(tmp_path, monkeypatch):
+    """A brand-new import (or a renamed file) genuinely needs a scan — that is the one case the
+    library refresh is right for."""
+    monkeypatch.setattr("mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, i, **k: None)
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    jf = _RecJellyfin(item_id=None)
+    services.jellyfin = jf
+
+    disp = Dispatcher(services, probe_fn=_dirty_probe,
+                      prune_runner=lambda a, **k: PruneResult(0, "", ""))
+    disp.dispatch("j2", _radarr_payload(_touch(tmp_path)))
+
+    assert jf.library_refreshes == 1 and jf.item_refreshes == []
+
+
+def test_a_jellyfin_error_never_fails_the_job(tmp_path, monkeypatch):
+    monkeypatch.setattr("mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, i, **k: None)
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+
+    class Boom:
+        def refresh_path(self, p):
+            raise RuntimeError("jellyfin down")
+
+        def refresh_library(self):
+            raise RuntimeError("jellyfin down")
+
+    services.jellyfin = Boom()
+    disp = Dispatcher(services, probe_fn=_dirty_probe,
+                      prune_runner=lambda a, **k: PruneResult(0, "", ""))
+    disp.dispatch("j3", _radarr_payload(_touch(tmp_path)))  # must not raise
+    rec = next(a for a in services.audit.for_job("j3") if a["tool"] == "jellyfin")
+    assert rec["result"] == SKIP
+
+
+def test_a_rerun_still_honours_a_per_title_override(tmp_path):
+    """End to end for the shadowing bug: a Library-tab re-run carries no arr title, so the
+    override has to be resolved through the path index. Without that, Star Wars: Visions loses
+    its Japanese track on exactly the path the override exists for."""
+    path = _touch(tmp_path)
+    cfg = radarr_config(enable_seasonal_shift=False)
+    cfg.policy.audio_language_filter = True
+    cfg.policy.audio_keep_langs = {"eng", "ara"}
+    cfg.policy.audio_original_overrides = {"Star Wars: Visions": ["jpn"]}
+    services = build_test_services(tmp_path, cfg)
+
+    class FakeSonarr:
+        def titles(self):
+            return [{"path": str(tmp_path), "title": "Star Wars: Visions",
+                     "originalLanguage": {"name": "English"}}]
+
+    services.arr_client = lambda app: FakeSonarr() if app == "sonarr" else None
+    services.arr_instance = lambda app: None
+
+    def probe(p):
+        return probe_of(
+            mk(0, "video", codec_name="hevc"),
+            mk(1, "audio", codec_name="ac3", channels=6, language="eng"),
+            mk(2, "audio", codec_name="ac3", channels=6, language="jpn"),
+            path=p,
+        )
+
+    seen: list[list[str]] = []
+    disp = Dispatcher(services, probe_fn=probe,
+                      prune_runner=lambda a, **k: (seen.append(a), PruneResult(0, "", ""))[1])
+    # the payload a Library-tab re-run builds: no title, no episodes
+    disp.dispatch("j", {"app": "sonarr", "payload": {
+        "eventType": "Download", "series": {"title": ""},
+        "episodeFile": {"path": path}, "episodes": []}})
+
+    assert not seen, "nothing should be dropped: eng is kept and jpn is the override original"
+

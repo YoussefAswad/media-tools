@@ -16,8 +16,8 @@ Script plus a standalone renamer, and to unify three tools that had drifted apar
 - **seasonal-shift** — renumber anime episodes on disk (seasonal ⇄ absolute) and re-register the
   file with Sonarr under its original episode.
 - **orchestrator** — the glue: webhook ingest → durable job queue → per-file pipeline → audit log
-  → ntfy status → a small web UI (job queue, audit actions, a downloads/bandwidth ledger, config
-  editor).
+  → ntfy status → a small web UI (job queue, audit actions, a downloads/bandwidth ledger, a
+  library index for the back catalogue, config editor).
 
 All of that is **live**: deployed as a Docker container in the sibling `my-media-server` compose
 project, replacing the old bash Custom Script and standalone seasonal-shift.
@@ -45,6 +45,13 @@ The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — *
 5. **Jellyfin refresh** — best-effort, after prune ran (ok or skip).
 6. **status rollup** — ntfy.
 
+That pipeline only ever sees files at import. The **Library tab** (`orchestrator/library.py`) is
+the back-catalogue path: a `library_scan` job walks the configured roots, probes each file once and
+stores what `decide()` *would* do in a `library_files` table; the tab renders that table with
+filters, and queueing any subset of it is a separate click that enqueues the same `rerun` payload
+`/rerun` already uses. Scanning never writes to a media file — it is probe + `decide()`, and
+`decide()` is pure, so the index is a dry run by construction.
+
 ## Running, testing, linting
 
 - **uv is not on `$PATH`.** Always use `~/.local/bin/uv run --python 3.12 ...`.
@@ -56,6 +63,11 @@ The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — *
   ```
 - **Lint:** `~/.local/bin/uv run --python 3.12 ruff check packages` (this DOES work across all
   packages). Config lives in the root `pyproject.toml`; `UP047`/`B008` are intentionally ignored.
+- **If a source edit seems to have no effect, clear `__pycache__`.** Bytecode here is
+  timestamp-invalidated on (mtime, size): an edit that keeps the file the same length and lands in
+  the same second as the last compile is not detected, and the old bytecode keeps running while
+  the file on disk reads correct. `inspect.getsource` shows the *file*, so it lies too — `dis` on
+  the function is what settles it. `find packages -name __pycache__ -prune -exec rm -rf {} +`.
 - Pyright "Import could not be resolved" warnings in the editor are just the analyzer's path config
   (workspace packages aren't on its resolution path) — **not real errors**; the code runs fine.
 
@@ -178,6 +190,85 @@ The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — *
       (`sustain_s`), applies recovery hysteresis (`clear_s`), de-dupes, and throttles reminders
       (`cooldown_s`) — a config file edited on disk is **not** hot-reloaded (only the Config-tab
       save calls `reload_config`); a direct edit needs a container restart/recreate.
+
+12. **The library index is cheap to refresh but expensive to build, and it can lie about
+    itself.** A scan costs one mkvmerge + a few ffprobe calls *per file* and runs on the single
+    worker, so a full library blocks imports for as long as it takes. Three things keep that
+    honest, and all three are load-bearing:
+    - Rows are keyed by **(path, mtime, size)**, so a re-scan only re-probes what actually
+      changed; a scan that dies halfway resumes almost free. `prune_missing` is scoped to the
+      roots that were actually walked and skipped entirely on a partial scan, so scanning one
+      folder never evicts the rest of the index.
+    - `scanned_at` is stamped with **microsecond** precision for exactly this reason: two scans in
+      the same second would otherwise share a timestamp and the second one would conclude it had
+      seen nothing (and delete every row it just wrote).
+    - The scan polls the durable pause flag every 25 files, so "Pause worker → idle — safe to
+      redeploy" stays true instead of waiting out a 40-minute walk.
+    A `library.roots` entry's `app` decides which arr a re-run from that tree is addressed to, so
+    a root holding both movies and episodes must be listed twice, one subtree each. Bulk enqueue
+    resolves every target **through the index** (never straight from the form), which is what
+    stops a crafted POST pointing the pipeline at an arbitrary path. And after a prune finishes,
+    `Dispatcher._sync_library_row` settles that file's row in place (no re-probe) — without it the
+    table would keep showing a pre-prune decision and a stale "queued" badge until the next scan.
+
+13. **Per-track sizes come from mkvmerge's statistics tags, not from ffprobe.** Matroska has no
+    per-track bitrate header, so ffprobe's own `bit_rate` is empty on most of an MKV library
+    (measured over 40 real files / 67 audio tracks: **13%**). What the files *do* carry is
+    mkvmerge's statistics tags — `NUMBER_OF_BYTES` (the exact track size) and `BPS` — present on
+    **72%** of audio and **86%** of subtitle tracks. `library.track_sizes` reads them out of the
+    retained `ProbeResult.ffprobe_json` (mkvprune stays untouched: this only *reads* json it
+    already keeps) and falls back bytes → BPS × runtime → ffprobe bitrate → unknown. Reading only
+    `Track.bit_rate` is what made every row's estimate read "unknown" on the first deploy.
+    A file where some tracks report a size and others don't yields a **partial** delta flagged
+    `known=False` — a floor, not a fiction. Never collapse that into a confident `0`.
+
+14. **The pipeline usually makes files BIGGER on this library, and the UI must not imply
+    otherwise.** Measured over a real sample: dropping foreign *text* subs reclaims only ~200 KB
+    per file, while re-encoding a 300-400 kbps AAC/Opus track to 640 kbps AC-3 **adds** 50-100 MB.
+    Net over 14 files that needed work: **+379 MB**. That is correct behaviour — the AC-3
+    re-encode buys player compatibility, not space — but it means "estimated saving" is the wrong
+    frame. Keep the label neutral ("Est. size change", "reclaims"/"adds", green vs amber) rather
+    than assuming a prune shrinks anything. Image subs (PGS/VobSub) are the exception: those run
+    to megabytes each.
+
+15. **`library_files.enqueued_at` is a cache of "this file has an active job", so it must be
+    re-derived, not just written.** It is stamped at enqueue time so the table can filter and
+    count in SQL, but cancelling a job, deleting it, or letting it dead-letter never calls
+    `mark_clean` — the flag would stick and the "Queued for re-run" tile would over-count forever
+    (it did). Both Library routes call `_sync_queued_flags`, which walks the live queue once
+    (`parse_event(...).primary_path()` → `to_local`) and clears every flag with no matching
+    active job. Anything that adds a new way for a job to leave the queue needs nothing extra —
+    that is the point of deriving it.
+
+16. **A changed decision/estimate formula needs `library.SCAN_VERSION` bumped.** The scan skips
+    files whose (path, mtime, size) is unchanged, so a fixed estimator would otherwise only ever
+    reach files that happened to change on disk — the whole index would keep serving numbers from
+    the old formula. Rows stamped with an older version are re-probed by the next *ordinary*
+    scan, no "re-probe unchanged files" needed.
+
+17. **"Original language" comes from the arr, and every unknown must widen the keep set, not
+    narrow it.** The audio language filter keeps `audio_keep_langs` plus the title's original
+    language, resolved from Radarr/Sonarr's `originalLanguage` — already present in the webhook
+    payload for both apps (no API call at import), and looked up by longest-prefix path match
+    (`orchestrator/titles.py`) for the paths that have no event: the library scan, a Library-tab
+    re-run, a manual `/rerun`. Measured on the real library: 244/244 titles carry a usable
+    `originalLanguage`, and path matching resolves 2300/2303 files (99.9% — the misses are folders
+    the arr no longer knows about).
+    Four rails, each needed by a real file, applied in this order:
+    - **`audio_keep_original` with no original resolved keeps every track.** This is the one that
+      bites: falling through to "filter on eng/ara alone" strips the Japanese track off every
+      anime the moment an arr is briefly unreachable. The test asserts the filter *never ran*, not
+      merely that nothing was dropped — the never-empty rail would otherwise mask the bug (it did).
+    - **Untagged (`und`/`mis`/`zxx`) tracks are kept.** 0.5% of this library has one; the single
+      audio track of *The Iron Giant* is `und`, and dropping it leaves a silent film.
+    - **A selection that would drop every audio track is abandoned wholesale**, so `audio_arg` can
+      never be `"none"`. A file matching nothing means the policy is wrong about that file, and
+      silence is never the better answer.
+    - **Per-title overrides** (`audio_original_overrides`) for metadata that is *correct but not
+      what you want*: TVDb rightly calls *Star Wars: Visions* English-original (Lucasfilm), yet its
+      Japanese track is the authentic one. No data source fixes this; only an override does.
+    Tracks the filter drops are excluded from the AC-3 re-encode set — encoding a track that is
+    about to be dropped burns hours for nothing.
 
 18. **A Jellyfin library scan will never notice a file the pipeline rewrote.**
     `POST /Library/Refresh` ("Scan Media Library") is a file-*presence* walk: measured on the real

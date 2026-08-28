@@ -1,6 +1,7 @@
 {% if not jobs %}
   <p class="muted empty">Nothing here.</p>
 {% else %}
+<div class="scroll-y">
 <table class="jobs">
   <thead><tr><th>Item</th><th>Type</th><th>Status</th><th>Step</th><th>Att.</th><th></th></tr></thead>
   <tbody>
@@ -38,4 +39,5 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}

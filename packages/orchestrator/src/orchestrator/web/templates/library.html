@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block nav_lib %}active{% endblock %}
+{% block title %}Library — Media Orchestrator{% endblock %}
+{% block content %}
+<div class="summary lib" data-src="/ui/library-summary" data-interval="5000">Loading…</div>
+
+<div class="toolbar">
+  <input type="search" id="search" placeholder="Search library… (path or filename)" autocomplete="off">
+  <div class="filters" id="app-filter">
+    <button data-app="" class="chip active">All</button>
+    <button data-app="radarr" class="chip">🎬 Movies</button>
+    <button data-app="sonarr" class="chip">📺 Episodes</button>
+  </div>
+  <div class="filters" id="lib-status">
+    <button data-status="needs" class="chip active">Needs work</button>
+    <button data-status="" class="chip">Everything</button>
+    <button data-status="clean" class="chip">Clean</button>
+    <button data-status="done" class="chip">Pruned</button>
+    <button data-status="queued" class="chip">Queued</button>
+    <button data-status="error" class="chip">Errors</button>
+  </div>
+  <div class="filters" id="lib-reason">
+    <button data-reason="" class="chip active">Any change</button>
+    <button data-reason="subs" class="chip">Subtitles</button>
+    <button data-reason="audio" class="chip">Re-encode</button>
+    <button data-reason="audiolang" class="chip" title="Audio tracks the language filter would drop">Audio drop</button>
+    <button data-reason="remux" class="chip">Not MKV</button>
+  </div>
+  <div class="filters" id="lib-sort">
+    <button data-sort="impact" class="chip active" title="Biggest estimated win first">Impact</button>
+    <button data-sort="size" class="chip">Size</button>
+    <button data-sort="name" class="chip">Name</button>
+    <button data-sort="scanned" class="chip">Scanned</button>
+  </div>
+  <button class="ghost" type="button" id="lib-refresh">Refresh</button>
+  <button class="ghost" type="button"
+          onclick="var e=document.getElementById('scan-panel');e.hidden=!e.hidden">Scan…</button>
+</div>
+
+<section class="card" id="scan-panel" hidden>
+  <h2>Scan library <span class="muted">— read-only: probe + decide, nothing is rewritten</span></h2>
+  <form method="post" action="/library/scan" class="entry-form">
+    <label class="wide">Folder
+      <input name="root" placeholder="blank = every configured root, e.g. /data/anime/Frieren">
+    </label>
+    <label class="check">
+      <input type="checkbox" name="full" value="1"> Re-probe unchanged files
+    </label>
+    <div class="row-actions"><button type="submit">Start scan</button></div>
+  </form>
+  <p class="muted">
+    Each file costs an mkvmerge + a few ffprobe calls and the scan runs on the single worker, so a
+    full library takes a while and imports queue behind it. Unchanged files are skipped on a
+    re-scan, and pausing the worker stops a scan within a few seconds.
+  </p>
+  {% if roots %}
+  <table class="roots">
+    <thead><tr><th>Root</th><th>Re-runs as</th></tr></thead>
+    <tbody>
+      {% for r in roots %}
+      <tr><td><code>{{ r.path }}</code></td><td>{{ "🎬 Radarr" if r.app == "radarr" else "📺 Sonarr" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% elif not enabled %}
+  <p class="err">Library indexing is off. Set <code>library.enabled: true</code> in the config.</p>
+  {% else %}
+  <p class="err">No library roots. Set <code>library.roots</code>, or give each arr instance a
+  <code>local_media_root</code> / <code>media_root</code> in the config.</p>
+  {% endif %}
+</section>
+
+<form method="post" action="/library/enqueue" id="library-form">
+  <input type="hidden" name="select_all" id="lib-flag-all" value="">
+  <input type="hidden" name="q" id="lib-flag-q" value="">
+  <input type="hidden" name="app_filter" id="lib-flag-app" value="">
+  <input type="hidden" name="status" id="lib-flag-status" value="">
+  <input type="hidden" name="reason" id="lib-flag-reason" value="">
+  <section class="card">
+    <div class="card-head">
+      <h2>Files <span class="muted" id="lib-selcount">— nothing selected</span></h2>
+      <div class="row-actions">
+        <button type="button" class="ghost" id="lib-clear" hidden>Clear selection</button>
+        <button type="submit" class="ghost" id="lib-all">Select all matching</button>
+        <button type="submit" id="lib-queue" disabled>Queue selected</button>
+      </div>
+    </div>
+    <div id="library-panel" data-src="/ui/library" data-interval="0" data-searchable data-paged
+         data-chip-filters="lib-status,lib-reason,lib-sort">Loading…</div>
+  </section>
+</form>
+{% endblock %}

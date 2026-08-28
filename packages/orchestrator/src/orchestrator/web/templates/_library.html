@@ -1,0 +1,70 @@
+{% if not rows %}
+  <p class="muted empty">Nothing here. Run a scan, or widen the filters.</p>
+{% else %}
+<table class="library">
+  <thead>
+    <tr>
+      <th class="check"><input type="checkbox" id="lib-check-page" title="Select every file on this page"></th>
+      <th class="c-file">File</th>
+      <th class="c-do">Would do</th>
+      <th class="num c-size">Size</th>
+      <th class="num c-delta" title="Dropped tracks removed, re-encoded audio at its new bitrate. “?” where the file doesn't report per-track sizes — the figure shown is then a floor, not a total.">Est. &Delta;</th>
+      <th class="c-state">State</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td class="check">
+        {% if r.needs_work %}
+          <input type="checkbox" class="libsel" value="{{ r.path }}"
+                 aria-label="Select {{ r.name }}">
+        {% endif %}
+      </td>
+      <td class="libname">
+        <span class="app {{ r.app }}">{{ "🎬" if r.app == "radarr" else "📺" }}</span>
+        {{ r.name }}
+        <div class="muted sub" title="{{ r.path }}">{{ r.path }}</div>
+      </td>
+      <td>
+        {% if r.error %}
+          <code class="fail-text">{{ r.error }}</code>
+        {% elif r.needs_work %}
+          {% if r.drop_subs %}<span class="badge queued">subs &times;{{ r.drop_subs }}</span>{% endif %}
+          {% if r.encode_audio %}<span class="badge processing">re-encode &times;{{ r.encode_audio }}</span>{% endif %}
+          {% if r.drop_audio %}<span class="badge fail" title="{{ r.original_lang or 'original language unknown' }}">audio &minus;{{ r.drop_audio }}</span>{% endif %}
+          {% if "remux" in r.reason_list %}<span class="badge">remux &rarr; mkv</span>{% endif %}
+          <div class="muted sub">{{ r.summary }}</div>
+        {% else %}
+          {# a pruned row keeps the summary of what the pipeline actually did to it #}
+          <span class="muted">{{ r.summary or "nothing to do" }}</span>
+        {% endif %}
+      </td>
+      <td class="num nowrap">{{ r.size_bytes|bytes }}</td>
+      <td class="num nowrap">
+        {% if not r.needs_work or not r.delta_bytes %}
+          <span class="muted">{{ "—" if r.delta_known else "?" }}</span>
+        {% else %}
+          <span class="{{ 'saving' if r.delta_bytes < 0 else 'growth' }}">
+            {{ "−" if r.delta_bytes < 0 else "+" }}{{ (r.delta_bytes if r.delta_bytes > 0 else -r.delta_bytes)|bytes }}{{ "" if r.delta_known else "?" }}
+          </span>
+        {% endif %}
+      </td>
+      <td class="nowrap">
+        {% if r.status == "error" %}<span class="badge fail">probe failed</span>
+        {% elif r.status == "queued" %}<span class="badge queued">queued</span>
+        {% elif r.status == "needs" %}<span class="badge warn">needs work</span>
+        {% elif r.status == "done" %}<span class="badge ok" title="pruned {{ r.pruned_at }}">pruned</span>
+        {% else %}<span class="badge ok">clean</span>{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<div class="pager">
+  <button type="button" class="chip" data-page="{{ page - 1 }}" {{ "disabled" if page <= 1 }}>&larr; Prev</button>
+  <span class="muted">{{ first }}–{{ last }} of {{ total }} · page {{ page }} / {{ pages }}</span>
+  <button type="button" class="chip" data-page="{{ page + 1 }}" {{ "disabled" if page >= pages }}>Next &rarr;</button>
+  <span class="muted pager-note">Bulk queue is capped at {{ max_enqueue }} files per submit.</span>
+</div>
+{% endif %}

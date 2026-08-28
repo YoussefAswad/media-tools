@@ -296,7 +296,7 @@ td.watched::before { content: "★ "; color: var(--warn); }
   .chip { padding: 5px 10px; font-size: 12px; }
 
   /* wide tables scroll horizontally inside their panel instead of overflowing the page */
-  table.jobs, table.actions, table.ledger {
+  table.jobs, table.actions, table.ledger, table.library {
     display: block; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch;
   }
 
@@ -325,6 +325,51 @@ td.watched::before { content: "★ "; color: var(--warn); }
   .mon-list .remaining-main,
   .mon-list .remaining-bar-wrap { min-width: 0; flex-basis: 100%; }
   .chart-bars { height: 176px; }
+}
+
+/* --- library index (back-catalogue backfill) --- */
+/* an auto-fit grid: the tile count varies from 5 to 8 (probe errors and 'queued for re-run'
+   only get a tile when they are non-zero), and the min is sized so even 8 stay on one row */
+.summary.lib { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+.summary.lib .tile-value { font-size: 22px; }
+.summary.lib .tile-value.small { font-size: 17px; }
+
+/* `table-layout: fixed` is what actually keeps this table inside its card: with auto layout the
+   two ellipsised columns each reserve their max-width and the row sums wider than the container.
+   Fixed layout makes `width: 100%` binding, so the columns divide the card instead of pushing
+   past it, and the panel keeps an overflow guard for very narrow desktop windows. */
+#library-panel { overflow-x: auto; }
+table.library { table-layout: fixed; }
+table.library td { vertical-align: middle; }
+table.library th.check, table.library td.check { width: 26px; padding-right: 0; }
+table.library th.c-file { width: 36%; }
+table.library th.c-size { width: 88px; }
+table.library th.c-delta { width: 112px; }
+table.library th.c-state { width: 112px; }
+/* the truncating lines size to whatever the column ends up being, not to a fixed pixel budget */
+table.library .sub {
+  font-size: 11.5px; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+table.library .libname { overflow-wrap: anywhere; }
+table.library th.num, table.library td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.library .badge + .badge { margin-left: 4px; }
+.saving { color: var(--ok); font-weight: 600; }
+.growth { color: var(--warn); font-weight: 600; }
+.fail-text { color: var(--fail); font-size: 12px; }
+
+.pager { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+.pager .chip[disabled] { opacity: .45; cursor: default; }
+.pager-note { margin-left: auto; font-size: 12px; }
+table.roots { max-width: 560px; margin-top: 10px; }
+.entry-form label.check { flex-direction: row; align-items: center; gap: 8px; }
+.entry-form label.check input { width: auto; }
+
+@media (max-width: 760px) {
+  /* the small-screen rule turns the table into a horizontally scrolling block, which drops the
+     fixed layout — give the truncating lines a pixel budget again so rows stay readable there. */
+  table.library .sub { max-width: 220px; }
+  .pager-note { margin-left: 0; flex-basis: 100%; }
 }
 
 /* never let the page itself scroll sideways */

@@ -17,10 +17,12 @@ import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from mediacore.arr.events import ArrEvent, parse_event
+from mediacore.arr.languages import iso_for_arr_language
 from mediacore.audit import FAIL, OK, SKIP, ActionRecord
 from mediacore.notify import PRIORITY_FAILURE, PRIORITY_FINDING, PRIORITY_STATUS, NtfyMessage
 from mediacore.paths import to_local, to_remote
@@ -35,8 +37,13 @@ from seasonal_shift.scanner import EPISODE_PATTERN
 
 from orchestrator.runner import PruneResult, run_mkvprune
 from orchestrator.services import Services
+from orchestrator.titles import _override_for
 
 log = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 class DispatchError(RuntimeError):
@@ -49,8 +56,15 @@ class InsufficientSpaceError(DispatchError):
     torrent is cleaned up), so the job should wait, not give up."""
 
 
+#: job kinds this dispatcher handles. The arr kinds all run the per-file pipeline; a library
+#: scan is a different shape entirely (no event, no file to change) and branches at the top.
+ARR_EVENT = "arr_event"
+RERUN = "rerun"
+LIBRARY_SCAN = "library_scan"
+
 #: substring mkvprune emits when its own scratch-space precheck (replace.check_free_space) fails.
 _LOW_SPACE_MARKER = "insufficient free space"
+
 
 
 @dataclass
@@ -128,8 +142,18 @@ class Dispatcher:
 
     # --- pipeline -------------------------------------------------------------------
     def dispatch(
-        self, job_id: str, payload: dict[str, Any], *, set_step=None, set_progress=None
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+        *,
+        kind: str = ARR_EVENT,
+        set_step=None,
+        set_progress=None,
     ) -> DispatchOutcome:
+        if kind == LIBRARY_SCAN:
+            return self._library_scan(
+                job_id, payload, set_step=set_step, set_progress=set_progress
+            )
         cfg = self.services.config
         event = self._event_from_job(payload)
         outcome = DispatchOutcome(label=event.label)
@@ -166,6 +190,7 @@ class Dispatcher:
             if set_step:
                 set_step("prune")
             t0 = time.monotonic()
+            pre_prune_path = local_path
             step = self._prune_step(event, local_path, pr, set_progress=set_progress)
             step.duration_ms = int((time.monotonic() - t0) * 1000)
             outcome.steps.append(step)
@@ -177,6 +202,7 @@ class Dispatcher:
             new_local = os.path.splitext(local_path)[0] + ".mkv"
             if new_local != local_path and os.path.exists(new_local) and not os.path.exists(local_path):
                 local_path = new_local
+            self._sync_library_row(pre_prune_path, local_path, step)
 
         # 4. seasonal-shift (moves the now-pruned file to its final numbering) -------
         if cfg.enable_seasonal_shift and event.app == "sonarr":
@@ -200,6 +226,83 @@ class Dispatcher:
         # 6. status rollup ----------------------------------------------------------
         self._status_rollup(event, outcome)
         return outcome
+
+    def _sync_library_row(self, before: str, after: str, step: StepResult) -> None:
+        """Bring this file's Library-tab row in line with what just happened to it.
+
+        A file queued from the Library tab would otherwise keep showing its pre-prune decision
+        (and a stale "queued" badge) until the next scan. A remux writes a new filename, so that
+        row is dropped instead and the next scan indexes the replacement.
+        """
+        index = self.services.library
+        if step.result == FAIL or index.get(before) is None:
+            return
+        if after != before:
+            index.forget(before)
+            return
+        try:
+            st = os.stat(after)
+        except OSError:  # gone from under us — the next scan will drop the row anyway
+            index.forget(before)
+            return
+        index.mark_clean(
+            after,
+            mtime=st.st_mtime,
+            size_bytes=st.st_size,
+            summary=step.detail or "nothing to do",
+            pruned_at=_now_iso() if step.result == OK else None,
+        )
+
+    def _library_scan(
+        self, job_id: str, payload: dict[str, Any], *, set_step=None, set_progress=None
+    ) -> DispatchOutcome:
+        """Refresh the Library tab's index of files already on disk.
+
+        Read-only by construction: it probes and calls ``decide()``, and never touches a media
+        file. Enqueueing the work it finds is a separate, explicit act from the Library tab.
+        """
+        from orchestrator import library as lib
+
+        root = payload.get("root") or None
+        full = bool(payload.get("full"))
+        label = f"library scan{f' — {root}' if root else ''}"
+        if set_step:
+            set_step("scan")
+        t0 = time.monotonic()
+        stats = lib.scan(
+            self.services,
+            full=full,
+            root=root,
+            probe_fn=self.probe_fn,
+            on_progress=set_progress,
+        )
+        step = StepResult(
+            "library",
+            "scan",
+            OK,
+            stats.summary(),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        )
+        self.services.audit.record(
+            ActionRecord(
+                tool=step.tool,
+                action=step.action,
+                result=step.result,
+                path=root,
+                after={"detail": step.detail},
+                job_id=job_id,
+                duration_ms=step.duration_ms,
+            )
+        )
+        self.services.notifier.send(
+            NtfyMessage(
+                title=label,
+                body=stats.summary(),
+                tags=["card_index_dividers"],
+                priority=PRIORITY_STATUS,
+            )
+        )
+        return DispatchOutcome(label=label, steps=[step])
 
     def _jellyfin_refresh(self, job_id: str, event: ArrEvent, local_path: str | None) -> None:
         """Make Jellyfin re-read the file the pipeline just changed (best-effort, never fatal).
@@ -341,7 +444,11 @@ class Dispatcher:
         except Exception as exc:
             return StepResult("mkvprune", "prune", FAIL, error=f"probe: {exc}")
 
-        decision = decide(pr, self.services.config.policy)
+        decision = decide(
+            pr,
+            self.services.config.policy,
+            original_langs=self._original_langs(event, local_path),
+        )
         if not decision.needs_work:
             return StepResult("mkvprune", "prune", SKIP, "nothing to prune/re-encode")
 
@@ -378,6 +485,28 @@ class Dispatcher:
 
         self._rescan(event)
         return StepResult("mkvprune", "prune", OK, decision.summary())
+
+    def _original_langs(self, event: ArrEvent, local_path: str) -> set[str] | None:
+        """ISO codes for this title's original language, for the audio language filter.
+
+        The webhook payload carries ``originalLanguage`` on both apps, so an import needs no
+        lookup; a re-run (Library tab, manual ``/rerun``) synthesizes an event without it and
+        falls back to the path index. ``None`` = unknown, which keeps every audio track.
+        """
+        policy = self.services.config.policy
+        if not policy.audio_language_filter:
+            return None
+        override = _override_for(policy, event.title)
+        if override is not None:
+            return override
+        isos = iso_for_arr_language(event.original_language)
+        if isos:
+            return isos
+        try:
+            return self.services.titles.original_isos(local_path, event.title or None)
+        except Exception as exc:  # the filter degrades to "keep everything", never to a failure
+            log.warning("original-language lookup failed for %s: %s", local_path, exc)
+            return None
 
     def _ensure_free_space(self, local_path: str) -> None:
         """Refuse to start a prune that can't fit its temp mux. mkvprune writes a ``{stem}.tmp.mkv``

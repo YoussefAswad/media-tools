@@ -16,11 +16,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from mediacore.config import find_default_config, parse_config, read_raw, save_text
+from mediacore.paths import to_local
 from pydantic import ValidationError
 
 from orchestrator.collectors import read_disk
 from orchestrator.config import OrchestratorConfig
+from orchestrator.dispatch import LIBRARY_SCAN, RERUN
 from orchestrator.ledger import MANUAL, QBITTORRENT
+from orchestrator.library import DEFAULT_SORT, resolve_roots
 from orchestrator.queue import CANCELED, DEAD, FAILED, PROCESSING, QUEUED
 from orchestrator.services import Services, build_services
 from orchestrator.util import (
@@ -541,17 +544,195 @@ def downloads_delete(request: Request, row_id: int) -> Response:
     return RedirectResponse("/downloads", status_code=303)
 
 
-@app.post("/rerun", dependencies=[Depends(require_ui_auth)])
-def rerun(request: Request, app_name: str = Form(...), path: str = Form(...)) -> Response:
-    """Re-run the pipeline for a specific file (quality-check + prune; no arr rescan id)."""
-    services = services_of(request)
-    payload = {
+def _rerun_payload(app_name: str, path: str) -> dict:
+    """A synthetic Download event for a file already on disk — what both the per-row re-run and
+    the Library tab's bulk enqueue put on the queue. There is no arr item id, so the pipeline
+    runs quality-check + prune and skips the post-prune rescan."""
+    return {
         "app": app_name,
         "payload": {"eventType": "Download", "movieFile": {"path": path}}
         if app_name == "radarr"
         else {"eventType": "Download", "episodeFile": {"path": path}, "series": {"title": ""}},
     }
-    services.queue.enqueue("rerun", payload, label=f"re-run {Path(path).name}")
+
+
+@app.post("/rerun", dependencies=[Depends(require_ui_auth)])
+def rerun(request: Request, app_name: str = Form(...), path: str = Form(...)) -> Response:
+    """Re-run the pipeline for a specific file (quality-check + prune; no arr rescan id)."""
+    services = services_of(request)
+    services.queue.enqueue(
+        RERUN, _rerun_payload(app_name, path), label=f"re-run {Path(path).name}"
+    )
+    return RedirectResponse("/jobs", status_code=303)
+
+
+# --- library index (back-catalogue backfill) ---------------------------------------------
+def _queue_state(services: Services) -> tuple[bool, set[str]]:
+    """One pass over the live queue for both things the Library tab needs from it: whether a scan
+    is already in flight (one at a time is plenty), and the local path of every job still queued
+    or processing — the truth behind the "queued" badge."""
+    from mediacore.arr.events import parse_event
+
+    scanning = False
+    paths: set[str] = set()
+    for job in services.queue.list(statuses=(QUEUED, PROCESSING), limit=500):
+        if job.kind == LIBRARY_SCAN:
+            scanning = True
+            continue
+        payload = job.payload or {}
+        app_name = payload.get("app")
+        if not app_name or "payload" not in payload:
+            continue
+        try:
+            remote = parse_event(app_name, payload["payload"]).primary_path()
+        except Exception:  # a payload shape we can't read tells us nothing about any path
+            continue
+        if not remote:
+            continue
+        instance = services.arr_instance(app_name)
+        paths.add(str(to_local(instance, remote)) if instance else str(remote))
+    return scanning, paths
+
+
+def _sync_queued_flags(services: Services) -> bool:
+    """Re-derive the Library tab's "queued" flags from the live queue. Returns whether a scan is
+    running, since both come from the same pass."""
+    scanning, paths = _queue_state(services)
+    services.library.reconcile_enqueued(paths)
+    return scanning
+
+
+@app.get("/library", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def library_page(request: Request) -> HTMLResponse:
+    """The Library tab: what the pipeline would do to files already on disk, and the controls to
+    queue any subset of it."""
+    services = services_of(request)
+    roots = [
+        {"path": str(path), "app": app_name} for path, app_name in resolve_roots(services.config)
+    ]
+    return _TEMPLATES.TemplateResponse(
+        request, "library.html", {"roots": roots, "enabled": services.config.library.enabled}
+    )
+
+
+@app.get("/ui/library", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_library(
+    request: Request,
+    q: str | None = None,
+    app: str | None = None,
+    status: str | None = None,
+    reason: str | None = None,
+    root: str | None = None,
+    sort: str | None = None,
+    page: int = 1,
+) -> HTMLResponse:
+    services = services_of(request)
+    _sync_queued_flags(services)
+    size = max(10, min(services.config.library.page_size, 500))
+    page = max(1, page)
+    rows, total = services.library.list(
+        q=q,
+        app=app,
+        status=status,
+        reason=reason,
+        root=root,
+        sort=sort or DEFAULT_SORT,
+        limit=size,
+        offset=(page - 1) * size,
+    )
+    pages = max(1, -(-total // size))
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "_library.html",
+        {
+            "rows": rows,
+            "total": total,
+            "page": min(page, pages),
+            "pages": pages,
+            "first": (page - 1) * size + 1 if total else 0,
+            "last": min(page * size, total),
+            "max_enqueue": services.config.library.max_enqueue,
+        },
+    )
+
+
+@app.get("/ui/library-summary", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
+def ui_library_summary(request: Request, app: str | None = None) -> HTMLResponse:
+    services = services_of(request)
+    scanning = _sync_queued_flags(services)
+    c = services.library.counts(app=app if app in ("radarr", "sonarr") else None)
+    # A negative delta is space reclaimed; a positive one means the >6-channel compatibility path
+    # would ADD a downmix track. Show which way it goes rather than an unsigned number — and show
+    # nothing rather than a confident "0 B" when no file's delta could actually be estimated.
+    # Colour-coded like the per-row cells: reclaimed space reads green, growth amber (the AC-3
+    # re-encode buys player compatibility, not size). The template applies the sign, so the
+    # typographic minus stays out of the source.
+    delta = c["delta"]
+    label = human_bytes(abs(delta))
+    tone = ("saving" if delta < 0 else "growth") if delta else ""
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "_library_summary.html",
+        {"c": c, "delta_label": label, "delta_tone": tone, "scanning": scanning},
+    )
+
+
+@app.post("/library/scan", dependencies=[Depends(require_ui_auth)])
+def library_scan(
+    request: Request, root: str = Form(""), full: str = Form("")
+) -> Response:
+    """Queue an index refresh. ``root`` narrows it to one folder; ``full`` re-probes files the
+    (path, mtime) cache would otherwise skip."""
+    services = services_of(request)
+    if services.config.library.enabled and not _queue_state(services)[0]:
+        scope = root.strip()
+        services.queue.enqueue(
+            LIBRARY_SCAN,
+            {"root": scope or None, "full": bool(full)},
+            label=f"library scan{f' — {scope}' if scope else ''}",
+        )
+    return RedirectResponse("/library", status_code=303)
+
+
+@app.post("/library/enqueue", dependencies=[Depends(require_ui_auth)])
+def library_enqueue(
+    request: Request,
+    paths: list[str] = Form(default=[]),
+    select_all: str = Form(""),
+    q: str = Form(""),
+    app_filter: str = Form(""),
+    status: str = Form(""),
+    reason: str = Form(""),
+    root: str = Form(""),
+) -> Response:
+    """Queue the pipeline for the selected files (or every file matching the current filters).
+
+    Targets are resolved through the index, never taken from the form as-is: a path that isn't
+    an indexed library file is ignored, so this can't be used to point the pipeline at an
+    arbitrary location on disk.
+    """
+    services = services_of(request)
+    cap = max(1, services.config.library.max_enqueue)
+    if select_all:
+        targets = services.library.paths_matching(
+            q=q or None,
+            app=app_filter or None,
+            status=status or None,
+            reason=reason or None,
+            root=root or None,
+            limit=cap,
+        )
+    else:
+        targets = []
+        for path in paths[:cap]:
+            row = services.library.get(path)
+            if row is not None:
+                targets.append((row.path, row.app))
+    for path, app_name in targets:
+        services.queue.enqueue(
+            RERUN, _rerun_payload(app_name, path), label=f"re-run {Path(path).name}"
+        )
+    services.library.mark_enqueued([p for p, _ in targets])
     return RedirectResponse("/jobs", status_code=303)
 
 

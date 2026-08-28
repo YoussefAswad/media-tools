@@ -29,8 +29,10 @@ from orchestrator.config import (
     load_orchestrator_config,
 )
 from orchestrator.ledger import Cutoffs, Ledger
+from orchestrator.library import LibraryIndex
 from orchestrator.metrics import Metrics
 from orchestrator.queue import JobQueue
+from orchestrator.titles import TitleIndex
 
 
 @dataclass
@@ -45,6 +47,10 @@ class Services:
     cutoffs: Cutoffs
     metrics: Metrics
     alerts: AlertEngine
+    #: index of what the pipeline would do to files already on disk (the Library tab).
+    library: LibraryIndex
+    #: path -> title/original-language, for the code paths that have no webhook payload.
+    titles: TitleIndex = field(init=False)
     qbit: QbitClient | None = None
     jellyfin: JellyfinClient | None = None
     docker: DockerStatusClient | None = None
@@ -63,6 +69,9 @@ class Services:
     smart_snapshot: list[DriveStatus] | None = None
     smart_ok: bool | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def __post_init__(self) -> None:
+        self.titles = TitleIndex(self)
 
     def arr_instance(self, app: str) -> ArrInstance | None:
         return getattr(self.config.arr, app, None)
@@ -116,6 +125,7 @@ def build_services(config_path: Path) -> Services:
     queue.requeue_stuck()
     ledger = Ledger(db)
     cutoffs = Cutoffs(db)
+    library = LibraryIndex(db)
     metrics = Metrics(db)
     alerts = AlertEngine(db)
     qbit = QbitClient.from_config(config.qbit) if config.qbit else None
@@ -133,6 +143,7 @@ def build_services(config_path: Path) -> Services:
         ledger=ledger,
         cutoffs=cutoffs,
         metrics=metrics,
+        library=library,
         alerts=alerts,
         qbit=qbit,
         jellyfin=jellyfin,

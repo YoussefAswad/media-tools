@@ -9,7 +9,7 @@
   var _units = "";
   try { _units = localStorage.getItem("dl-units") || ""; } catch (e) { /* ignore */ }
   var state = {
-    q: "", app: "",
+    q: "", app: "", page: 1,
     range: (_active && _active.dataset.range) || "30d",
     start: "", end: "",
     units: _units,
@@ -54,6 +54,20 @@
       if (src) params.set("source", src);
     }
     if (el.hasAttribute("data-unit-aware") && state.units) params.set("units", state.units);
+    // generic chip groups: every non-empty data-* on the active chip becomes a query param, so a
+    // new filter dimension only needs a `.filters` group and a data-<name> on its chips.
+    var groups = el.dataset.chipFilters;
+    if (groups) {
+      groups.split(",").forEach(function (id) {
+        var box = document.getElementById(id.trim());
+        var active = box && box.querySelector(".chip.active");
+        if (!active) return;
+        Object.keys(active.dataset).forEach(function (k) {
+          if (active.dataset[k]) params.set(k, active.dataset[k]);
+        });
+      });
+    }
+    if (el.hasAttribute("data-paged") && state.page > 1) params.set("page", state.page);
     var qs = params.toString();
     return qs ? base + "?" + qs : base;
   }
@@ -67,18 +81,22 @@
         // itself is the overflow-x scroller), and vertical on a .scroll-y container (the
         // monitoring container list refreshes its HTML every poll, which would otherwise jump
         // the reader back to the top)
-        var scroller = el.querySelector("table.jobs, table.actions, table.ledger");
-        var vscroller = el.querySelector(".scroll-y");
+        var scroller = el.querySelector("table.jobs, table.actions, table.ledger, table.library");
+        // the vertical scroller is usually inside the panel, but a couple of panels carry
+        // .scroll-y on themselves — that element survives the swap, so restore it directly
+        var selfScrolls = el.classList.contains("scroll-y");
+        var vscroller = selfScrolls ? el : el.querySelector(".scroll-y");
         var sx = scroller ? scroller.scrollLeft : 0;
         var sy = vscroller ? vscroller.scrollTop : 0;
         el.innerHTML = html;
         el._lastHtml = html;
+        if (el._onSwap) el._onSwap();  // let a panel re-apply state the swap just wiped
         if (sx) {
-          var next = el.querySelector("table.jobs, table.actions, table.ledger");
+          var next = el.querySelector("table.jobs, table.actions, table.ledger, table.library");
           if (next) next.scrollLeft = sx;
         }
         if (sy) {
-          var vnext = el.querySelector(".scroll-y");
+          var vnext = selfScrolls ? el : el.querySelector(".scroll-y");
           if (vnext) vnext.scrollTop = sy;
         }
       })
@@ -120,7 +138,11 @@
     var t;
     searchEl.addEventListener("input", function () {
       clearTimeout(t);
-      t = setTimeout(function () { state.q = searchEl.value.trim(); refreshAll(); }, 250);
+      t = setTimeout(function () {
+        state.q = searchEl.value.trim();
+        state.page = 1;  // a new query starts at the first page
+        refreshAll();
+      }, 250);
     });
   }
 
@@ -159,6 +181,7 @@
       e.preventDefault();
       group.querySelectorAll(".chip").forEach(function (c) { c.classList.remove("active"); });
       btn.classList.add("active");
+      state.page = 1;  // a changed filter invalidates the current page number
       if (group.id === "app-filter") state.app = btn.dataset.app || "";
       if (group.id === "unit-filter") {
         state.units = btn.dataset.units || "";
@@ -188,6 +211,84 @@
       d.removeAttribute("open");
     });
   });
+
+  // ---- Library tab: a selection that survives paging, filtering and re-renders ---------
+  var libPanel = document.getElementById("library-panel");
+  if (libPanel) {
+    var libForm = document.getElementById("library-form");
+    var countEl = document.getElementById("lib-selcount");
+    var queueBtn = document.getElementById("lib-queue");
+    var clearBtn = document.getElementById("lib-clear");
+    var selected = new Set();
+
+    var syncSelection = function () {
+      var n = selected.size;
+      countEl.textContent = n ? "\u2014 " + n + " selected" : "\u2014 nothing selected";
+      queueBtn.disabled = n === 0;
+      queueBtn.textContent = n ? "Queue " + n + " selected" : "Queue selected";
+      clearBtn.hidden = n === 0;
+      var boxes = libPanel.querySelectorAll("input.libsel");
+      var wholePage = boxes.length > 0;
+      boxes.forEach(function (b) {
+        b.checked = selected.has(b.value);
+        if (!b.checked) wholePage = false;
+      });
+      var head = document.getElementById("lib-check-page");
+      if (head) head.checked = wholePage;
+    };
+    libPanel._onSwap = syncSelection;
+
+    libPanel.addEventListener("change", function (e) {
+      var box = e.target;
+      if (box.id === "lib-check-page") {
+        libPanel.querySelectorAll("input.libsel").forEach(function (b) {
+          if (box.checked) selected.add(b.value); else selected.delete(b.value);
+        });
+      } else if (box.classList && box.classList.contains("libsel")) {
+        if (box.checked) selected.add(box.value); else selected.delete(box.value);
+      } else {
+        return;
+      }
+      syncSelection();
+    });
+
+    libPanel.addEventListener("click", function (e) {
+      var pg = e.target.closest("[data-page]");
+      if (!pg || pg.disabled) return;
+      state.page = parseInt(pg.dataset.page, 10) || 1;
+      refresh(libPanel);
+    });
+
+    clearBtn.addEventListener("click", function () { selected.clear(); syncSelection(); });
+
+    document.getElementById("lib-refresh").addEventListener("click", function () {
+      libPanel._lastHtml = null;  // the html may be byte-identical; force the swap anyway
+      refreshAll();
+    });
+
+    // "Select all matching" is a submit button: it only raises the flag and lets the normal
+    // submit run, because form.submit() would skip the submit handler that writes the filters.
+    document.getElementById("lib-all").addEventListener("click", function () {
+      document.getElementById("lib-flag-all").value = "1";
+    });
+
+    // The row checkboxes are UI only (no name attribute), so nothing posts unless it is written
+    // here — otherwise the visible page would be the only thing submitted.
+    libForm.addEventListener("submit", function () {
+      document.getElementById("lib-flag-q").value = state.q;
+      document.getElementById("lib-flag-app").value = state.app;
+      document.getElementById("lib-flag-status").value = activeData("lib-status", "status");
+      document.getElementById("lib-flag-reason").value = activeData("lib-reason", "reason");
+      if (document.getElementById("lib-flag-all").value) return;
+      selected.forEach(function (path) {
+        var input = document.createElement("input");
+        input.type = "hidden";
+        input.name = "paths";
+        input.value = path;
+        libForm.appendChild(input);
+      });
+    });
+  }
 
   // ---- YAML syntax highlighting on the config editor ---------------------------------
   var ta = document.getElementById("yaml-editor");
