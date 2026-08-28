@@ -195,27 +195,38 @@ class Dispatcher:
         # 5. Jellyfin refresh — after pruning (ok or skip), regardless of whether the file
         # changed, so Jellyfin picks up the (re)imported/altered file. Best-effort.
         if pruned_ran or not cfg.enable_prune:
-            self._jellyfin_refresh(job_id, event)
+            self._jellyfin_refresh(job_id, event, local_path)
 
         # 6. status rollup ----------------------------------------------------------
         self._status_rollup(event, outcome)
         return outcome
 
-    def _jellyfin_refresh(self, job_id: str, event: ArrEvent) -> None:
-        """Trigger an incremental all-library Jellyfin scan (best-effort, never fatal)."""
+    def _jellyfin_refresh(self, job_id: str, event: ArrEvent, local_path: str | None) -> None:
+        """Make Jellyfin re-read the file the pipeline just changed (best-effort, never fatal).
+
+        A library scan only notices files appearing and disappearing, so a file rewritten in
+        place keeps its stale track list forever. Refresh that one item instead, and fall back to
+        a scan only when the path can't be resolved — a brand-new import, or one the pipeline
+        renamed, which is the case a scan is genuinely for.
+        """
         jf = self.services.jellyfin
         if jf is None:
             return
-        ok = False
+        detail, ok = "not configured / failed", False
         try:
-            ok = jf.refresh_library()
+            item_id = jf.refresh_path(local_path) if local_path else None
+            if item_id:
+                ok, detail = True, f"metadata refreshed (item {item_id})"
+            else:
+                ok = jf.refresh_library()
+                detail = "library scan triggered (item not found)" if ok else detail
         except Exception as exc:
             log.warning("jellyfin refresh error: %s", exc)
         self.services.audit.record(
             ActionRecord(
                 tool="jellyfin", action="refresh", result=OK if ok else SKIP,
-                app=event.app, event_type=event.event_type, job_id=job_id,
-                after={"detail": "library refresh triggered" if ok else "not configured / failed"},
+                app=event.app, event_type=event.event_type, path=local_path, job_id=job_id,
+                after={"detail": detail},
             )
         )
 

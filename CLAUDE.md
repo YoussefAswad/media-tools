@@ -179,6 +179,26 @@ The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — *
       (`cooldown_s`) — a config file edited on disk is **not** hot-reloaded (only the Config-tab
       save calls `reload_config`); a direct edit needs a container restart/recreate.
 
+18. **A Jellyfin library scan will never notice a file the pipeline rewrote.**
+    `POST /Library/Refresh` ("Scan Media Library") is a file-*presence* walk: measured on the real
+    2,231-episode library it finishes in **9 seconds** and only reacts to paths appearing, moving
+    or disappearing. mkvprune replaces files in place, so Jellyfin keeps serving the track list
+    *and the file size* it recorded at import — confirmed on a pruned episode reading 9 audio /
+    40 subs / 579 MB while the file on disk was 2 / 4 / 382 MB. The fix is what a human does by
+    hand: `POST /Items/{id}/Refresh?metadataRefreshMode=FullRefresh`, which re-probes that one
+    item (verified: the same episode corrected itself in a single call). The library scan is kept
+    only as the fallback for a path Jellyfin has never seen — a new import, or one the pipeline
+    renamed — which is the case it is actually right for.
+    Two traps when resolving the path to an item id:
+    - **Jellyfin mounts the same media under different prefixes.** Here Radarr/Sonarr and the
+      orchestrator see `/data/Movies` and `/data/Shows` while Jellyfin has `/data/movies` and
+      `/data/tvshows` (plus separate `/data/shared/*` libraries). `jellyfin.path_map` handles it;
+      failing that the client matches trailing path components, and **refuses an ambiguous match**
+      rather than refreshing the wrong copy of a title that exists in two libraries.
+    - **`/Users` does not return an administrator first.** Building the path index as the first
+      user returned 10 of 2,231 episodes, because a non-admin only sees the libraries shared with
+      them. Always resolve `Policy.IsAdministrator` before querying `/Items`.
+
 19. **The foreign-subtitle rule has a codec scope, and it dominates the "needs work" count.**
     `policy.subtitle_drop_scope` is `all` (text + image) or `image` (PGS/VobSub only). Measured on
     the real 2,267-file index: **1,270 files need work under `all`, 477 under `image`** — 793 files

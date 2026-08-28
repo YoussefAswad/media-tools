@@ -39,6 +39,18 @@ qbit:
 jellyfin:
   base_url: http://jellyfin:8096
   api_key: ${JELLYFIN_API_KEY}
+  # After a prune the file is rewritten IN PLACE, and Jellyfin's "Scan Media Library" only looks
+  # for files appearing/disappearing — it will not re-probe an unchanged path, so the old track
+  # list sticks. The pipeline therefore refreshes that one item instead (the API behind the UI's
+  # "Refresh metadata"), falling back to a scan only when the path can't be resolved.
+  # Jellyfin often mounts the same library under a different prefix; map it here for an exact
+  # match. Without a map the client still matches on the trailing path components, and refuses
+  # to act when that is ambiguous (the same title present in two libraries).
+  path_map: {}
+  # path_map:
+  #   /data/Movies: /data/movies
+  #   /data/Shows: /data/tvshows
+  path_suffix_parts: 3
 
 policy:
   audio_allow: [ac3, eac3, truehd, mlp, dts]

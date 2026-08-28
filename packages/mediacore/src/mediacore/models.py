@@ -94,10 +94,18 @@ class QbitConfig(BaseModel):
 
 
 class JellyfinConfig(BaseModel):
-    """Jellyfin connection, used to trigger a library refresh after an import."""
+    """Jellyfin connection, used to refresh a file's metadata after the pipeline changes it."""
 
     base_url: str = "http://jellyfin:8096"
     api_key: str = ""
+    #: Local path prefix -> the prefix Jellyfin mounts the same media at, when they differ
+    #: (e.g. ``{"/data/Shows": "/data/tvshows"}``). Only needed to make the exact-path match work;
+    #: without it the client still falls back to matching on the trailing path components.
+    path_map: dict[str, str] = Field(default_factory=dict)
+    #: How many trailing path components must match for the fallback lookup to accept an item.
+    #: A match is only used when exactly one library item matches, so a title present in two
+    #: libraries is left to the library scan rather than refreshed by guess.
+    path_suffix_parts: int = 3
 
 
 class AuditConfig(BaseModel):
