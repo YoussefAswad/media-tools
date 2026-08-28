@@ -11,6 +11,7 @@ Three modules, because it is three jobs:
 * :mod:`~orchestrator.library.index` — the ``library_files`` table and its queries.
 * :mod:`~orchestrator.library.estimate` — the size-change model.
 * :mod:`~orchestrator.library.scan` — the walk that fills the table.
+* :mod:`~orchestrator.library.queued` — re-deriving the "queued" flag from the live job queue.
 """
 
 from orchestrator.library.estimate import estimate_delta, track_sizes
@@ -31,6 +32,7 @@ from orchestrator.library.index import (
     LibraryIndex,
     LibraryRow,
 )
+from orchestrator.library.queued import queue_state, sync_queued_flags
 from orchestrator.library.scan import ScanStats, iter_files, resolve_roots, scan
 
 __all__ = [
@@ -52,7 +54,9 @@ __all__ = [
     "ScanStats",
     "estimate_delta",
     "iter_files",
+    "queue_state",
     "resolve_roots",
     "scan",
+    "sync_queued_flags",
     "track_sizes",
 ]

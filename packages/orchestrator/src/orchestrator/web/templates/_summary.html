@@ -1,6 +1,29 @@
-{% for label, value, tone in tiles %}
-<div class="tile {{ tone }}">
-  <div class="tile-value">{{ value }}</div>
-  <div class="tile-label">{{ label }}</div>
+{# The tile row, used by every summary panel.
+
+   Takes `tiles` as a list of dicts. Only `value` is required:
+     value           the number or short string (required)
+     label           the caption under it
+     tone            ok | warn | fail | skip | queued | "" — the semantic colour
+     value_tone      an extra class on the value itself (saving / growth)
+     title           hover text, for a tile whose number needs a caveat
+     small           render the value at the smaller size (for dates/words, not counts)
+     hide_when_zero  drop the tile entirely when the value is falsy
+
+   Three-tuples (label, value, tone) are still accepted — most callers build those, and there
+   was no reason to churn them just to add richer tiles for one page.
+#}
+{% for t in tiles %}
+  {% if t is mapping %}
+    {% if not (t.hide_when_zero and not t.value) %}
+<div class="tile {{ t.tone or '' }}"{% if t.title %} title="{{ t.title }}"{% endif %}>
+  <div class="tile-value {{ t.value_tone or '' }}{{ ' small' if t.small }}">{{ t.value }}</div>
+  <div class="tile-label">{{ t.label }}{% if t.note %} <span class="muted">· {{ t.note }}</span>{% endif %}</div>
 </div>
+    {% endif %}
+  {% else %}
+<div class="tile {{ t[2] }}">
+  <div class="tile-value">{{ t[1] }}</div>
+  <div class="tile-label">{{ t[0] }}</div>
+</div>
+  {% endif %}
 {% endfor %}

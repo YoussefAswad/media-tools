@@ -116,6 +116,13 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
   (`/state/orchestrator.db`, WAL) holds jobs, actions, downloads (ledger), and cutoffs.
 - **Web UI is server-rendered** (Jinja2) with vanilla-JS `data-src` polling. **No vendored CDN
   libraries** (CSP-safe). Theme-aware CSS. Byte values via a context-aware `bytes` Jinja filter.
+  One router per tab in `web/routes/`; shared template env + auth in `web/deps.py` (use
+  `page()` / `partial()`, not `TemplateResponse`); domain-to-template translation in
+  `web/presenters.py`. **The `data-*` panel contract is documented in
+  `packages/orchestrator/README.md`** — adding a filter dimension needs no JavaScript, just a
+  `.filters` group named in the panel's `data-chip-filters`. Summary tiles go through
+  `_summary.html`, which takes dicts (`value`, `label`, `tone`, `title`, `hide_when_zero`, …);
+  don't fork it. `static/` is `poll.js` (the engine) + one file per page that needs more.
 - **Schema migrations go through one helper.** Each table module declares a module-level
   `_<TABLE>_ADDED` map of *columns added after its first release* (`{"progress": "REAL", ...}`)
   and calls `mediacore.db.add_columns(db, "<table>", _<TABLE>_ADDED)` right after its

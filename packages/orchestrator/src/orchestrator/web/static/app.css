@@ -1,3 +1,20 @@
+/* One stylesheet, in four sections — read them in this order:
+
+     TOKENS      the light/dark palette; every colour below comes from a var()
+     BASE        element defaults and layout scaffolding (topbar, main, .grid, .card)
+     COMPONENTS  the reusable vocabulary: badges, chips, tiles, tables, forms, gauges
+     PAGES       the blocks that belong to exactly one tab
+
+   Two conventions:
+
+   - A small-screen override lives immediately after the rule it modifies, not in a separate
+     block at the bottom. Reading a component means reading its responsive behaviour too.
+   - A new page-specific rule goes under PAGES, not at the end of the file. Appending is how
+     the tail of this stylesheet stopped having any order at all. */
+
+/* ═══════════════════════════════════════════════════════════════════════
+   TOKENS
+   ═══════════════════════════════════════════════════════════════════════ */
 :root {
   --bg: #f6f7f9;
   --card: #ffffff;
@@ -26,6 +43,9 @@
     --code: #0b0f14;
   }
 }
+/* ═══════════════════════════════════════════════════════════════════════
+   BASE
+   ═══════════════════════════════════════════════════════════════════════ */
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -60,6 +80,9 @@ td { padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: top;
 td a { color: var(--accent); text-decoration: none; }
 .nowrap { white-space: nowrap; }
 .path { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ═══════════════════════════════════════════════════════════════════════
+   COMPONENTS
+   ═══════════════════════════════════════════════════════════════════════ */
 .badge {
   display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px;
   font-weight: 600; color: #fff; background: var(--skip);
@@ -327,7 +350,10 @@ td.watched::before { content: "★ "; color: var(--warn); }
   .chart-bars { height: 176px; }
 }
 
-/* --- library index (back-catalogue backfill) --- */
+/* ═══════════════════════════════════════════════════════════════════════
+   PAGES
+   ═══════════════════════════════════════════════════════════════════════ */
+/* --- Library tab --- */
 /* an auto-fit grid: the tile count varies from 5 to 8 (probe errors and 'queued for re-run'
    only get a tile when they are non-zero), and the min is sized so even 8 stay on one row */
 .summary.lib { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
