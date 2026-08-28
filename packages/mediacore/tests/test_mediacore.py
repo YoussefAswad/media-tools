@@ -235,9 +235,8 @@ def test_the_pre_rename_config_dir_is_still_searched(tmp_path, monkeypatch) -> N
 
 def test_a_missing_config_names_every_directory_it_looked_in(tmp_path, monkeypatch) -> None:
     import pytest
-
     from mediacore.config import find_default_config
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    with pytest.raises(FileNotFoundError, match="media-orchestrator.*media-tools"):
+    with pytest.raises(FileNotFoundError, match=r"media-orchestrator.*media-tools"):
         find_default_config()
