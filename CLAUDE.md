@@ -47,7 +47,8 @@ rich/watchdog CLI dependencies were being installed into the production image fo
 `decide()` also needs the arr's original-language metadata now, which a standalone CLI can't
 supply. Their tests live in `packages/mediacore/tests/`.
 
-The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — **the order matters**:
+The pipeline is an ordered **registry of steps** (`orchestrator/steps/`), run by `Pipeline` in
+`orchestrator/dispatch.py`. It runs, per file, in this order — **the order matters**:
 
 1. **ledger capture** (bandwidth from qBittorrent) — FIRST, so consumed bandwidth is recorded even
    if a later step fails or the torrent is later deleted. Idempotent upsert by infohash.
@@ -57,6 +58,23 @@ The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — *
    path.
 5. **Jellyfin refresh** — best-effort, after prune ran (ok or skip).
 6. **status rollup** — ntfy.
+
+**Adding a pipeline step** = one class in `orchestrator/steps/` plus one line in
+`steps.default_pipeline()`. A step implements `name`, `silent`, `applies(ctx)` and `run(ctx)`
+(see `steps/base.py`). The *framework* owns timing, the audit record, the per-action ntfy ping,
+and following a file the step moved — a step never does those itself. Three rules worth knowing:
+
+- **Return `FAIL` to continue, `raise` to fail the job.** A returned FAIL is recorded and the
+  pipeline moves on (a quality-check probe failure still lets prune try). Raising `DispatchError`
+  fails the job for retry; raising `InsufficientSpaceError` defers it without consuming an attempt.
+- **`silent = True` means audit-only** — recorded, but kept out of the ntfy rollup *and* out of
+  the job row's current-step. The ledger snapshot and the Jellyfin refresh are bookkeeping about
+  a job, not work done to the file.
+- **A step that moves the file returns `StepResult.new_path`**; the pipeline follows it so later
+  steps and the job's final path see the new location. Don't mutate `ctx.local_path`.
+
+`Dispatcher` routes on job *kind* before any of that: `arr_event`/`rerun` run the per-file
+pipeline, `library_scan` is its own handler (no event, no file to change).
 
 That pipeline only ever sees files at import. The **Library tab** (`orchestrator/library/`) is
 the back-catalogue path: a `library_scan` job walks the configured roots, probes each file once and
@@ -342,7 +360,7 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
     rename across filesystems: it copies the finished mux back into the *destination* dir as a
     `.mkvprune.part` next to the still-present original, then swaps. So a cross-filesystem staging
     dir needs room on **both** volumes, and checking only one would green-light a prune that muxes
-    for an hour and then dies at the last step. `dispatch._ensure_free_space` checks source and
+    for an hour and then dies at the last step. `steps.prune.PruneStep._ensure_free_space` checks source and
     scratch (collapsing to one check when they share a volume, via `_same_filesystem`), and
     mkvprune adds its own destination precheck (`estimate_placement_bytes`, deliberately smaller
     than the scratch estimate — the encodes never land there).

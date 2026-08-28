@@ -115,7 +115,7 @@ class TitleIndex:
         # path no arr claims: a re-run synthesizes its event from a path, so whatever title it
         # carries would otherwise shadow the real one and silently disable the override.
         name = (info.title if info else None) or title
-        override = _override_for(self.services.config.policy, name)
+        override = override_for(self.services.config.policy, name)
         if override is not None:
             return override
         if info is None:
@@ -123,7 +123,7 @@ class TitleIndex:
         return set(info.original_isos) or None
 
 
-def _override_for(policy, title: str | None) -> set[str] | None:
+def override_for(policy, title: str | None) -> set[str] | None:
     """Per-title override from the policy, matched case-insensitively on the arr title."""
     if not title or not policy.audio_original_overrides:
         return None

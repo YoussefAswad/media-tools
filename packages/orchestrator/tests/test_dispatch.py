@@ -10,6 +10,27 @@ from conftest import build_test_services, mk, probe_of, radarr_config
 from mediacore.audit import FAIL, OK, SKIP
 from orchestrator.dispatch import Dispatcher, DispatchError
 from orchestrator.runner import PruneResult
+from orchestrator.steps import JobContext
+from orchestrator.steps.prune import PruneStep
+
+
+def _ctx(services, path, *, app: str = "radarr", event=None) -> JobContext:
+    """A minimal JobContext for exercising one step on its own."""
+    from mediacore.arr.events import parse_event
+
+    payload = (
+        {"eventType": "Download", "movieFile": {"path": str(path)}, "movie": {"title": "T"}}
+        if app == "radarr"
+        else {"eventType": "Download", "episodeFile": {"path": str(path)}, "series": {"title": "T"}}
+    )
+    return JobContext(
+        services=services,
+        job_id="test-job",
+        event=event or parse_event(app, payload),
+        local_path=str(path),
+        probe_fn=lambda p: (_ for _ in ()).throw(AssertionError("probe not expected")),
+        prune_runner=lambda *a, **k: PruneResult(0, "", ""),
+    )
 
 
 def _touch(tmp_path: Path) -> str:
@@ -793,23 +814,22 @@ def test_full_scratch_volume_defers_even_when_the_source_has_room(tmp_path, monk
     Checking only the source volume would start a prune whose mux cannot fit, burning the
     probe and the encode before mkvprune's own precheck failed it.
     """
-    from orchestrator.dispatch import InsufficientSpaceError
+    from orchestrator.steps import InsufficientSpaceError
 
     scratch = tmp_path / "staging"
     scratch.mkdir()
     services = build_test_services(tmp_path, radarr_config(prune_scratch_dir=str(scratch)))
     src = _touch(tmp_path)
 
-    monkeypatch.setattr("orchestrator.dispatch._same_filesystem", lambda a, b: False)
+    monkeypatch.setattr("orchestrator.steps.prune._same_filesystem", lambda a, b: False)
     monkeypatch.setattr(
-        "orchestrator.dispatch.shutil.disk_usage",
+        "orchestrator.steps.prune.shutil.disk_usage",
         lambda p: types.SimpleNamespace(total=1 << 40, used=0, free=0)
         if str(p) == str(scratch)
         else types.SimpleNamespace(total=1 << 40, used=0, free=1 << 40),
     )
-    disp = Dispatcher(services, probe_fn=_dirty_probe, prune_runner=lambda a, **k: PruneResult(0, "", ""))
     with pytest.raises(InsufficientSpaceError, match="scratch"):
-        disp._ensure_free_space(src)
+        PruneStep()._ensure_free_space(_ctx(services, src), src)
 
 
 def test_same_filesystem_scratch_is_checked_once(tmp_path, monkeypatch):
@@ -826,7 +846,6 @@ def test_same_filesystem_scratch_is_checked_once(tmp_path, monkeypatch):
         calls.append(str(p))
         return types.SimpleNamespace(total=1 << 40, used=0, free=1 << 40)
 
-    monkeypatch.setattr("orchestrator.dispatch.shutil.disk_usage", spy)
-    disp = Dispatcher(services, probe_fn=_dirty_probe, prune_runner=lambda a, **k: PruneResult(0, "", ""))
-    disp._ensure_free_space(src)
+    monkeypatch.setattr("orchestrator.steps.prune.shutil.disk_usage", spy)
+    PruneStep()._ensure_free_space(_ctx(services, src), src)
     assert calls == [str(tmp_path)]

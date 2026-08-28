@@ -73,7 +73,7 @@ def test_low_space_defers_without_consuming_attempts(tmp_path, monkeypatch):
     )
     # pretend the filesystem is full so the prune precheck defers the job
     monkeypatch.setattr(
-        "orchestrator.dispatch.shutil.disk_usage",
+        "orchestrator.steps.prune.shutil.disk_usage",
         lambda p: types.SimpleNamespace(total=100, used=100, free=0),
     )
     services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
