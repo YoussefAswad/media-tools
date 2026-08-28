@@ -133,6 +133,15 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
    `proc.run_streamed_split` (stdout streamed for progress, stderr drained on its own pipe) and scan
    only the clean stderr. This is why `mkvprune/verify.py` keeps the streams separate.
 
+   **The benign-DTS chatter is not TrueHD-only, and its companion line counts too.** A
+   stream-copied **PGS subtitle** track produces the identical "non monotonically increasing dts"
+   flood, and ffmpeg collapses consecutive duplicates into its own `Last message repeated N times`
+   line. That line is a statement *about* the message above it, never a defect, so it has to be
+   filtered alongside the patterns it collapses — filtering the DTS lines but keeping their
+   companions dead-lettered 30 real files (Bleach S01E190-E223) at exit 3 on a remux ffmpeg itself
+   exited **0** on: 1094 stderr lines were 726 DTS warnings + 368 repeat lines + nothing else.
+   A genuinely repeated error still prints its own first occurrence, which stays fatal.
+
 4. **qBittorrent (LSIO v5.2.3) WebUI login returns HTTP 204, not 200 "Ok.".** And it has
    `HostHeaderValidation=true`, so the client must send a `Referer`. Don't treat non-200 as failure.
 

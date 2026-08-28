@@ -29,10 +29,18 @@ _STABLE_VIDEO_PROP_KEYS = ("codec_id", "uid", "pixel_dimensions", "default_durat
 # Muxer-side chatter from the throwaway `-f null` output, not a defect in the file being
 # checked. TrueHD frames are 1/1200s apart while Matroska stores whole-millisecond
 # timestamps, so consecutive frames legitimately land on the same DTS — every passthrough
-# remux of a TrueHD track produces these, and ffmpeg still exits 0.
+# remux of a TrueHD track produces these, and ffmpeg still exits 0. A copied PGS subtitle
+# track produces them too, for the same reason.
+#
+# "Last message repeated N times" is ffmpeg's own repeat-collapse line: a statement *about*
+# the message above it, never an error in its own right. It has to be filtered alongside the
+# patterns it collapses — dropping the DTS lines but keeping their companions is what failed
+# 30 PGS-bearing files that ffmpeg itself exited 0 on. A genuinely repeated error still
+# emits its own first occurrence, which stays fatal.
 _BENIGN_FFMPEG_PATTERNS = (
     "non monotonically increasing dts",
     "Non-monotonous DTS in output stream",
+    "Last message repeated",
 )
 
 # Upper bound on offending lines quoted in a VerificationError; a bad file can emit

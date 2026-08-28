@@ -25,6 +25,11 @@ _TRUEHD_DTS = (
     "increasing dts to muxer in stream 1: {n} >= {n}"
 )
 _READ_ERROR = "[matroska,webm @ 0x5588e3ae15c0] Read error at pos. 12345 (of 67890)"
+# The same chatter from a stream-copied PGS subtitle track (stream 6 of the Bleach files).
+_PGS_DTS = (
+    "[null @ 0x55813c0b9c00] Application provided invalid, non monotonically "
+    "increasing dts to muxer in stream 6: {a} >= {b}"
+)
 
 
 def test_truehd_dts_chatter_is_not_fatal() -> None:
@@ -42,6 +47,27 @@ def test_demuxer_error_is_fatal() -> None:
 
 def test_mixed_output_keeps_only_the_real_error() -> None:
     stderr = "\n".join([_TRUEHD_DTS.format(n=5), _READ_ERROR, _TRUEHD_DTS.format(n=10)])
+    assert _fatal_ffmpeg_lines(stderr) == [_READ_ERROR]
+
+
+def test_repeat_collapse_line_is_not_fatal() -> None:
+    # Verbatim shape of a real capture: a PGS subtitle track copied into the null muxer emits
+    # the same benign DTS chatter as TrueHD, and ffmpeg collapses consecutive duplicates into
+    # its own "Last message repeated" line. Filtering the chatter but keeping its companions
+    # failed 30 files ffmpeg itself exited 0 on.
+    stderr = "\n".join([
+        _PGS_DTS.format(a=14570, b=14568),
+        _PGS_DTS.format(a=14570, b=14503),
+        "    Last message repeated 1 times",
+        _PGS_DTS.format(a=16906, b=16904),
+        "    Last message repeated 3 times",
+    ])
+    assert _fatal_ffmpeg_lines(stderr) == []
+
+
+def test_repeated_real_error_still_reports_its_first_occurrence() -> None:
+    # The loosening is safe because a genuinely repeated error still prints once itself.
+    stderr = "\n".join([_READ_ERROR, "    Last message repeated 9 times"])
     assert _fatal_ffmpeg_lines(stderr) == [_READ_ERROR]
 
 
