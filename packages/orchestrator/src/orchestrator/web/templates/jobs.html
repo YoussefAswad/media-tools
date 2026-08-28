@@ -5,7 +5,7 @@
 
 <div class="toolbar">
   <input type="search" id="search" placeholder="Search jobs & actions… (title, file, change)" autocomplete="off">
-  <div class="filters" id="app-filter">
+  <div class="filters" id="app-filter" role="group" aria-label="Filter by app">
     <button data-app="" class="chip active">All</button>
     <button data-app="radarr" class="chip">🎬 Movies</button>
     <button data-app="sonarr" class="chip">📺 Episodes</button>
@@ -34,7 +34,7 @@
 <section class="card">
   <div class="card-head">
     <h2>Recent actions</h2>
-    <div class="filters" id="action-filters">
+    <div class="filters" id="action-filters" role="group" aria-label="Filter by result">
       <button data-result="" class="chip active">All</button>
       <button data-result="ok" class="chip">Changed</button>
       <button data-result="skip" class="chip">Skipped</button>

@@ -44,7 +44,16 @@ def library_page(request: Request) -> HTMLResponse:
     roots = [
         {"path": str(path), "app": app_name} for path, app_name in resolve_roots(services.config)
     ]
-    return page(request, "library.html", {"roots": roots, "enabled": services.config.library.enabled}
+    # First run has exactly one useful action, so open the scan form instead of hiding it
+    # behind a toggle above an empty table.
+    return page(
+        request,
+        "library.html",
+        {
+            "roots": roots,
+            "enabled": services.config.library.enabled,
+            "first_run": services.library.counts()["total"] == 0,
+        },
     )
 
 
@@ -91,6 +100,7 @@ def ui_library(
             "last": min(page * size, total),
             "max_enqueue": services.config.library.max_enqueue,
             "matching": matching,
+            "sort": sort or DEFAULT_SORT,
         },
     )
 

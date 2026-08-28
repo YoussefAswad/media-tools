@@ -35,7 +35,22 @@
     var clearBtn = document.getElementById("lib-clear");
     // path -> {delta, known}: the delta travels with the selection so a pick spanning several
     // pages can still be totalled without asking the server again.
+    //
+    // Persisted for the tab's session: curating 200 files is real work, and losing it to a
+    // stray reload or a click through to a job was a genuinely annoying way to lose it. Scoped
+    // to sessionStorage, not localStorage — a selection is about this sitting, not forever.
+    var STORE = "lib-selection";
     var selected = new Map();
+    try {
+      var saved = JSON.parse(sessionStorage.getItem(STORE) || "[]");
+      if (Array.isArray(saved)) saved.forEach(function (e) { selected.set(e[0], e[1]); });
+    } catch (e) { /* private mode, cleared storage, older shape — start empty */ }
+
+    var persist = function () {
+      try {
+        sessionStorage.setItem(STORE, JSON.stringify(Array.from(selected.entries())));
+      } catch (e) { /* storage full or blocked: the selection still works in memory */ }
+    };
 
     var syncSelection = function () {
       var n = selected.size;
@@ -51,6 +66,7 @@
       });
       var head = document.getElementById("lib-check-page");
       if (head) head.checked = wholePage;
+      persist();
     };
     libPanel._onSwap = syncSelection;
 
@@ -75,14 +91,17 @@
       syncSelection();
     });
 
-    libPanel.addEventListener("click", function (e) {
-      var pg = e.target.closest("[data-page]");
-      if (!pg || pg.disabled) return;
-      state.page = parseInt(pg.dataset.page, 10) || 1;
-      refresh(libPanel);
-    });
-
     clearBtn.addEventListener("click", function () { selected.clear(); syncSelection(); });
+
+    // the scan form starts open on first run (nothing indexed = one useful action)
+    var scanToggle = document.getElementById("scan-toggle");
+    var scanPanel = document.getElementById("scan-panel");
+    if (scanToggle && scanPanel) {
+      scanToggle.addEventListener("click", function () {
+        scanPanel.hidden = !scanPanel.hidden;
+        scanToggle.setAttribute("aria-expanded", String(!scanPanel.hidden));
+      });
+    }
 
     document.getElementById("lib-refresh").addEventListener("click", function () {
       libPanel._lastHtml = null;  // the html may be byte-identical; force the swap anyway
@@ -139,6 +158,8 @@
       document.getElementById("lib-flag-app").value = state.app;
       document.getElementById("lib-flag-status").value = activeData("lib-status", "status");
       document.getElementById("lib-flag-reason").value = activeData("lib-reason", "reason");
+      // whatever is submitted has left the tab: don't carry it into the next visit
+      try { sessionStorage.removeItem(STORE); } catch (e) { /* ignore */ }
       if (all) return;
       selected.forEach(function (_v, path) {
         var input = document.createElement("input");

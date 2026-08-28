@@ -12,11 +12,17 @@
   <thead>
     <tr>
       <th class="check"><input type="checkbox" id="lib-check-page" title="Select every file on this page"></th>
-      <th class="c-file">File</th>
+      {# Sorting lives in the headers, where people look for it. It used to be a fourth chip
+         group in an already 19-control toolbar. #}
+      <th class="c-file sortable{{ ' sorted' if sort == 'name' }}" data-sort="name"
+          role="button" tabindex="0" aria-label="Sort by file name">File</th>
       <th class="c-do">Would do</th>
-      <th class="num c-size">Size</th>
-      <th class="num c-delta">Est. &Delta;</th>
-      <th class="c-state">State</th>
+      <th class="num c-size sortable{{ ' sorted' if sort == 'size' }}" data-sort="size"
+          role="button" tabindex="0" aria-label="Sort by file size">Size</th>
+      <th class="num c-delta sortable{{ ' sorted' if sort == 'impact' }}" data-sort="impact"
+          role="button" tabindex="0" aria-label="Sort by estimated size change">Est. &Delta;</th>
+      <th class="c-state sortable{{ ' sorted' if sort == 'scanned' }}" data-sort="scanned"
+          role="button" tabindex="0" aria-label="Sort by when the row was last scanned">State</th>
     </tr>
   </thead>
   <tbody>
@@ -66,6 +72,7 @@
         {% elif r.status == "needs" %}<span class="badge warn">needs work</span>
         {% elif r.status == "done" %}<span class="badge ok" title="pruned {{ r.pruned_at }}">pruned</span>
         {% else %}<span class="badge ok">clean</span>{% endif %}
+        <div class="muted sub" title="last probed {{ r.scanned_at }}">{{ r.scanned_at[:10] }}</div>
       </td>
     </tr>
   {% endfor %}

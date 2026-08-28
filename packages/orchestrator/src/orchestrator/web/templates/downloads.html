@@ -3,7 +3,7 @@
 {% block title %}Downloads — Media Orchestrator{% endblock %}
 {% block content %}
 <div class="toolbar">
-  <div class="filters" id="range-filter">
+  <div class="filters" id="range-filter" role="group" aria-label="Time range">
     <button data-range="cutoff" class="chip {{ 'active' if has_cutoff else '' }}">Since cutoff</button>
     <button data-range="7d" class="chip">7d</button>
     <button data-range="30d" class="chip {{ '' if has_cutoff else 'active' }}">30d</button>
@@ -18,12 +18,12 @@
     <button type="button" class="chip" id="date-clear" title="Clear custom range">✕</button>
   </div>
   <input type="search" id="search" placeholder="Search downloads…" autocomplete="off">
-  <div class="filters" id="source-filter">
+  <div class="filters" id="source-filter" role="group" aria-label="Filter by source">
     <button data-source="" class="chip active">All</button>
     <button data-source="qbittorrent" class="chip">Auto</button>
     <button data-source="manual" class="chip">Manual</button>
   </div>
-  <div class="filters" id="unit-filter" title="Display units: GB = decimal (1000), GiB = binary (1024)">
+  <div class="filters" id="unit-filter" role="group" aria-label="Display units" title="Display units: GB = decimal (1000), GiB = binary (1024)">
     <button data-units="" class="chip active">GB</button>
     <button data-units="iec" class="chip">GiB</button>
   </div>
@@ -71,8 +71,8 @@
 
 <section class="card">
   <div class="card-head">
-    <h2>Downloads</h2>
-    <div class="filters" id="type-filter">
+    <h2>Entries</h2>
+    <div class="filters" id="type-filter" role="group" aria-label="Filter by type">
       <button data-type="" class="chip active">All types</button>
       {% for k in kinds %}<button data-type="{{ k }}" class="chip">{{ k|icon }} {{ k|capitalize }}</button>{% endfor %}
     </div>

@@ -118,6 +118,17 @@ textarea {
 
 /* --- nav active --- */
 .topbar nav a.active { color: var(--accent); }
+/* the nav's three groups, separated by a hairline rather than more whitespace */
+.nav-group { display: inline; }
+.nav-group + .nav-group::before,
+.topbar nav .nav-group:first-of-type::before {
+  content: ""; display: inline-block; width: 1px; height: 13px; vertical-align: -2px;
+  margin-left: 18px; background: var(--border);
+}
+.topbar nav .nav-group + a::before {
+  content: ""; display: inline-block; width: 1px; height: 13px; vertical-align: -2px;
+  margin-left: 18px; background: var(--border);
+}
 .brand { text-decoration: none; color: var(--fg); }
 
 /* --- summary tiles --- */
@@ -388,6 +399,14 @@ table.library .sub {
 table.library .libname { overflow-wrap: anywhere; }
 table.library th.num, table.library td.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.library .badge + .badge { margin-left: 4px; }
+/* click-to-sort headers: the arrow only appears on the active column, so the header row stays
+   quiet until it is telling you something */
+table.library th.sortable { cursor: pointer; user-select: none; }
+table.library th.sortable:hover { color: var(--accent); }
+table.library th.sortable::after { content: " ↕"; opacity: .35; font-size: 10px; }
+table.library th.sortable.sorted { color: var(--accent); }
+table.library th.sortable.sorted::after { content: " ↓"; opacity: 1; }
+table.library th.sortable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .saving { color: var(--ok); font-weight: 600; }
 .growth { color: var(--warn); font-weight: 600; }
 .fail-text { color: var(--fail); font-size: 12px; }
@@ -400,9 +419,38 @@ table.roots { max-width: 560px; margin-top: 10px; }
 .entry-form label.check input { width: auto; }
 
 @media (max-width: 760px) {
-  /* the small-screen rule turns the table into a horizontally scrolling block, which drops the
-     fixed layout — give the truncating lines a pixel budget again so rows stay readable there. */
-  table.library .sub { max-width: 220px; }
+  /* On a phone the generic wide-table rule turns this into a horizontal scroller — which puts
+     the checkbox, the one control you must reach to do anything, on the side you scroll away
+     from. Stack each row as a card instead: the file, then what would happen to it, then the
+     numbers on one line, with the checkbox pinned top-left where a thumb lands.
+     Overrides the generic `table.jobs, table.actions, table.ledger, table.library` block above,
+     so it has to come after it. */
+  table.library { display: block; overflow-x: visible; white-space: normal; }
+  /* The headers carry sorting AND select-all-on-page, so they can't just be hidden. They
+     become a control strip: the page checkbox, then the sort options as chips. */
+  table.library thead { display: block; }
+  table.library thead tr { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+                           padding: 0 0 10px; border: 0; }
+  table.library thead th { display: inline-block; padding: 0; width: auto; }
+  table.library thead th.c-do { display: none; }  /* "Would do" is the one column you can't sort by */
+  table.library thead th.check { position: static; }
+  table.library thead th.sortable {
+    border: 1px solid var(--border); border-radius: 999px; padding: 4px 11px; font-size: 12px;
+  }
+  table.library thead th.sortable.sorted { border-color: var(--accent); }
+  table.library tbody, table.library tr, table.library td { display: block; width: auto; }
+  table.library tr {
+    position: relative; border-top: 1px solid var(--border);
+    padding: 10px 0 10px 30px;
+  }
+  table.library td { border: 0; padding: 2px 0; }
+  table.library td.check { position: absolute; left: 0; top: 12px; padding: 0; width: auto; }
+  table.library td.libname { font-weight: 600; }
+  /* size and est. delta read as one line of stats rather than two orphaned right-aligned cells */
+  table.library td.num { display: inline-block; text-align: left; margin-right: 14px;
+                         font-size: 13px; color: var(--muted); }
+  table.library td.num .saving, table.library td.num .growth { font-size: 13px; }
+  table.library .sub { max-width: 100%; }
   .pager-note { margin-left: 0; flex-basis: 100%; }
 }
 

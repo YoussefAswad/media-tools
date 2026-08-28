@@ -19,7 +19,7 @@
   var _units = "";
   try { _units = localStorage.getItem("dl-units") || ""; } catch (e) { /* ignore */ }
   var state = {
-    q: "", app: "", page: 1,
+    q: "", app: "", page: 1, sort: "",
     range: (_active && _active.dataset.range) || "30d",
     start: "", end: "",
     units: _units,
@@ -68,6 +68,7 @@
       });
     }
     if (el.hasAttribute("data-paged") && state.page > 1) params.set("page", state.page);
+    if (el.hasAttribute("data-sortable") && state.sort) params.set("sort", state.sort);
     var qs = params.toString();
     return qs ? base + "?" + qs : base;
   }
@@ -103,6 +104,11 @@
       .catch(function () {});
   }
 
+  // a chip is a toggle, so say so for anything not reading the colour
+  document.querySelectorAll(".filters .chip").forEach(function (c) {
+    c.setAttribute("aria-pressed", String(c.classList.contains("active")));
+  });
+
   var panels = Array.prototype.slice.call(document.querySelectorAll("[data-src]"));
   function refreshAll() { panels.forEach(refresh); }
 
@@ -132,6 +138,34 @@
         if (reset) reset();
       }, interval);
     }
+  });
+
+  // Paging and column sorting are table behaviours, not page-specific ones: any panel with
+  // data-paged / data-sortable gets them from its own [data-page] / [data-sort] children.
+  panels.forEach(function (el) {
+    if (!el.hasAttribute("data-paged") && !el.hasAttribute("data-sortable")) return;
+    el.addEventListener("click", function (e) {
+      var pager = e.target.closest("[data-page]");
+      if (pager && !pager.disabled) {
+        state.page = parseInt(pager.dataset.page, 10) || 1;
+        refresh(el);
+        return;
+      }
+      var sorter = e.target.closest("[data-sort]");
+      if (sorter) {
+        state.sort = sorter.dataset.sort || "";
+        state.page = 1;  // a re-sort invalidates the current page number
+        refresh(el);
+      }
+    });
+    // a th carrying role="button" has to answer Enter and Space like one
+    el.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      var sorter = e.target.closest("[data-sort]");
+      if (!sorter) return;
+      e.preventDefault();
+      sorter.click();
+    });
   });
 
   if (searchEl) {
@@ -179,8 +213,12 @@
       var btn = e.target.closest(".chip");
       if (!btn) return;
       e.preventDefault();
-      group.querySelectorAll(".chip").forEach(function (c) { c.classList.remove("active"); });
+      group.querySelectorAll(".chip").forEach(function (c) {
+        c.classList.remove("active");
+        c.setAttribute("aria-pressed", "false");
+      });
       btn.classList.add("active");
+      btn.setAttribute("aria-pressed", "true");
       state.page = 1;  // a changed filter invalidates the current page number
       if (group.id === "app-filter") state.app = btn.dataset.app || "";
       if (group.id === "unit-filter") {

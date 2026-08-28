@@ -571,3 +571,62 @@ def test_a_source_switched_off_says_off_not_collecting(client) -> None:
     assert "SMART monitoring is off" in client.get("/ui/mon-smart").text
     assert "Container monitoring is off" in client.get("/ui/mon-containers").text
     assert "System monitoring is off" in client.get("/ui/mon-system").text
+
+
+def test_library_sorting_moved_from_chips_into_the_table_headers(client) -> None:
+    """The toolbar was 19 controls. Sorting belongs where people look for it, and the headers
+    cover all four sorts the index supports, so the chip group is gone."""
+    services = client.app.state.services
+    _index_row(services, "/lib/a.mkv")
+
+    page = client.get("/library").text
+    assert 'id="lib-sort"' not in page  # the chip group
+    assert "data-sortable" in page  # the panel now asks for a sort param
+
+    body = client.get("/ui/library").text
+    for key in ("name", "size", "impact", "scanned"):
+        assert f'data-sort="{key}"' in body
+    # the active column is marked, so the header row says which way the table is ordered
+    assert 'c-delta sortable sorted' in body  # impact is the default
+    assert 'c-file sortable"' in body
+
+    by_name = client.get("/ui/library", params={"sort": "name"}).text
+    assert 'c-file sortable sorted' in by_name
+    assert 'c-delta sortable"' in by_name
+
+
+def test_library_rows_show_when_they_were_last_scanned(client) -> None:
+    """What the `scanned` sort orders by has to be visible, or the sort is a mystery."""
+    services = client.app.state.services
+    _index_row(services, "/lib/a.mkv")
+    assert "2026-01-01" in client.get("/ui/library").text
+
+
+def test_the_scan_form_opens_itself_on_a_first_run(client) -> None:
+    """An empty index has exactly one useful action; hiding it behind a toggle above an empty
+    table is the worst possible first impression."""
+    services = client.app.state.services
+    empty = client.get("/library").text
+    assert 'id="scan-panel" hidden' not in empty
+    assert 'aria-expanded="true"' in empty
+
+    _index_row(services, "/lib/a.mkv")
+    indexed = client.get("/library").text
+    assert 'id="scan-panel" hidden' in indexed
+    assert 'aria-expanded="false"' in indexed
+
+
+def test_chip_groups_are_labelled_for_assistive_tech(client) -> None:
+    """They are bare <button>s in a <div>; without a role and a label they are an unexplained
+    run of buttons."""
+    for path in ("/library", "/jobs", "/downloads"):
+        body = client.get(path).text
+        assert 'role="group"' in body
+        assert "aria-label=" in body
+
+
+def test_the_nav_groups_its_pairs_and_names_the_ledger_bandwidth(client) -> None:
+    body = client.get("/").text
+    assert "nav-group" in body
+    assert ">Bandwidth<" in body  # not "Downloads": it is a bandwidth ledger, not a client
+    assert ">Downloads<" not in body

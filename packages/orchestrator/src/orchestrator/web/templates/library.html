@@ -6,12 +6,12 @@
 
 <div class="toolbar">
   <input type="search" id="search" placeholder="Search library… (path or filename)" autocomplete="off">
-  <div class="filters" id="app-filter">
+  <div class="filters" id="app-filter" role="group" aria-label="Filter by app">
     <button data-app="" class="chip active">All</button>
     <button data-app="radarr" class="chip">🎬 Movies</button>
     <button data-app="sonarr" class="chip">📺 Episodes</button>
   </div>
-  <div class="filters" id="lib-status">
+  <div class="filters" id="lib-status" role="group" aria-label="Filter by state">
     <button data-status="needs" class="chip active">Needs work</button>
     <button data-status="" class="chip">Everything</button>
     <button data-status="clean" class="chip">Clean</button>
@@ -19,25 +19,19 @@
     <button data-status="queued" class="chip">Queued</button>
     <button data-status="error" class="chip">Errors</button>
   </div>
-  <div class="filters" id="lib-reason">
+  <div class="filters" id="lib-reason" role="group" aria-label="Filter by change type">
     <button data-reason="" class="chip active">Any change</button>
     <button data-reason="subs" class="chip">Subtitles</button>
     <button data-reason="audio" class="chip">Re-encode</button>
     <button data-reason="audiolang" class="chip" title="Audio tracks the language filter would drop">Audio drop</button>
     <button data-reason="remux" class="chip">Not MKV</button>
   </div>
-  <div class="filters" id="lib-sort">
-    <button data-sort="impact" class="chip active" title="Biggest estimated win first">Impact</button>
-    <button data-sort="size" class="chip">Size</button>
-    <button data-sort="name" class="chip">Name</button>
-    <button data-sort="scanned" class="chip">Scanned</button>
-  </div>
   <button class="ghost" type="button" id="lib-refresh">Refresh</button>
-  <button class="ghost" type="button"
-          onclick="var e=document.getElementById('scan-panel');e.hidden=!e.hidden">Scan…</button>
+  <button class="ghost" type="button" id="scan-toggle" aria-expanded="{{ 'true' if first_run else 'false' }}"
+          aria-controls="scan-panel">Scan…</button>
 </div>
 
-<section class="card" id="scan-panel" hidden>
+<section class="card" id="scan-panel" {{ "" if first_run else "hidden" }}>
   <h2>Scan library <span class="muted">— read-only: probe + decide, nothing is rewritten</span></h2>
   <form method="post" action="/library/scan" class="entry-form">
     <label class="wide">Folder
@@ -86,7 +80,7 @@
       </div>
     </div>
     <div id="library-panel" data-src="/ui/library" data-interval="0" data-searchable data-paged
-         data-chip-filters="lib-status,lib-reason,lib-sort">Loading…</div>
+         data-sortable data-chip-filters="lib-status,lib-reason">Loading…</div>
   </section>
 </form>
 {% endblock %}
