@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from mediacore.arr.client import ArrClient, client_for
-from mediacore.audit import Audit, open_db
+from mediacore.audit import Audit
 from mediacore.dashdot import DashdotClient, SystemSnapshot
+from mediacore.db import open_db
 from mediacore.docker_status import ContainerStatus, DockerStatusClient
 from mediacore.jellyfin import JellyfinClient
 from mediacore.models import ArrInstance

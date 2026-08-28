@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 
 import orchestrator.alerts as alertsmod
-from mediacore.audit import open_db
+from mediacore.db import open_db
 from orchestrator.alerts import CRIT, OK, WARN, AlertEngine, Evaluation, InAppChannel
 from orchestrator.config import AlertRule
 

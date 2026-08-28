@@ -1,37 +1,17 @@
-"""Library index — what the pipeline *would* do to every file already on disk.
+"""The ``library_files`` table: one row per media file found under a configured root.
 
-The per-file pipeline only ever sees freshly imported files, so anything that landed before the
-orchestrator existed (or before a policy change) has never been looked at. This module walks the
-configured library roots, probes each file once, and stores the resulting
-:class:`~mediacore.policy.prune.PruneDecision` in a queryable table. The Library tab renders that
-table; enqueueing is a separate, explicit act.
-
-Scanning never touches a file. It is ``probe`` + ``decide()`` only, and ``decide()`` is pure, so
-the index is a dry run by construction — the numbers can be wrong, but nothing gets rewritten
-because of them.
-
-Scanning is slow (each file costs an mkvmerge + a few ffprobe calls) and runs on the single
-worker thread, so it blocks imports while it runs. Two things keep that bearable: the index is
-keyed by (path, mtime) so a re-scan only probes what actually changed, and the loop checks the
-durable pause flag every few files so "Pause worker" still drains the worker promptly.
+Rows are keyed by path and validated by (mtime, size, scan_version), which is what makes a
+re-scan cheap — see :mod:`orchestrator.library.scan`.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
-import logging
-import os
 import sqlite3
 import threading
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 
-from mediacore.policy.prune import PruneDecision, decide
-from mediacore.probe import ProbeResult, classify_audio
-from mediacore.probe import probe as _default_probe
-
-log = logging.getLogger(__name__)
+from mediacore.db import add_columns
 
 #: reason tags stored (comma-separated) in ``library_files.reasons``.
 SUBS = "subs"
@@ -94,6 +74,14 @@ CREATE INDEX IF NOT EXISTS idx_library_app ON library_files(app);
 CREATE INDEX IF NOT EXISTS idx_library_scanned ON library_files(scanned_at);
 """
 
+#: columns added after the table's first release — see :func:`mediacore.db.add_columns`.
+_LIBRARY_ADDED = {
+    "enqueued_at": "TEXT",
+    "drop_audio": "INTEGER NOT NULL DEFAULT 0",
+    "original_lang": "TEXT",
+    "scan_version": "INTEGER NOT NULL DEFAULT 0",
+}
+
 
 def _now() -> str:
     return _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
@@ -154,24 +142,8 @@ class LibraryIndex:
         self._lock = threading.Lock()
         with self._lock:
             self.db.executescript(_SCHEMA)
-            self._migrate()
+            add_columns(self.db, "library_files", _LIBRARY_ADDED)
             self.db.commit()
-
-    def _migrate(self) -> None:
-        """Add columns introduced after the table's first creation (idempotent)."""
-        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(library_files)")}
-        if "enqueued_at" not in cols:
-            self.db.execute("ALTER TABLE library_files ADD COLUMN enqueued_at TEXT")
-        if "drop_audio" not in cols:
-            self.db.execute(
-                "ALTER TABLE library_files ADD COLUMN drop_audio INTEGER NOT NULL DEFAULT 0"
-            )
-        if "original_lang" not in cols:
-            self.db.execute("ALTER TABLE library_files ADD COLUMN original_lang TEXT")
-        if "scan_version" not in cols:
-            self.db.execute(
-                "ALTER TABLE library_files ADD COLUMN scan_version INTEGER NOT NULL DEFAULT 0"
-            )
 
     # --- writes ---------------------------------------------------------------------
     def upsert(self, row: LibraryRow) -> None:
@@ -449,314 +421,3 @@ class LibraryIndex:
             "last_scan": r["last_scan"],
         }
 
-
-# --- the scan -----------------------------------------------------------------------------
-
-
-@dataclass
-class ScanStats:
-    """What one scan pass did. ``probed`` is the expensive part; ``cached`` is what the
-    (path, mtime) index saved."""
-
-    files: int = 0
-    probed: int = 0
-    cached: int = 0
-    needs_work: int = 0
-    errors: int = 0
-    removed: int = 0
-    stopped: bool = False
-    roots: list[str] = field(default_factory=list)
-
-    def summary(self) -> str:
-        parts = [f"{self.files} files", f"{self.probed} probed", f"{self.needs_work} need work"]
-        if self.cached:
-            parts.append(f"{self.cached} unchanged")
-        if self.errors:
-            parts.append(f"{self.errors} errors")
-        if self.removed:
-            parts.append(f"{self.removed} gone")
-        if self.stopped:
-            parts.append("stopped early")
-        return " · ".join(parts)
-
-
-def resolve_roots(cfg) -> list[tuple[Path, str]]:
-    """(path, app) pairs to walk. Explicit ``library.roots`` win; otherwise each configured arr
-    instance contributes its library mount as this container sees it. Nothing at all when the
-    feature is switched off, which is what makes ``library.enabled`` a real off switch."""
-    lib = cfg.library
-    if not lib.enabled:
-        return []
-    if lib.roots:
-        return [(r.path, r.app) for r in lib.roots]
-    out: list[tuple[Path, str]] = []
-    for app in ("radarr", "sonarr"):
-        inst = getattr(cfg.arr, app, None)
-        if inst is None:
-            continue
-        root = inst.local_media_root or inst.media_root
-        if root is not None:
-            out.append((Path(root), app))
-    return out
-
-
-def iter_files(root: Path, exts: set[str], min_size: int) -> Iterator[tuple[str, os.stat_result]]:
-    """Media files under ``root``, skipping hidden dirs, mkvprune's in-flight temp files and
-    anything below ``min_size`` (samples, featurettes, stray artwork)."""
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
-        for fn in sorted(filenames):
-            if fn.startswith(".") or fn.endswith(".tmp.mkv"):
-                continue
-            if os.path.splitext(fn)[1].lower() not in exts:
-                continue
-            full = os.path.join(dirpath, fn)
-            try:
-                st = os.stat(full)
-            except OSError:  # vanished mid-walk / unreadable — nothing to index
-                continue
-            if st.st_size < min_size:
-                continue
-            yield full, st
-
-
-def _as_int(value: object) -> int | None:
-    try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def track_sizes(pr: ProbeResult) -> dict[int, int]:
-    """ffprobe stream index → that track's size in bytes, for the tracks that reveal it.
-
-    Matroska has no per-track bitrate header, so ffprobe's own ``bit_rate`` is empty on the vast
-    majority of an MKV library (measured on this one: 13% of audio tracks). What it *does* carry
-    is mkvmerge's statistics tags — ``NUMBER_OF_BYTES`` (the exact track size) and ``BPS`` — on
-    72% of audio and 86% of subtitle tracks. Reading them is the difference between a size
-    estimate that means something and a column of question marks.
-
-    Tried in order: the exact byte count, then a measured average bitrate over the runtime, then
-    ffprobe's own bitrate. ``None`` when a track reveals none of them.
-    """
-    duration = pr.duration_s or 0.0
-    sizes: dict[int, int] = {}
-    for stream in (pr.ffprobe_json or {}).get("streams", []):
-        index = _as_int(stream.get("index"))
-        if index is None:
-            continue
-        tags = {k.upper(): v for k, v in (stream.get("tags") or {}).items()}
-        exact = _as_int(tags.get("NUMBER_OF_BYTES"))
-        if exact is not None:
-            sizes[index] = exact
-            continue
-        if duration <= 0:
-            continue
-        bps = _as_int(tags.get("BPS")) or _as_int(stream.get("bit_rate"))
-        if bps:
-            sizes[index] = int(bps / 8 * duration)
-    return sizes
-
-
-def estimate_delta(pr: ProbeResult, decision: PruneDecision) -> tuple[int, bool]:
-    """Estimated size change in bytes (negative = space reclaimed), and whether every part of it
-    was actually computable.
-
-    Dropping a subtitle or audio track reclaims exactly that track's bytes. Re-encoding audio
-    source track for an AC-3 one at a known bitrate — except the >6-channel *compatibility* path,
-    which keeps the original and **adds** a downmix, so its contribution is positive.
-
-    A file where some tracks report a size and others don't yields a partial figure with
-    ``known=False``: a floor, not a fiction. Never round an unknown down to a confident zero.
-    """
-    duration = pr.duration_s or 0.0
-    sizes = track_sizes(pr)
-    delta = 0
-    known = True
-
-    for track in [*decision.dropped_subs, *decision.dropped_audio]:
-        size = sizes.get(track.ffprobe_index)
-        if size is None:
-            known = False
-        else:
-            delta -= size
-
-    for track in decision.audio_encode_tracks:
-        action = classify_audio(track)
-        if not action.bitrate_bps or duration <= 0:
-            known = False
-            continue
-        added = int(action.bitrate_bps / 8 * duration)
-        if action.kind == "compat":
-            delta += added  # the original stays; a 5.1 AC-3 downmix is added alongside it
-            continue
-        source = sizes.get(track.ffprobe_index)
-        if source is None:
-            known = False
-            continue
-        delta += added - source
-
-    return delta, known
-
-
-def _row_for(
-    path: str,
-    st: os.stat_result,
-    app: str,
-    root: str,
-    pr: ProbeResult,
-    decision: PruneDecision,
-    pruned_at: str | None,
-    scanned_at: str,
-    original_lang: str | None = None,
-) -> LibraryRow:
-    reasons: list[str] = []
-    if decision.dropped_subs:
-        reasons.append(SUBS)
-    if decision.audio_encode_tracks:
-        reasons.append(AUDIO)
-    if decision.remux:
-        reasons.append(REMUX)
-    if decision.dropped_audio:
-        reasons.append(AUDIO_DROP)
-    delta, known = estimate_delta(pr, decision)
-    return LibraryRow(
-        path=path,
-        app=app,
-        root=root,
-        name=os.path.basename(path),
-        size_bytes=st.st_size,
-        mtime=st.st_mtime,
-        duration_s=pr.duration_s,
-        needs_work=int(decision.needs_work),
-        reasons=",".join(reasons),
-        summary=decision.summary(),
-        drop_subs=len(decision.dropped_subs),
-        encode_audio=len(decision.audio_encode_tracks),
-        drop_audio=len(decision.dropped_audio),
-        original_lang=original_lang,
-        audio_tracks=len(pr.audio),
-        sub_tracks=len(pr.subtitles),
-        delta_bytes=delta,
-        delta_known=int(known),
-        pruned_at=pruned_at,
-        error=None,
-        scan_version=SCAN_VERSION,
-        scanned_at=scanned_at,
-    )
-
-
-def scan(
-    services,
-    *,
-    full: bool = False,
-    root: str | None = None,
-    probe_fn: Callable[[str], ProbeResult] | None = None,
-    on_progress: Callable[[float, str], None] | None = None,
-) -> ScanStats:
-    """Walk the configured roots and refresh the index.
-
-    ``full`` re-probes everything instead of trusting the (path, mtime) cache. ``root`` narrows
-    the walk to one configured root or a subdirectory of one — the way you scan a single show
-    without paying for the whole library.
-    """
-    cfg = services.config
-    index = services.library
-    audit = services.audit
-    # Only pay for the arr lookup when the filter that needs it is on.
-    titles = services.titles if cfg.policy.audio_language_filter else None
-    probe_fn = probe_fn or _default_probe
-    started = _scan_token()
-    exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in cfg.library.extensions}
-    min_size = cfg.library.min_size_bytes
-
-    pairs = resolve_roots(cfg)
-    if root:
-        want = Path(root)
-        # a subdirectory inherits its parent root's app; an unrelated path is refused rather than
-        # guessed at, because the app decides which arr the re-run is addressed to.
-        pairs = [(want, app) for base, app in pairs if want == base or _under(want, base)]
-        if not pairs:
-            raise ValueError(f"{root} is not under a configured library root")
-        # A typo'd folder would otherwise walk nothing and report a clean, successful scan of
-        # zero files — the failure mode looks identical to "everything here is fine".
-        if not want.is_dir():
-            raise ValueError(f"{root} does not exist")
-
-    stats = ScanStats(roots=[str(p) for p, _ in pairs])
-    if not pairs:
-        return stats
-
-    # Two passes: a cheap stat-only walk so the progress bar has a real denominator, then the
-    # expensive probing. The walk of a few thousand entries costs a fraction of one probe.
-    listing: list[tuple[str, os.stat_result, str, str]] = []
-    for base, app in pairs:
-        for path, st in iter_files(base, exts, min_size):
-            listing.append((path, st, app, str(base)))
-    stats.files = len(listing)
-    if on_progress:
-        on_progress(0.0, f"{stats.files} files to check")
-
-    for i, (path, st, app, base) in enumerate(listing, start=1):
-        # The durable pause flag is how a redeploy drains the worker; a multi-minute scan has to
-        # honour it or "idle — safe to redeploy" would be a lie for the length of a scan.
-        if i % 25 == 0 and services.queue.is_paused():
-            stats.stopped = True
-            break
-        existing = index.get(path)
-        if (
-            not full
-            and existing is not None
-            and existing.mtime == st.st_mtime
-            and existing.size_bytes == st.st_size
-            and existing.error is None
-            and existing.scan_version == SCAN_VERSION
-        ):
-            index.touch(path, started)
-            stats.cached += 1
-            stats.needs_work += int(bool(existing.needs_work))
-        else:
-            stats.probed += 1
-            try:
-                pr = probe_fn(path)
-            except Exception as exc:  # unreadable/corrupt file — index the failure, keep going
-                log.warning("library scan: probe failed for %s: %s", path, exc)
-                stats.errors += 1
-                index.upsert(
-                    LibraryRow(
-                        path=path, app=app, root=base, name=os.path.basename(path),
-                        size_bytes=st.st_size, mtime=st.st_mtime, error=str(exc)[:400],
-                        scan_version=SCAN_VERSION, scanned_at=started,
-                    )
-                )
-            else:
-                info = titles.lookup(path) if titles is not None else None
-                original = (
-                    titles.original_isos(path, info.title if info else None)
-                    if titles is not None
-                    else None
-                )
-                decision = decide(pr, cfg.policy, original_langs=original)
-                pruned_at = audit.last_done_at(path, "prune", st.st_mtime)
-                index.upsert(
-                    _row_for(
-                        path, st, app, base, pr, decision, pruned_at, started,
-                        original_lang=(info.original_language if info else None),
-                    )
-                )
-                stats.needs_work += int(decision.needs_work)
-        if on_progress and (i % 5 == 0 or i == stats.files):
-            pct = i / stats.files * 100 if stats.files else 100.0
-            on_progress(pct, f"{i}/{stats.files} · {stats.needs_work} need work")
-
-    if not stats.stopped:
-        stats.removed = index.prune_missing(stats.roots, started)
-    return stats
-
-
-def _under(path: Path, base: Path) -> bool:
-    try:
-        path.relative_to(base)
-    except ValueError:
-        return False
-    return True

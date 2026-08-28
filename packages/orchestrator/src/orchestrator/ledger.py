@@ -3,7 +3,7 @@
 Rows are either captured automatically from qBittorrent at import time (``source='qbittorrent'``,
 keyed by infohash) or added manually (``source='manual'``). "Consumed bandwidth" is
 ``downloaded_bytes + uploaded_bytes`` (not file size). Lives on the shared SQLite connection
-(``mediacore.audit.open_db``) alongside jobs + actions.
+(``mediacore.db.open_db``) alongside jobs + actions.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ import datetime as _dt
 import sqlite3
 import threading
 from dataclasses import dataclass
+
+from mediacore.db import add_columns
 
 QBITTORRENT = "qbittorrent"
 MANUAL = "manual"
@@ -254,6 +256,9 @@ CREATE TABLE IF NOT EXISTS cutoffs (
 CREATE INDEX IF NOT EXISTS idx_cutoffs_date ON cutoffs(cutoff_date);
 """
 
+#: columns added after the table's first release — see :func:`mediacore.db.add_columns`.
+_CUTOFFS_ADDED = {"alerted_pct": "INTEGER NOT NULL DEFAULT 0"}
+
 
 @dataclass
 class Cutoff:
@@ -275,14 +280,8 @@ class Cutoffs:
         self._lock = threading.Lock()
         with self._lock:
             self.db.executescript(_CUTOFFS_SCHEMA)
-            self._migrate()
+            add_columns(self.db, "cutoffs", _CUTOFFS_ADDED)
             self.db.commit()
-
-    def _migrate(self) -> None:
-        """Add columns introduced after the table's first creation (idempotent)."""
-        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(cutoffs)")}
-        if "alerted_pct" not in cols:
-            self.db.execute("ALTER TABLE cutoffs ADD COLUMN alerted_pct INTEGER NOT NULL DEFAULT 0")
 
     def set_alerted(self, cutoff_id: int, pct: int) -> None:
         with self._lock:

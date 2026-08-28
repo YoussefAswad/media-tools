@@ -2,8 +2,8 @@
 
 Every action the orchestrator takes is recorded here (and, via the notifier, surfaced to ntfy).
 The JSONL is the durable source of truth; the SQLite ``actions`` table is an index for the web
-UI and for dedup. The same SQLite file (opened via :func:`open_db`) also holds the orchestrator's
-``jobs`` queue, so the UI can join jobs to their actions.
+UI and for dedup. The same SQLite file (opened via :func:`mediacore.db.open_db`) also holds the
+orchestrator's ``jobs`` queue, so the UI can join jobs to their actions.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-DB_NAME = "orchestrator.db"
+from mediacore.db import add_columns
 
 _ACTIONS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS actions (
@@ -40,6 +40,9 @@ CREATE INDEX IF NOT EXISTS idx_actions_path ON actions(path);
 CREATE INDEX IF NOT EXISTS idx_actions_ts   ON actions(ts);
 """
 
+#: columns added after the table's first release — see :func:`mediacore.db.add_columns`.
+_ACTIONS_ADDED = {"duration_ms": "INTEGER"}
+
 # result values
 OK = "ok"
 SKIP = "skip"
@@ -48,74 +51,6 @@ FAIL = "fail"
 
 def _now() -> str:
     return _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
-
-
-class _BufferedResult:
-    """A cursor-compatible view whose rows were already fetched (under the lock) by
-    :meth:`_SerializedConnection.execute`. Fetching/iterating never touches SQLite again, so
-    the connection is only ever driven by one thread at a time."""
-
-    __slots__ = ("_i", "_rows", "lastrowid", "rowcount")
-
-    def __init__(self, rows: list, lastrowid: int | None, rowcount: int) -> None:
-        self._rows = rows
-        self._i = 0
-        self.lastrowid = lastrowid
-        self.rowcount = rowcount
-
-    def fetchone(self):
-        if self._i >= len(self._rows):
-            return None
-        row = self._rows[self._i]
-        self._i += 1
-        return row
-
-    def fetchall(self) -> list:
-        rows = self._rows[self._i :]
-        self._i = len(self._rows)
-        return rows
-
-    def __iter__(self):
-        return iter(self.fetchall())
-
-
-class _SerializedConnection(sqlite3.Connection):
-    """A shared connection safe for concurrent use across threads (the web threadpool + the
-    worker). Python's ``sqlite3`` protects the C structures, but two threads stepping the *same*
-    connection can still interleave and hand back a truncated/``None`` result. We serialize every
-    statement — and eagerly buffer each query's rows — behind one reentrant lock so callers keep
-    the ``execute(...).fetchone()`` idiom unchanged."""
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self._lock = threading.RLock()
-
-    def execute(self, sql, parameters=(), /):  # type: ignore[override]
-        with self._lock:
-            cur = super().execute(sql, parameters)
-            rows = cur.fetchall() if cur.description is not None else []
-            return _BufferedResult(rows, cur.lastrowid, cur.rowcount)
-
-    def executescript(self, sql_script, /):  # type: ignore[override]
-        with self._lock:
-            return super().executescript(sql_script)
-
-    def commit(self) -> None:
-        with self._lock:
-            super().commit()
-
-
-def open_db(state_dir: Path) -> sqlite3.Connection:
-    """Open (creating parents) the shared SQLite db in WAL mode, thread-safe for the worker."""
-    state_dir.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(
-        str(state_dir / DB_NAME), check_same_thread=False, factory=_SerializedConnection
-    )
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA busy_timeout=5000")
-    db.execute("PRAGMA foreign_keys=ON")
-    return db
 
 
 @dataclass
@@ -143,14 +78,8 @@ class Audit:
         self._lock = threading.Lock()
         with self._lock:
             self.db.executescript(_ACTIONS_SCHEMA)
-            self._migrate()
+            add_columns(self.db, "actions", _ACTIONS_ADDED)
             self.db.commit()
-
-    def _migrate(self) -> None:
-        """Add columns introduced after a db was first created (idempotent)."""
-        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(actions)")}
-        if "duration_ms" not in cols:
-            self.db.execute("ALTER TABLE actions ADD COLUMN duration_ms INTEGER")
 
     def _jsonl_path(self) -> Path:
         month = _dt.datetime.now(_dt.UTC).strftime("%Y%m")

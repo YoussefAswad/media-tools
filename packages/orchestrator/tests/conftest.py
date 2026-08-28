@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mediacore.audit import Audit, open_db
+from mediacore.audit import Audit
+from mediacore.db import open_db
 from mediacore.models import ArrInstance, CoreConfig
 from mediacore.notify import Notifier
 from mediacore.probe import ProbeResult, Track

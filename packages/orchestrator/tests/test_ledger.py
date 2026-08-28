@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as _dt
 from pathlib import Path
 
-from mediacore.audit import open_db
+from mediacore.db import open_db
 from orchestrator.ledger import Ledger
 from orchestrator.util import human_bytes, human_duration, parse_bytes, parse_range, range_bounds
 
@@ -142,7 +142,7 @@ def test_range_bounds_custom_dates_override_preset():
 
 
 def test_cutoffs_crud_and_latest(tmp_path):
-    from mediacore.audit import open_db
+    from mediacore.db import open_db
     from orchestrator.ledger import Cutoffs
     cf = Cutoffs(open_db(tmp_path))
     assert cf.latest() is None and cf.latest_date() is None

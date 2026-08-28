@@ -31,7 +31,7 @@ project, replacing the old bash Custom Script and standalone seasonal-shift.
 packages/
   mkvprune/        pure-stdlib remux/encode CLI (NO network, NO deps) — invoked as a subprocess
   mediacore/       everything the service shares:
-                     config, models, audit(db), paths, probe facade
+                     config, models, db (shared conn + migrations), audit, paths, probe facade
                      arr/       ARR client + webhook event parsing + language table
                      policy/    ffprobe-based rules + prune decision (builds mkvprune argv)
                      renumber/  SxxExx planner/executor for seasonal <-> absolute shifts
@@ -58,7 +58,7 @@ The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — *
 5. **Jellyfin refresh** — best-effort, after prune ran (ok or skip).
 6. **status rollup** — ntfy.
 
-That pipeline only ever sees files at import. The **Library tab** (`orchestrator/library.py`) is
+That pipeline only ever sees files at import. The **Library tab** (`orchestrator/library/`) is
 the back-catalogue path: a `library_scan` job walks the configured roots, probes each file once and
 stores what `decide()` *would* do in a `library_files` table; the tab renders that table with
 filters, and queueing any subset of it is a separate click that enqueues the same `rerun` payload
@@ -98,10 +98,17 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
   (`/state/orchestrator.db`, WAL) holds jobs, actions, downloads (ledger), and cutoffs.
 - **Web UI is server-rendered** (Jinja2) with vanilla-JS `data-src` polling. **No vendored CDN
   libraries** (CSP-safe). Theme-aware CSS. Byte values via a context-aware `bytes` Jinja filter.
-- **Schema migrations are idempotent:** `PRAGMA table_info(...)` + `ALTER TABLE ADD COLUMN` guarded
-  by a presence check (see `queue._migrate`, `audit._migrate`, `ledger.Cutoffs._migrate`). Add new
-  columns this way. Small runtime key/values (e.g. the durable pause flag, last-vacuum date) live
-  in the `meta` table via `JobQueue.get_meta/set_meta`.
+- **Schema migrations go through one helper.** Each table module declares a module-level
+  `_<TABLE>_ADDED` map of *columns added after its first release* (`{"progress": "REAL", ...}`)
+  and calls `mediacore.db.add_columns(db, "<table>", _<TABLE>_ADDED)` right after its
+  `executescript(_SCHEMA)`. It's idempotent and returns what it added. Four tables used to
+  hand-roll the same `PRAGMA table_info` + guarded `ALTER TABLE ADD COLUMN` loop; at nine tables
+  that was duplicated infrastructure whose failure mode (a forgotten guard) only shows up on
+  somebody else's older db. **Any `NOT NULL` column MUST carry a `DEFAULT`** — SQLite accepts a
+  bare `NOT NULL` on an *empty* table and rejects it on a populated one, so the mistake passes in
+  dev/CI and fails at startup in production. `test_db.py` asserts this across every map.
+  Small runtime key/values (e.g. the durable pause flag, last-vacuum date) live in the `meta`
+  table via `JobQueue.get_meta/set_meta`.
 
 ## Deploy
 
@@ -135,7 +142,7 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
 2. **The shared SQLite connection must be accessed serially.** The web threadpool and the worker
    share one `sqlite3.Connection`; concurrent stepping of the same connection intermittently
    returns truncated/`None` rows (symptom seen: `TypeError: 'NoneType' object is not subscriptable`
-   500s, and the Downloads "remaining" card vanishing). Fixed by `open_db` returning a
+   500s, and the Downloads "remaining" card vanishing). Fixed by `mediacore.db.open_db` returning a
    `_SerializedConnection` subclass that runs+buffers every statement under one lock. **Don't add
    raw `db.execute` paths that bypass this** — go through `open_db`.
 
@@ -263,7 +270,9 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
     active job. Anything that adds a new way for a job to leave the queue needs nothing extra —
     that is the point of deriving it.
 
-16. **A changed decision/estimate formula needs `library.SCAN_VERSION` bumped.** The scan skips
+16. **A changed decision/estimate formula needs `library.index.SCAN_VERSION` bumped.** That is
+    the whole reason `library/estimate.py` is its own module — the size model is the thing most
+    likely to change, and the bump is what makes the change reach cached rows. The scan skips
     files whose (path, mtime, size) is unchanged, so a fixed estimator would otherwise only ever
     reach files that happened to change on disk — the whole index would keep serving numbers from
     the old formula. Rows stamped with an older version are re-probed by the next *ordinary*

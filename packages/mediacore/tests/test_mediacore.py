@@ -5,8 +5,9 @@ from pathlib import Path
 import pytest
 from mediacore import notify as notify_mod
 from mediacore.arr.events import parse_event
-from mediacore.audit import OK, ActionRecord, Audit, open_db
+from mediacore.audit import OK, ActionRecord, Audit
 from mediacore.config import parse_config
+from mediacore.db import open_db
 from mediacore.models import ArrInstance, CoreConfig, NtfyConfig
 from mediacore.notify import Notifier, NtfyMessage
 from mediacore.paths import to_local, to_remote

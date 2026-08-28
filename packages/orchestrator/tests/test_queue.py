@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mediacore.audit import open_db
+from mediacore.db import open_db
 from orchestrator.queue import DEAD, DONE, PROCESSING, QUEUED, JobQueue, _iso_in
 
 
@@ -211,7 +211,7 @@ def test_meta_roundtrip(tmp_path):
 
 
 def test_progress_columns_migrated_on_existing_table(tmp_path):
-    from mediacore.audit import open_db
+    from mediacore.db import open_db
     # simulate an OLD db: jobs table without progress columns
     db = open_db(tmp_path)
     db.execute("DROP TABLE IF EXISTS jobs")
@@ -232,3 +232,36 @@ def test_progress_columns_migrated_on_existing_table(tmp_path):
     q.claim_next()
     q.set_progress(jid, 10.0, "x")
     assert q.get(jid).progress == 10.0
+
+
+def test_a_pre_migration_jobs_table_gains_every_column(tmp_path) -> None:
+    """The upgrade path, end to end: a db created before progress/not_before/revives existed
+    must come up with all of them and keep its rows. This is the case that only ever shows up
+    on somebody else's older database, so it is worth a test rather than a careful reading."""
+    from mediacore.db import open_db
+
+    db = open_db(tmp_path)
+    # the jobs table as it shipped originally — JobQueue's CREATE TABLE IF NOT EXISTS will
+    # leave this alone, so the added-columns map is the only thing that can rescue it
+    db.execute(
+        "CREATE TABLE jobs ("
+        " id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT, payload TEXT NOT NULL,"
+        " status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, current_step TEXT,"
+        " error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    db.execute(
+        "INSERT INTO jobs (id, kind, label, payload, status, attempts, created_at, updated_at)"
+        " VALUES ('old1','arr_event','Old Movie','{}','queued',0,'2026-01-01T00:00:00+00:00',"
+        "'2026-01-01T00:00:00+00:00')"
+    )
+    db.commit()
+
+    q = JobQueue(db)
+    cols = {r[1] for r in db.execute("PRAGMA table_info(jobs)")}
+    assert {"progress", "progress_note", "not_before", "revives"} <= cols
+
+    job = q.get("old1")
+    assert job is not None and job.label == "Old Movie"
+    assert job.progress is None
+    # the row is still claimable: a NULL not_before must not exclude it
+    assert q.claim_next().id == "old1"

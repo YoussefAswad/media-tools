@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from mediacore.db import add_columns
+
 # Default per-attempt requeue backoff (seconds), indexed by attempt and clamped to the last entry.
 DEFAULT_BACKOFF_S: tuple[int, ...] = (30, 300, 1800)
 PAUSE_KEY = "worker_paused"
@@ -50,6 +52,14 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT
 );
 """
+
+#: columns added after the table's first release — see :func:`mediacore.db.add_columns`.
+_JOBS_ADDED = {
+    "progress": "REAL",
+    "progress_note": "TEXT",
+    "not_before": "TEXT",
+    "revives": "INTEGER NOT NULL DEFAULT 0",
+}
 
 
 def _now() -> str:
@@ -110,20 +120,8 @@ class JobQueue:
         self._lock = threading.Lock()
         with self._lock:
             self.db.executescript(_SCHEMA)
-            self._migrate()
+            add_columns(self.db, "jobs", _JOBS_ADDED)
             self.db.commit()
-
-    def _migrate(self) -> None:
-        """Add columns introduced after the table's first creation (idempotent)."""
-        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(jobs)")}
-        if "progress" not in cols:
-            self.db.execute("ALTER TABLE jobs ADD COLUMN progress REAL")
-        if "progress_note" not in cols:
-            self.db.execute("ALTER TABLE jobs ADD COLUMN progress_note TEXT")
-        if "not_before" not in cols:
-            self.db.execute("ALTER TABLE jobs ADD COLUMN not_before TEXT")
-        if "revives" not in cols:
-            self.db.execute("ALTER TABLE jobs ADD COLUMN revives INTEGER NOT NULL DEFAULT 0")
 
     def _backoff_for(self, attempts: int) -> int:
         """Seconds to wait before the next attempt, given the number of attempts so far."""

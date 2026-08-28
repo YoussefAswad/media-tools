@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from mediacore.audit import open_db
+from mediacore.db import open_db
 from orchestrator.metrics import Metrics, Sample
 
 
