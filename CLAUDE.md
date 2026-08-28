@@ -1,4 +1,4 @@
-# media-tools
+# media-orchestrator
 
 A **uv-workspace monorepo** built around one product: the **FastAPI media orchestrator**. It
 receives Radarr/Sonarr webhooks, runs a per-file pipeline, indexes the back catalogue, and

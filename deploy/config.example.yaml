@@ -1,4 +1,4 @@
-# media-tools orchestrator config. Copy to /config/config.yaml (a mounted volume).
+# media-orchestrator config. Copy to /config/config.yaml (a mounted volume).
 # Secrets are ${ENV} references — expanded at load, never written back resolved, so this file
 # is safe to edit in the web UI. Set the referenced vars in the container environment.
 

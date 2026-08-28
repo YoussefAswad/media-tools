@@ -1,4 +1,4 @@
-# Deploying the media-tools orchestrator
+# Deploying the media orchestrator
 
 The orchestrator receives Radarr/Sonarr **Webhook** events and, per file: records the download's
 bandwidth, flags quality issues (→ ntfy), prunes unwanted subtitle/audio tracks and re-encodes
@@ -9,7 +9,7 @@ in an audit log and shown in a web UI, which also carries a Library tab for the 
 ## 1. Build the image
 
 ```bash
-cd media-tools
+cd media-orchestrator
 docker build -f deploy/orchestrator/Dockerfile -t youssefaswad/media-orchestrator:latest .
 ```
 

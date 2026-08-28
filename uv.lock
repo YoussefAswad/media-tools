@@ -4,7 +4,7 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
-    "media-tools",
+    "media-orchestrator",
     "mediacore",
     "mkvprune",
     "orchestrator",
@@ -382,7 +382,7 @@ wheels = [
 ]
 
 [[package]]
-name = "media-tools"
+name = "media-orchestrator"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [

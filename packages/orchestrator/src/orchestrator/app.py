@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
         worker.stop()
 
 
-app = FastAPI(title="media-tools orchestrator", lifespan=lifespan)
+app = FastAPI(title="media-orchestrator", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 for router in ROUTERS:
     app.include_router(router)

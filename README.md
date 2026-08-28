@@ -1,4 +1,4 @@
-# media-tools
+# media-orchestrator
 
 A uv-workspace monorepo for an ARR-driven media orchestrator, plus the standalone MKV tool it
 drives.

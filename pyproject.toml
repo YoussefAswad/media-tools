@@ -1,7 +1,7 @@
 [project]
-name = "media-tools"
+name = "media-orchestrator"
 version = "0.0.0"
-description = "Monorepo: mkvprune, the shared mediacore library, and the ARR-driven media orchestrator."
+description = "ARR-driven media orchestrator, plus the standalone mkvprune tool it drives."
 requires-python = ">=3.12"
 dependencies = [
     "mediacore",

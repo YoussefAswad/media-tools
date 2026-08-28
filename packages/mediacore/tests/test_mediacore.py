@@ -213,3 +213,31 @@ def test_shared_connection_survives_concurrent_access(tmp_path: Path) -> None:
         t.join()
 
     assert not errors, f"concurrent access raised: {errors[:3]}"
+
+
+def test_the_pre_rename_config_dir_is_still_searched(tmp_path, monkeypatch) -> None:
+    """APP_NAME picks an on-disk path, so renaming the project would otherwise make an existing
+    ~/.config/media-tools/config.yaml invisible, with no message beyond "no config file found"."""
+    from mediacore.config import find_default_config
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    legacy = tmp_path / "media-tools"
+    legacy.mkdir()
+    (legacy / "config.yaml").write_text("policy: {}\n")
+    assert find_default_config() == legacy / "config.yaml"
+
+    # ...and the current name wins when both exist
+    current = tmp_path / "media-orchestrator"
+    current.mkdir()
+    (current / "config.yaml").write_text("policy: {}\n")
+    assert find_default_config() == current / "config.yaml"
+
+
+def test_a_missing_config_names_every_directory_it_looked_in(tmp_path, monkeypatch) -> None:
+    import pytest
+
+    from mediacore.config import find_default_config
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    with pytest.raises(FileNotFoundError, match="media-orchestrator.*media-tools"):
+        find_default_config()

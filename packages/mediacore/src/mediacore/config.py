@@ -20,7 +20,11 @@ from pydantic import BaseModel
 
 M = TypeVar("M", bound=BaseModel)
 
-APP_NAME = "media-tools"
+APP_NAME = "media-orchestrator"
+#: The pre-rename directory name. Still searched, because APP_NAME picks an on-disk path: a
+#: checkout that already had ~/.config/media-tools/config.yaml would otherwise stop finding its
+#: config with no message beyond "no config file found".
+LEGACY_APP_NAMES = ("media-tools",)
 
 # ${VAR} or ${VAR:-default}
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
@@ -48,19 +52,33 @@ def expand_env(data: Any) -> Any:
     return data
 
 
-def get_config_dir() -> Path:
+def _config_root() -> Path:
     xdg = os.getenv("XDG_CONFIG_HOME")
-    return (Path(xdg) if xdg else Path.home() / ".config") / APP_NAME
+    return Path(xdg) if xdg else Path.home() / ".config"
+
+
+def get_config_dir() -> Path:
+    """Where a new config would be written."""
+    return _config_root() / APP_NAME
+
+
+def config_dirs() -> list[Path]:
+    """Directories searched for a config, current name first."""
+    root = _config_root()
+    return [root / APP_NAME] + [root / name for name in LEGACY_APP_NAMES]
 
 
 def find_default_config() -> Path:
-    d = get_config_dir()
-    for name in ("config.yaml", "config.yml", "config.json"):
-        p = d / name
-        if p.exists():
-            return p
+    """The first config found under any searched directory. The container never gets here —
+    it sets ``ORCHESTRATOR_CONFIG`` explicitly — so this is the standalone/dev path."""
+    for d in config_dirs():
+        for name in ("config.yaml", "config.yml", "config.json"):
+            p = d / name
+            if p.exists():
+                return p
+    searched = ", ".join(str(d) for d in config_dirs())
     raise FileNotFoundError(
-        f"No config file found in {d}. Expected config.yaml, config.yml, or config.json"
+        f"No config file found in {searched}. Expected config.yaml, config.yml, or config.json"
     )
 
 

@@ -4,7 +4,7 @@
 services:
   media-orchestrator:
     build:
-      context: ../media-tools           # adjust to wherever the monorepo lives
+      context: ../media-orchestrator    # adjust to wherever the repo lives
       dockerfile: deploy/orchestrator/Dockerfile
     image: youssefaswad/media-orchestrator:latest
     container_name: media-orchestrator
