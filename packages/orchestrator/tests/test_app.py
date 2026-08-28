@@ -630,3 +630,14 @@ def test_the_nav_groups_its_pairs_and_names_the_ledger_bandwidth(client) -> None
     assert "nav-group" in body
     assert ">Bandwidth<" in body  # not "Downloads": it is a bandwidth ledger, not a client
     assert ">Downloads<" not in body
+
+
+def test_the_config_page_offers_a_generated_settings_reference(client) -> None:
+    page = client.get("/config").text
+    assert "Settings reference" in page
+    assert 'data-src="/ui/config-schema"' in page
+
+    body = client.get("/ui/config-schema").text
+    assert "pipeline" in body and "worker" in body
+    assert "max_attempts" in body and "steps" in body
+    assert "dead-lettered" in body  # the #: comment became the field's note

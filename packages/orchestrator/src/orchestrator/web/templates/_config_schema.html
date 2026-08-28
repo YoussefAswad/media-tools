@@ -1,0 +1,19 @@
+{% for s in sections %}
+<section class="schema-section">
+  <h3><code>{{ s.name }}</code> <span class="muted">{{ s.title }}</span></h3>
+  {% if s.summary %}<p class="muted schema-summary">{{ s.summary }}</p>{% endif %}
+  <table class="schema">
+    <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+    <tbody>
+      {% for f in s.fields %}
+      <tr>
+        <td class="nowrap"><code>{{ f.name }}</code></td>
+        <td class="nowrap muted">{{ f.type }}</td>
+        <td class="nowrap"><code class="schema-default">{{ f.default or "—" }}</code></td>
+        <td class="muted">{{ f.help }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}

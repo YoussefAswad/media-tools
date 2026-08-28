@@ -1,5 +1,17 @@
 // YAML syntax highlighting for the Config tab's raw editor. Only that page loads it.
 (function () {
+  // the settings reference is collapsed by default: it is a lookup table, not something you
+  // read past on the way to the editor
+  var toggle = document.getElementById("schema-toggle");
+  var panel = document.getElementById("schema-panel");
+  if (toggle && panel) {
+    toggle.addEventListener("click", function () {
+      panel.hidden = !panel.hidden;
+      toggle.setAttribute("aria-expanded", String(!panel.hidden));
+      toggle.textContent = panel.hidden ? "Show all keys" : "Hide";
+    });
+  }
+
   var ta = document.getElementById("yaml-editor");
   var hl = document.getElementById("yaml-highlight");
   if (ta && hl) {

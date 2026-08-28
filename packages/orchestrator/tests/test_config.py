@@ -102,3 +102,50 @@ def test_legacy_keys_also_work_as_constructor_kwargs() -> None:
     cfg = OrchestratorConfig(enable_prune=False, max_attempts=9)
     assert "prune" not in cfg.pipeline.steps
     assert cfg.worker.max_attempts == 9
+
+
+# --- the generated settings reference -------------------------------------------------------
+def test_the_schema_reference_covers_every_section() -> None:
+    """It is derived from the models, so it cannot drift from what the config accepts."""
+    from orchestrator.config_schema import describe
+
+    sections = {s.name for s in describe(OrchestratorConfig)}
+    for expected in ("worker", "pipeline", "policy", "library", "monitoring",
+                     "monitoring.docker", "arr.radarr", "ntfy", "audit"):
+        assert expected in sections, f"{expected} missing from the reference"
+
+
+def test_the_reference_lifts_help_from_the_source_comments() -> None:
+    """Pydantic ignores `#:` comments (they are a Sphinx convention, not Field(description=)),
+    so they are read from the source. Adding one is all it takes to document a field."""
+    from orchestrator.config_schema import describe
+
+    worker = next(s for s in describe(OrchestratorConfig) if s.name == "worker")
+    by_name = {f.name: f for f in worker.fields}
+    assert "dead-lettered" in by_name["max_attempts"].help
+    assert by_name["retry_backoff_s"].type == "list[int]"
+    assert by_name["retry_backoff_s"].default == "[30, 300, 1800]"
+
+
+def test_the_reference_does_not_label_undocumented_models_with_pydantics_docstring() -> None:
+    """inspect.getdoc walks up to BaseModel; a section with no docstring must show nothing
+    rather than pydantic's own class documentation."""
+    from orchestrator.config_schema import describe
+
+    for s in describe(OrchestratorConfig):
+        assert "Usage Documentation" not in s.summary
+
+
+def test_the_reference_never_exposes_a_resolved_secret(monkeypatch) -> None:
+    """The reference shows DEFAULTS from the model, never values from the loaded config — which
+    has had ${VAR} expanded. This is the reason it is read-only."""
+    from orchestrator.config_schema import describe
+
+    monkeypatch.setenv("RADARR_API_KEY", "super-secret-key")
+    cfg = parse_config(OrchestratorConfig, "arr: {radarr: {base_url: 'x', api_key: '${RADARR_API_KEY}'}}")
+    assert cfg.arr.radarr.api_key == "super-secret-key"  # the loaded model does hold it
+
+    rendered = " ".join(
+        f"{f.name} {f.default} {f.help}" for s in describe(OrchestratorConfig) for f in s.fields
+    )
+    assert "super-secret-key" not in rendered

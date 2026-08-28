@@ -8,7 +8,8 @@ from mediacore.config import parse_config, save_text
 from pydantic import ValidationError
 
 from orchestrator.config import OrchestratorConfig
-from orchestrator.web.deps import page, require_ui_auth, services_of
+from orchestrator.config_schema import describe
+from orchestrator.web.deps import page, partial, require_ui_auth, services_of
 
 router = APIRouter(dependencies=[Depends(require_ui_auth)])
 
@@ -31,3 +32,13 @@ def config_save(request: Request, raw: str = Form(...)) -> HTMLResponse:
     services.reload_config()
     return page(request, "config.html", {"raw": raw, "error": None, "saved": True}
     )
+
+
+@router.get("/ui/config-schema", response_class=HTMLResponse)
+def ui_config_schema(request: Request) -> HTMLResponse:
+    """Every field the config accepts, derived from the models so it cannot drift.
+
+    Read-only on purpose — see :mod:`orchestrator.config_schema` for why an editable form would
+    leak secrets into a file that is meant to hold only ``${VAR}`` references.
+    """
+    return partial(request, "_config_schema.html", {"sections": describe(OrchestratorConfig)})

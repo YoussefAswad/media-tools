@@ -18,5 +18,18 @@
     <div class="row-actions"><button type="submit">Save &amp; reload</button></div>
   </form>
 </section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Settings reference</h2>
+    <button class="ghost" type="button" id="schema-toggle"
+            aria-expanded="false" aria-controls="schema-panel">Show all keys</button>
+  </div>
+  {# Generated from the Pydantic models, so it can't drift from what the config accepts.
+     Read-only: an editable form would serialize the env-expanded model back to YAML and write
+     resolved secrets into a file that is meant to hold ${VAR} references. #}
+  <div id="schema-panel" hidden data-src="/ui/config-schema" data-interval="0">Loading…</div>
+</section>
 {% endblock %}
+
 {% block scripts %}<script src="/static/yaml.js"></script>{% endblock %}

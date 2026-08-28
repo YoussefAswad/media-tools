@@ -364,6 +364,18 @@ td.watched::before { content: "★ "; color: var(--warn); }
 /* ═══════════════════════════════════════════════════════════════════════
    PAGES
    ═══════════════════════════════════════════════════════════════════════ */
+/* --- Config tab: the generated settings reference --- */
+.schema-section { margin-bottom: 22px; }
+.schema-section h3 { margin: 0 0 2px; font-size: 14px; }
+.schema-section h3 code { background: none; padding: 0; color: var(--accent); font-size: 14px; }
+.schema-summary { margin: 0 0 8px; font-size: 12.5px; }
+table.schema { font-size: 13px; }
+table.schema td { vertical-align: top; }
+table.schema .schema-default { font-size: 12px; }
+@media (max-width: 760px) {
+  table.schema { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
 /* --- Library tab --- */
 /* an auto-fit grid: the tile count varies from 5 to 8 (probe errors and 'queued for re-run'
    only get a tile when they are non-zero), and the min is sized so even 8 stay on one row */
