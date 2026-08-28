@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from mediacore.models import PolicyConfig
+from mediacore.policy.prune import build_mkvprune_argv, decide
+from mediacore.policy.rules import check, foreign_subs, non_allowed_multichannel
 from mediacore.probe import ProbeResult, Track
-from quality_check.prune import build_mkvprune_argv, decide
-from quality_check.rules import check, foreign_subs, non_allowed_multichannel
 
 
 def mk(

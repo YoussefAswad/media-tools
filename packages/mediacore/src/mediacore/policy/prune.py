@@ -12,9 +12,8 @@ import os
 from dataclasses import dataclass, field
 
 from mediacore.models import PolicyConfig
+from mediacore.policy.rules import foreign_subs
 from mediacore.probe import ProbeResult, Track, classify_audio, is_undetermined, lang_in
-
-from quality_check.rules import foreign_subs
 
 #: mp4-family containers mkvprune can remux to MKV (its accepted inputs minus .mkv).
 REMUX_EXTS = {".mp4", ".m4v", ".mov"}

@@ -7,7 +7,7 @@ by *probed codec identity* (never the track title), matching mkvprune's policy:
   whose canonical codec is not in ``audio_allow`` (catches Opus/AAC 5.1).
 * **Rule B** — foreign subtitles: subtitle whose language is not in ``subtitle_keep_langs``,
   regardless of codec (text SRT/ASS and image PGS/VOBSUB alike — this matches the confirmed
-  prune policy in ``quality_check.prune``). Untagged/``und`` tracks count only when
+  prune policy in ``mediacore.policy.prune``). Untagged/``und`` tracks count only when
   ``subtitle_flag_untagged`` is set.
 * **Rule C** — too many audio tracks: audio track count ``> audio_max_tracks``.
 """

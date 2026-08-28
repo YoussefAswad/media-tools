@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 from mediacore.models import PolicyConfig
+from mediacore.policy.prune import decide
 from mediacore.probe import ProbeResult, Track
-from quality_check.prune import decide
 
 
 def mk(mkv_id: int, kind: str, *, language: str = "und", codec_name: str | None = None,

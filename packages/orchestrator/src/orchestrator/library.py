@@ -3,7 +3,7 @@
 The per-file pipeline only ever sees freshly imported files, so anything that landed before the
 orchestrator existed (or before a policy change) has never been looked at. This module walks the
 configured library roots, probes each file once, and stores the resulting
-:class:`~quality_check.prune.PruneDecision` in a queryable table. The Library tab renders that
+:class:`~mediacore.policy.prune.PruneDecision` in a queryable table. The Library tab renders that
 table; enqueueing is a separate, explicit act.
 
 Scanning never touches a file. It is ``probe`` + ``decide()`` only, and ``decide()`` is pure, so
@@ -27,9 +27,9 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mediacore.policy.prune import PruneDecision, decide
 from mediacore.probe import ProbeResult, classify_audio
 from mediacore.probe import probe as _default_probe
-from quality_check.prune import PruneDecision, decide
 
 log = logging.getLogger(__name__)
 

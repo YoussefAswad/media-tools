@@ -10,8 +10,8 @@ from pathlib import Path
 
 from mediacore.config import find_default_config, load_config
 from mediacore.models import CoreConfig
+from mediacore.renumber.models import ShowConfig
 from pydantic import BaseModel, Field, field_validator
-from seasonal_shift.models import ShowConfig
 
 
 class ServerConfig(BaseModel):

@@ -8,8 +8,6 @@ license = "MIT"
 authors = [{ name = "Youssef Aswad", email = "youssefaswad@gmail.com" }]
 dependencies = [
     "mediacore",
-    "quality-check",
-    "seasonal-shift",
     "mkvprune",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
@@ -32,6 +30,4 @@ packages = ["src/orchestrator"]
 
 [tool.uv.sources]
 mediacore = { workspace = true }
-quality-check = { workspace = true }
-seasonal-shift = { workspace = true }
 mkvprune = { workspace = true }

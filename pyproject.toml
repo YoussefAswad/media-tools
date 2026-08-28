@@ -1,14 +1,12 @@
 [project]
 name = "media-tools"
 version = "0.0.0"
-description = "Monorepo: shared mediacore + mkvprune, seasonal-shift, quality-check, and the ARR-driven orchestrator."
+description = "Monorepo: mkvprune, the shared mediacore library, and the ARR-driven media orchestrator."
 requires-python = ">=3.12"
 dependencies = [
     "mediacore",
-    "quality-check",
     "orchestrator",
     "mkvprune",
-    "seasonal-shift",
 ]
 
 [tool.uv.workspace]
@@ -16,10 +14,8 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 mediacore = { workspace = true }
-quality-check = { workspace = true }
 orchestrator = { workspace = true }
 mkvprune = { workspace = true }
-seasonal-shift = { workspace = true }
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6", "httpx>=0.27"]
@@ -36,8 +32,4 @@ ignore = ["E501", "B008", "UP047"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
-testpaths = [
-    "packages/mediacore/tests",
-    "packages/quality-check/tests",
-    "packages/orchestrator/tests",
-]
+testpaths = ["packages"]

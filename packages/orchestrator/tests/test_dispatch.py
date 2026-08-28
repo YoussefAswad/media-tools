@@ -193,8 +193,8 @@ def test_seasonal_shift_uses_original_episode_numbers(tmp_path, monkeypatch):
     under the ORIGINAL episode (2,3), not the shifted (1,28)."""
     from mediacore.arr.client import SonarrClient
     from mediacore.models import ArrInstance, CoreConfig
+    from mediacore.renumber.models import SeasonConfig, ShowConfig
     from orchestrator.config import OrchestratorConfig
-    from seasonal_shift.models import SeasonConfig, ShowConfig
 
     show_dir = tmp_path / "shows" / "MyShow"
     (show_dir / "Season 2").mkdir(parents=True)
@@ -304,8 +304,8 @@ def test_prune_runs_before_seasonal_shift(tmp_path, monkeypatch):
     it, so it never no-ops on a relocated post-shift path."""
     from mediacore.arr.client import SonarrClient
     from mediacore.models import ArrInstance, CoreConfig
+    from mediacore.renumber.models import SeasonConfig, ShowConfig
     from orchestrator.config import OrchestratorConfig
-    from seasonal_shift.models import SeasonConfig, ShowConfig
 
     show_dir = tmp_path / "shows" / "MyShow"
     (show_dir / "Season 2").mkdir(parents=True)

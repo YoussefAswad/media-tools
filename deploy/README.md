@@ -1,9 +1,10 @@
 # Deploying the media-tools orchestrator
 
-The orchestrator receives Radarr/Sonarr **Webhook** events and, per file: renumbers it
-(seasonal-shift), flags quality issues (quality-check → ntfy), prunes foreign image subtitles +
-re-encodes non-Dolby/DTS multichannel audio (mkvprune), rescans the arr, and posts an ntfy status.
-Everything is recorded in an audit log and shown in a small web UI.
+The orchestrator receives Radarr/Sonarr **Webhook** events and, per file: records the download's
+bandwidth, flags quality issues (→ ntfy), prunes unwanted subtitle/audio tracks and re-encodes
+non-Dolby/DTS multichannel audio (mkvprune), renumbers the episode if the show has offsets,
+rescans the arr, refreshes the item in Jellyfin, and posts an ntfy status. Everything is recorded
+in an audit log and shown in a web UI, which also carries a Library tab for the back catalogue.
 
 ## 1. Build the image
 
@@ -12,8 +13,8 @@ cd media-tools
 docker build -f deploy/orchestrator/Dockerfile -t youssefaswad/media-orchestrator:latest .
 ```
 
-The image bundles `mkvtoolnix` + `ffmpeg` and the whole workspace (mkvprune, seasonal-shift,
-quality-check, mediacore, orchestrator).
+The image bundles `mkvtoolnix` + `ffmpeg` and the whole workspace (mkvprune, mediacore,
+orchestrator).
 
 ## 2. Configure
 
@@ -42,7 +43,7 @@ Settings → Connect → **+ → Webhook**:
 A **Test** returns `{"status":"ok","test":true}` without side effects.
 
 The existing `scripts/arr-quality-check.sh` Custom Script can stay as a fallback during cutover,
-then be removed — its rules are reimplemented in the `quality-check` package.
+then be removed — its rules are reimplemented in `mediacore.policy`.
 
 ## 5. Expose the web UI via Caddy
 
@@ -83,12 +84,14 @@ reminders (`cooldown_s`); **thresholds are host-specific — calibrate against r
 a Ryzen Tctl sensor idles hot, so raise the CPU-temp thresholds). Editing `config.yaml` on disk is
 not hot-reloaded — save via the Config tab, or restart the container.
 
-## Standalone tools
+## Standalone tool
 
-Each tool still runs on its own (outside the orchestrator):
+`mkvprune` is the one component that still runs on its own, and the image ships it on `PATH`:
 
 ```bash
 mkvprune movie.mkv                 # interactive prune/normalize
-quality-check movie.mkv            # print findings + prune decision
-seasonal-shift run --config ...    # renumber episodes
 ```
+
+The quality rules and the episode renumberer are library code (`mediacore.policy`,
+`mediacore.renumber`), not CLIs — they were absorbed once `decide()` came to depend on arr
+metadata that a standalone command can't supply.

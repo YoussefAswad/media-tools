@@ -1,7 +1,7 @@
 [project]
 name = "mediacore"
 version = "0.1.0"
-description = "Shared core for media-tools: ARR client, config, ntfy, audit, path mapping, probe facade."
+description = "Shared core: config, models, audit, probe facade, ARR/ntfy/qbit/Jellyfin clients, media policy, episode renumbering."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

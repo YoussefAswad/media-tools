@@ -22,7 +22,7 @@ arr:
 
 ntfy:
   url: http://ntfy:80
-  topic: media-quality             # quality-check findings
+  topic: media-quality             # quality-check findings (mediacore.policy)
   # status_topic: media-status     # optional: split action status from findings
   user: ${NTFY_MEDIAQC_USER}
   password: ${NTFY_MEDIAQC_PASSWORD}
@@ -204,7 +204,8 @@ monitoring:
     clear_s: 900
   # ntfy_topic: system-health  # optional override; defaults to the ntfy status topic
 
-# seasonal-shift per-show offsets (matched to a Sonarr series by `name`).
+# Episode-renumbering per-show offsets (mediacore.renumber), matched to a Sonarr series
+# by `name`. Gated by `enable_seasonal_shift` above.
 shows: []
 #  - name: "Some Anime"
 #    path: /data/tv/Some Anime

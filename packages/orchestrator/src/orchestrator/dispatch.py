@@ -26,14 +26,13 @@ from mediacore.arr.languages import iso_for_arr_language
 from mediacore.audit import FAIL, OK, SKIP, ActionRecord
 from mediacore.notify import PRIORITY_FAILURE, PRIORITY_FINDING, PRIORITY_STATUS, NtfyMessage
 from mediacore.paths import to_local, to_remote
+from mediacore.policy.prune import build_mkvprune_argv, decide
+from mediacore.policy.rules import check
 from mediacore.probe import ProbeResult
 from mediacore.probe import probe as _default_probe
-from quality_check.prune import build_mkvprune_argv, decide
-from quality_check.rules import check
-from seasonal_shift.executor import execute_operations
-from seasonal_shift.models import ShowConfig
-from seasonal_shift.planner import plan_operations
-from seasonal_shift.scanner import EPISODE_PATTERN
+from mediacore.renumber.executor import execute_operations
+from mediacore.renumber.models import ShowConfig
+from mediacore.renumber.planner import EPISODE_PATTERN, plan_operations
 
 from orchestrator.runner import PruneResult, run_mkvprune
 from orchestrator.services import Services

@@ -7,8 +7,8 @@ of `image` scope is to stop flagging files whose only foreign subs are text.
 from __future__ import annotations
 
 from mediacore.models import PolicyConfig
+from mediacore.policy.rules import foreign_subs, is_image_sub
 from mediacore.probe import ProbeResult, Track
-from quality_check.rules import foreign_subs, is_image_sub
 
 
 def sub(mkv_id: int, language: str, codec_name: str, codec_id: str = "") -> Track:

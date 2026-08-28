@@ -124,7 +124,7 @@ def _ffprobe(pr, streams: dict[int, dict]):
 
 
 def _decision(pr):
-    from quality_check.prune import decide
+    from mediacore.policy.prune import decide
 
     return decide(pr, OrchestratorConfig().policy)
 

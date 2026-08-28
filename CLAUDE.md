@@ -1,8 +1,9 @@
 # media-tools
 
-A **uv-workspace monorepo** that consolidates three home-media tools behind one shared library
-(`mediacore`) and a **FastAPI orchestrator** service. The orchestrator receives Radarr/Sonarr
-webhooks and runs a per-file pipeline; each tool also remains usable standalone.
+A **uv-workspace monorepo** built around one product: the **FastAPI media orchestrator**. It
+receives Radarr/Sonarr webhooks, runs a per-file pipeline, indexes the back catalogue, and
+monitors the host. `mkvprune` stays an independent, vendored tool invoked as a subprocess;
+everything else the service needs lives in the shared `mediacore` library.
 
 ## What this project is for (goals)
 
@@ -11,10 +12,12 @@ Script plus a standalone renamer, and to unify three tools that had drifted apar
 
 - **mkvprune** — remux an MKV to drop unwanted tracks and re-encode audio that isn't already
   Dolby/DTS, while keeping DV/HDR10(+), track flags, chapters, and attachments **bit-exact**.
-- **quality-check** — probe a file and decide what mkvprune should prune (foreign subtitles,
-  non-Dolby/DTS multichannel audio, too many audio tracks) and flag findings to ntfy.
-- **seasonal-shift** — renumber anime episodes on disk (seasonal ⇄ absolute) and re-register the
-  file with Sonarr under its original episode.
+- **mediacore.policy** (was the `quality-check` package) — probe a file and decide what mkvprune
+  should prune (foreign subtitles, non-Dolby/DTS multichannel audio, too many audio tracks,
+  non-original-language audio) and flag findings to ntfy.
+- **mediacore.renumber** (was the `seasonal-shift` package) — renumber anime episodes on disk
+  (seasonal ⇄ absolute); the orchestrator re-registers the file with Sonarr under its original
+  episode.
 - **orchestrator** — the glue: webhook ingest → durable job queue → per-file pipeline → audit log
   → ntfy status → a small web UI (job queue, audit actions, a downloads/bandwidth ledger, a
   library index for the back catalogue, config editor).
@@ -26,21 +29,31 @@ project, replacing the old bash Custom Script and standalone seasonal-shift.
 
 ```
 packages/
-  mediacore/       shared: config, models, audit(db), ARR client+events, ntfy, qbit, jellyfin, probe facade
   mkvprune/        pure-stdlib remux/encode CLI (NO network, NO deps) — invoked as a subprocess
-  quality-check/   ffprobe-based rules + prune decision (builds mkvprune argv)
-  seasonal-shift/  episode renumberer + Sonarr re-import
-  orchestrator/    FastAPI app, job queue+worker, dispatch pipeline, ledger, web UI
+  mediacore/       everything the service shares:
+                     config, models, audit(db), paths, probe facade
+                     arr/       ARR client + webhook event parsing + language table
+                     policy/    ffprobe-based rules + prune decision (builds mkvprune argv)
+                     renumber/  SxxExx planner/executor for seasonal <-> absolute shifts
+                     ntfy, qbit, jellyfin, dashdot, docker_status, scrutiny clients
+  orchestrator/    FastAPI app, job queue+worker, dispatch pipeline, library index, ledger, web UI
 deploy/            Dockerfile, compose fragment, config.example.yaml, README
 ```
+
+`quality-check` and `seasonal-shift` used to be separate packages. They were absorbed into
+`mediacore` as `policy/` and `renumber/`: the orchestrator only ever imported 4 of
+seasonal-shift's 13 modules, its `sonarr.py` duplicated `mediacore.arr.client`, and their typer/
+rich/watchdog CLI dependencies were being installed into the production image for nothing.
+`decide()` also needs the arr's original-language metadata now, which a standalone CLI can't
+supply. Their tests live in `packages/mediacore/tests/`.
 
 The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — **the order matters**:
 
 1. **ledger capture** (bandwidth from qBittorrent) — FIRST, so consumed bandwidth is recorded even
    if a later step fails or the torrent is later deleted. Idempotent upsert by infohash.
-2. **quality-check** — probe + findings → ntfy.
+2. **quality-check** (`mediacore.policy`) — probe + findings → ntfy.
 3. **prune** (mkvprune) — replaces the file in place; streams live progress into the job row.
-4. **seasonal-shift** — moves/re-imports (Sonarr only); runs AFTER prune so it operates on a stable
+4. **seasonal-shift** (`mediacore.renumber`) — moves/re-imports (Sonarr only); runs AFTER prune so it operates on a stable
    path.
 5. **Jellyfin refresh** — best-effort, after prune ran (ok or skip).
 6. **status rollup** — ntfy.
@@ -55,12 +68,12 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
 ## Running, testing, linting
 
 - **uv is not on `$PATH`.** Always use `~/.local/bin/uv run --python 3.12 ...`.
-- **Tests:** run per package — do **not** `pytest packages/` all at once (multiple packages ship a
-  top-level `conftest.py` / same-named test modules → collection clashes). Use:
+- **Tests:** one run covers the whole workspace (`testpaths = ["packages"]`):
   ```
-  ~/.local/bin/uv run --python 3.12 pytest packages/mkvprune
-  ~/.local/bin/uv run --python 3.12 pytest packages/orchestrator packages/mediacore packages/quality-check
+  ~/.local/bin/uv run --python 3.12 pytest
   ```
+  (Test-module basenames are unique across packages and `conftest.py` resolves per-directory, so
+  there is no collection clash. An older note here claimed otherwise — it was stale.)
 - **Lint:** `~/.local/bin/uv run --python 3.12 ruff check packages` (this DOES work across all
   packages). Config lives in the root `pyproject.toml`; `UP047`/`B008` are intentionally ignored.
 - **If a source edit seems to have no effect, clear `__pycache__`.** Bytecode here is
@@ -149,11 +162,12 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
    `UnicodeEncodeError` in `requests`. `Notifier` latin-1-sanitizes header values and catches
    `Exception` (not just `RequestException`). Keep labels ASCII-hyphenated.
 
-6. **seasonal-shift re-imports by the ORIGINAL episode number**, not the shifted one. In
-   `planner.FileOperation`, `season`/`episode` are parsed from the source filename; only
-   `destination` carries the shifted numbers. Sonarr tracks the episode by its original numbering.
-   Known limits: `EPISODE_PATTERN` is 2-digit `SxxExx` only — multi-episode files (`S01E01-E02`) and
-   >99-episode seasons don't match and are skipped.
+6. **Renumbering re-imports by the ORIGINAL episode number**, not the shifted one. In
+   `mediacore.renumber.models.FileOperation`, `season`/`episode` are parsed from the source
+   filename; only `destination` carries the shifted numbers. Sonarr tracks the episode by its
+   original numbering. Known limits: `EPISODE_PATTERN` (now in `mediacore.renumber.planner`) is
+   2-digit `SxxExx` only — multi-episode files (`S01E01-E02`) and >99-episode seasons don't match
+   and are skipped.
 
 7. **GB vs GiB are different magnitudes, and both are stored as raw bytes.** `human_bytes(n, iec=)`
    formats decimal (÷1000, "GB") or binary (÷1024, "GiB"); `parse_bytes` matches the suffix. The
@@ -336,4 +350,6 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
 
 mkvprune and seasonal-shift were **copied** (not `git subtree`-imported) from
 `/mnt/vault/data/projects/{mkvprune,seasonal-shift}`; the copies here are the source of truth. Git
-history of the originals was not preserved.
+history of the originals was not preserved. seasonal-shift's reachable core has since been
+absorbed into `mediacore.renumber`; the standalone CLI, watcher, doctor, undo and Sonarr client
+are gone (see Layout).

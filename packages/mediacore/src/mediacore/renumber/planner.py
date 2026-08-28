@@ -4,7 +4,12 @@ import re
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from .models import FileOperation, ShowConfig
+from mediacore.renumber.models import FileOperation, ShowConfig
+
+#: The only filename shape this understands: ``Show - S01E02[ - Title].ext``.
+#: Two-digit season/episode only — multi-episode files (``S01E01-E02``) and >99-episode seasons
+#: do not match and are skipped rather than mis-numbered.
+EPISODE_PATTERN = re.compile(r"(.+) - [Ss](\d{2})[Ee](\d{2})( - .*)?\.(.+)")
 
 
 def plan_operations(
@@ -59,33 +64,3 @@ def plan_operations(
         )
 
     return operations
-
-
-def detect_collisions(operations: list[FileOperation]) -> list[Path]:
-
-    seen: set[Path] = set()
-    collisions: list[Path] = []
-
-    for op in operations:
-
-        if op.destination in seen or op.destination.exists():
-            collisions.append(op.destination)
-
-        seen.add(op.destination)
-
-    return collisions
-
-
-def detect_duplicates(operations: list[FileOperation]) -> list[tuple[Path, Path]]:
-
-    seen: dict[Path, Path] = {}
-    duplicates: list[tuple[Path, Path]] = []
-
-    for op in operations:
-
-        if op.destination in seen:
-            duplicates.append((seen[op.destination], op.source))
-        else:
-            seen[op.destination] = op.source
-
-    return duplicates
