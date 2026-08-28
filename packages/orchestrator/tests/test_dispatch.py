@@ -753,3 +753,80 @@ def test_a_rerun_still_honours_a_per_title_override(tmp_path):
 
     assert not seen, "nothing should be dropped: eng is kept and jpn is the override original"
 
+
+def test_scratch_dir_reaches_argv_and_stale_temp_is_swept_there(tmp_path, monkeypatch):
+    """The temp mux moves to the scratch dir, so the self-heal has to sweep there.
+
+    Looking beside the source (as it did before staging existed) would leave a killed run's
+    {stem}.tmp.mkv in the scratch dir forever — and mkvprune refuses to overwrite it, so that
+    file would fail every subsequent prune of the same title.
+    """
+    monkeypatch.setattr(
+        "mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, i, **k: None
+    )
+    scratch = tmp_path / "staging"
+    scratch.mkdir()
+    services = build_test_services(tmp_path, radarr_config(prune_scratch_dir=str(scratch)))
+    src = _touch(tmp_path)
+
+    # a stale temp from a killed run, in the scratch dir rather than next to the source
+    stale = scratch / "movie.tmp.mkv"
+    stale.write_bytes(b"half a mux")
+
+    seen: dict = {}
+
+    def fake_runner(argv, **k):
+        seen["argv"] = argv
+        return PruneResult(0, "", "")
+
+    disp = Dispatcher(services, probe_fn=_dirty_probe, prune_runner=fake_runner)
+    disp.dispatch("arr_event", _radarr_payload(src))
+
+    assert "--scratch-dir" in seen["argv"]
+    assert seen["argv"][seen["argv"].index("--scratch-dir") + 1] == str(scratch)
+    assert not stale.exists()  # swept from the scratch dir, not the source dir
+
+
+def test_full_scratch_volume_defers_even_when_the_source_has_room(tmp_path, monkeypatch):
+    """A cross-filesystem scratch dir has to be checked on its own.
+
+    Checking only the source volume would start a prune whose mux cannot fit, burning the
+    probe and the encode before mkvprune's own precheck failed it.
+    """
+    from orchestrator.dispatch import InsufficientSpaceError
+
+    scratch = tmp_path / "staging"
+    scratch.mkdir()
+    services = build_test_services(tmp_path, radarr_config(prune_scratch_dir=str(scratch)))
+    src = _touch(tmp_path)
+
+    monkeypatch.setattr("orchestrator.dispatch._same_filesystem", lambda a, b: False)
+    monkeypatch.setattr(
+        "orchestrator.dispatch.shutil.disk_usage",
+        lambda p: types.SimpleNamespace(total=1 << 40, used=0, free=0)
+        if str(p) == str(scratch)
+        else types.SimpleNamespace(total=1 << 40, used=0, free=1 << 40),
+    )
+    disp = Dispatcher(services, probe_fn=_dirty_probe, prune_runner=lambda a, **k: PruneResult(0, "", ""))
+    with pytest.raises(InsufficientSpaceError, match="scratch"):
+        disp._ensure_free_space(src)
+
+
+def test_same_filesystem_scratch_is_checked_once(tmp_path, monkeypatch):
+    # scratch on the same volume as the source is the same free-space number; asking twice
+    # would be noise, and the guard must not invent a second requirement.
+    scratch = tmp_path / "staging"
+    scratch.mkdir()
+    services = build_test_services(tmp_path, radarr_config(prune_scratch_dir=str(scratch)))
+    src = _touch(tmp_path)
+
+    calls: list[str] = []
+
+    def spy(p):
+        calls.append(str(p))
+        return types.SimpleNamespace(total=1 << 40, used=0, free=1 << 40)
+
+    monkeypatch.setattr("orchestrator.dispatch.shutil.disk_usage", spy)
+    disp = Dispatcher(services, probe_fn=_dirty_probe, prune_runner=lambda a, **k: PruneResult(0, "", ""))
+    disp._ensure_free_space(src)
+    assert calls == [str(tmp_path)]

@@ -90,3 +90,22 @@ def test_preserves_mode_and_mtime(tmp_path: Path) -> None:
     st = os.stat(dest)
     assert oct(st.st_mode)[-3:] == "640"
     assert int(st.st_mtime) == 1_234_567
+
+
+def test_placement_estimate_excludes_encode_slack() -> None:
+    # The destination only ever receives the finished mux — the encodes stay in the scratch
+    # dir — so its estimate must be the smaller of the two, or a staged run would demand
+    # scratch-sized headroom on a media disk that never holds the encodes.
+    src = 10 * 1024 * 1024 * 1024
+    assert replace_mod.estimate_placement_bytes(src) < replace_mod.estimate_needed_bytes(src)
+    assert replace_mod.estimate_placement_bytes(src) >= src  # still room for AC-3 growth
+
+
+def test_free_space_error_names_the_volume(tmp_path: Path) -> None:
+    # With a staging dir the scratch and the destination are different disks; a shortfall has
+    # to say which one. The "insufficient free space" phrase is what the orchestrator matches
+    # to defer rather than dead-letter, so it must survive the added label.
+    with pytest.raises(MkvPruneError) as exc:
+        replace_mod.check_free_space(str(tmp_path), 1 << 62, what="destination")
+    assert "insufficient free space" in str(exc.value)
+    assert "destination dir" in str(exc.value)

@@ -160,11 +160,18 @@ def decide(
 
 
 def build_mkvprune_argv(
-    path: str, decision: PruneDecision, *, executable: str = "mkvprune", yes: bool = True
+    path: str,
+    decision: PruneDecision,
+    *,
+    executable: str = "mkvprune",
+    yes: bool = True,
+    scratch_dir: str | None = None,
 ) -> list[str]:
     """The exact command the orchestrator runs (also handy for --dry-run / tests)."""
     argv = [executable]
     if yes:
         argv.append("-y")
+    if scratch_dir:
+        argv += ["--scratch-dir", scratch_dir]
     argv += ["--audio", decision.audio_arg, "--subs", decision.subs_arg, path]
     return argv

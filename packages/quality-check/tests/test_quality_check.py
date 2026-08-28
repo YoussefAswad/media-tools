@@ -188,3 +188,24 @@ def test_decide_keep_default_subtitle_guard() -> None:
     # the foreign default (id 1) is kept; only id 2 is dropped
     assert d.keep_sub_ids == [1]
     assert {t.mkv_id for t in d.dropped_subs} == {2}
+
+
+def _dirty_decision():
+    pr = probe_of(
+        mk(0, "video", codec_name="hevc"),
+        mk(1, "audio", codec_name="opus", channels=6),
+        mk(2, "subtitle", codec_name="hdmv_pgs_subtitle", language="fre"),
+        mk(3, "subtitle", codec_name="hdmv_pgs_subtitle", language="eng"),
+    )
+    return decide(pr, POLICY)
+
+
+def test_argv_omits_scratch_dir_by_default() -> None:
+    # No staging configured must reproduce the old command exactly.
+    assert "--scratch-dir" not in build_mkvprune_argv("/x/f.mkv", _dirty_decision())
+
+
+def test_argv_carries_scratch_dir() -> None:
+    argv = build_mkvprune_argv("/x/f.mkv", _dirty_decision(), scratch_dir="/scratch")
+    assert argv[argv.index("--scratch-dir") + 1] == "/scratch"
+    assert argv[-1] == "/x/f.mkv"  # the input path stays last (positional)

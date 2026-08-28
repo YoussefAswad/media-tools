@@ -33,12 +33,18 @@ def same_filesystem(path_a: str, dir_b: str) -> bool:
         return False
 
 
-def check_free_space(scratch_dir: str, needed_bytes: int) -> None:
-    """Refuse to start if the scratch dir lacks room for the temp mux + encodes."""
+def check_free_space(scratch_dir: str, needed_bytes: int, *, what: str = "scratch") -> None:
+    """Refuse to start if ``scratch_dir`` lacks room for the temp mux + encodes.
+
+    ``what`` names the role of the directory so a shortfall says which volume ran out —
+    with a staging dir the scratch and the destination are different disks, and "which one"
+    is the first thing you need to know. The phrase "insufficient free space" is load-bearing:
+    the orchestrator matches it to defer the job rather than dead-letter it.
+    """
     free = shutil.disk_usage(scratch_dir).free
     if free < needed_bytes:
         raise MkvPruneError(
-            f"insufficient free space in {scratch_dir!r}: "
+            f"insufficient free space in {what} dir {scratch_dir!r}: "
             f"need ~{needed_bytes // (1024 * 1024)} MiB, have {free // (1024 * 1024)} MiB"
         )
 
@@ -46,6 +52,18 @@ def check_free_space(scratch_dir: str, needed_bytes: int) -> None:
 def estimate_needed_bytes(src_size: int) -> int:
     """Conservative scratch estimate: the temp mux is ~source size, plus encode slack."""
     return int(src_size * 1.15) + 64 * 1024 * 1024
+
+
+def estimate_placement_bytes(src_size: int) -> int:
+    """What the *destination* dir needs when the scratch dir is on another filesystem.
+
+    ``_place`` can't rename across filesystems, so it copies the finished mux into the
+    destination dir (as a ``.mkvprune.part``) next to the still-present original before the
+    swap. That copy needs about one output's worth of room on the destination volume — a
+    cost that does not exist for a same-filesystem run, where placement is a bare rename.
+    No encode slack: the encodes live in the scratch dir, not here.
+    """
+    return int(src_size * 1.15)
 
 
 def _place(tmp_path: str, dest_path: str) -> None:

@@ -312,6 +312,26 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
     — the rule had stopped gating on codec. It is live again; check a config key is actually a
     model field before assuming it does anything.
 
+20. **A staging dir moves part of the prune's disk cost, it does not remove it — so both volumes
+    get checked.** `prune_scratch_dir` (mkvprune's `--scratch-dir`) puts the temp mux and the AC-3
+    encodes on fast local storage instead of beside the source; here `/mnt/vault/tmp/mkvprune`
+    (NVMe) is bind-mounted to `/scratch`, off the 91%-full media disk. But `replace._place` cannot
+    rename across filesystems: it copies the finished mux back into the *destination* dir as a
+    `.mkvprune.part` next to the still-present original, then swaps. So a cross-filesystem staging
+    dir needs room on **both** volumes, and checking only one would green-light a prune that muxes
+    for an hour and then dies at the last step. `dispatch._ensure_free_space` checks source and
+    scratch (collapsing to one check when they share a volume, via `_same_filesystem`), and
+    mkvprune adds its own destination precheck (`estimate_placement_bytes`, deliberately smaller
+    than the scratch estimate — the encodes never land there).
+    Two things that bite:
+    - **The stale-temp self-heal has to follow the scratch dir.** It looked for `{stem}.tmp.mkv`
+      beside the source; with staging the temp is in the scratch dir, and a killed run would
+      otherwise strand a temp that mkvprune refuses to overwrite — failing every future prune of
+      that title.
+    - **An unreachable scratch dir is a misconfiguration, not a shortfall.** It logs and skips
+      rather than raising `InsufficientSpaceError`, because deferring would hide a typo'd path
+      behind a 30-minute backoff forever.
+
 ## Origin note
 
 mkvprune and seasonal-shift were **copied** (not `git subtree`-imported) from

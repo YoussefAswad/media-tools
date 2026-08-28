@@ -66,6 +66,18 @@ LIBRARY_SCAN = "library_scan"
 _LOW_SPACE_MARKER = "insufficient free space"
 
 
+def _same_filesystem(dir_a: str, dir_b: str) -> bool:
+    """Whether two directories live on one volume, so the space guard checks it once.
+
+    Reimplemented here rather than imported from ``mkvprune.replace``: mkvprune is a
+    subprocess, never an import (see CLAUDE.md). Unknown (a missing dir) answers False, which
+    only costs an extra ``disk_usage`` call that then logs and skips.
+    """
+    try:
+        return os.stat(dir_a).st_dev == os.stat(dir_b).st_dev
+    except OSError:
+        return False
+
 
 @dataclass
 class StepResult:
@@ -458,8 +470,12 @@ class Dispatcher:
 
         # Self-heal: a prune killed mid-mux (e.g. a container restart) leaves a stale
         # {stem}.tmp.mkv that mkvprune refuses to overwrite. Safe to remove — the worker is
-        # single-threaded, so nothing else is writing it.
-        stale = os.path.splitext(local_path)[0] + ".tmp.mkv"
+        # single-threaded, so nothing else is writing it. The temp lands in the scratch dir,
+        # so this has to look where mkvprune would actually write it, not next to the source.
+        scratch_dir = self.services.config.prune_scratch_dir
+        stem = os.path.splitext(os.path.basename(local_path))[0]
+        stale_dir = scratch_dir or os.path.dirname(local_path)
+        stale = os.path.join(stale_dir, stem + ".tmp.mkv")
         if os.path.exists(stale):
             with contextlib.suppress(OSError):
                 os.remove(stale)
@@ -468,7 +484,10 @@ class Dispatcher:
         self._ensure_free_space(local_path)
 
         argv = build_mkvprune_argv(
-            local_path, decision, executable=self.services.config.mkvprune_executable
+            local_path,
+            decision,
+            executable=self.services.config.mkvprune_executable,
+            scratch_dir=scratch_dir,
         )
         argv.insert(1, "--progress-json")  # after the executable
         on_progress = None
@@ -509,24 +528,46 @@ class Dispatcher:
             return None
 
     def _ensure_free_space(self, local_path: str) -> None:
-        """Refuse to start a prune that can't fit its temp mux. mkvprune writes a ``{stem}.tmp.mkv``
-        (~source size) alongside the source before the atomic replace, so peak occupancy is ~2x;
-        the *additional* free space required is ~1x the source. Raising here defers the job instead
-        of spawning a subprocess that would fail — and instead of dead-lettering on a condition
-        that clears itself once disk frees up."""
+        """Refuse to start a prune that can't fit its temp mux. mkvprune writes a
+        ``{stem}.tmp.mkv`` (~source size) into its scratch dir before the atomic replace, so peak
+        occupancy is ~2x; the *additional* free space required is ~1x the source. Raising here
+        defers the job instead of spawning a subprocess that would fail — and instead of
+        dead-lettering on a condition that clears itself once disk frees up.
+
+        Both volumes are checked, because a scratch dir on another filesystem needs room on
+        *both*: the mux lands in the scratch dir, and finalize then copies the result back
+        beside the original (it cannot rename across filesystems). Checking only one would let
+        a prune start that is guaranteed to fail on the other. When the scratch dir is on the
+        same filesystem as the source it is the same volume and gets checked once.
+        """
         try:
             src_size = os.path.getsize(local_path)
-            free = shutil.disk_usage(os.path.dirname(local_path) or ".").free
         except OSError as exc:
             log.warning("free-space check skipped for %s: %s", local_path, exc)
             return
-        needed = int(src_size * self.services.config.prune_min_free_multiplier)
-        if free < needed:
-            from orchestrator.util import human_bytes
 
-            raise InsufficientSpaceError(
-                f"need ~{human_bytes(needed)} free to prune, have {human_bytes(free)}"
-            )
+        needed = int(src_size * self.services.config.prune_min_free_multiplier)
+        source_dir = os.path.dirname(local_path) or "."
+        scratch_dir = self.services.config.prune_scratch_dir
+        targets = [("source", source_dir)]
+        if scratch_dir and not _same_filesystem(scratch_dir, source_dir):
+            targets.append(("scratch", scratch_dir))
+
+        for role, path in targets:
+            try:
+                free = shutil.disk_usage(path).free
+            except OSError as exc:
+                # An unreachable scratch dir is a misconfiguration, not a space shortfall —
+                # deferring would hide it forever. Let mkvprune fail loudly on it instead.
+                log.warning("free-space check skipped for %s dir %s: %s", role, path, exc)
+                continue
+            if free < needed:
+                from orchestrator.util import human_bytes
+
+                raise InsufficientSpaceError(
+                    f"need ~{human_bytes(needed)} free in the {role} dir ({path}) to prune, "
+                    f"have {human_bytes(free)}"
+                )
 
     def _rescan(self, event: ArrEvent) -> None:
         if event.item_id is None:

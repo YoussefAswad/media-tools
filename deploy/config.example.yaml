@@ -109,9 +109,31 @@ quota_alert_pcts: [85, 100]   # ntfy once when quota usage crosses each level (n
 dead_revive_cooldown_s: 3600  # auto-requeue a dead job once it has sat idle this long
 dead_revive_max: 1            # times a dead job may be auto-revived (0 disables)
 
-# Prune disk-space guard
+# Prune staging + disk-space guard
+# prune_scratch_dir: where mkvprune builds the temp mux and the audio encodes. Unset = beside the
+# source (the old behaviour). Point it at fast local storage to keep the mux off the media disk;
+# it must be writable by PUID and bind-mounted into the container. It does NOT reduce what the
+# media disk needs: a scratch dir on another filesystem means finalize copies the output back
+# beside the original rather than renaming it, so BOTH volumes are checked before a prune starts.
+prune_scratch_dir: /scratch
 prune_min_free_multiplier: 1.3   # require free space >= source_size * this before pruning
 prune_low_space_backoff_s: 1800  # when short, defer the job this long (no attempt consumed)
+
+# Library tab: the index of files ALREADY on disk, so the pipeline can be re-run over the back
+# catalogue. Scanning is read-only (probe + decide) — it never rewrites a file; queueing the work
+# it finds is a separate click. Roots are paths as THIS container sees them, and `app` decides
+# which arr a re-run from that tree is addressed to, so keep movie and episode trees separate.
+library:
+  enabled: true
+  roots: []                  # empty = derive from each arr's local_media_root / media_root
+  # roots:
+  #   - { path: /data/movies, app: radarr }
+  #   - { path: /data/anime,  app: sonarr }
+  #   - { path: /data/tv,     app: sonarr }
+  extensions: [".mkv", ".mp4", ".m4v", ".mov"]
+  min_size: 100MB            # ignore samples / featurettes / stray artwork
+  max_enqueue: 200           # hard cap on one bulk enqueue from the Library tab
+  page_size: 100             # rows per page in the Library table
 
 # System monitoring (Monitoring tab). Disk usage is read in-container via statvfs, so each watched
 # `path` must be one this container can see. With the default mounts, /data = the media disk and

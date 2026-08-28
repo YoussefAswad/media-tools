@@ -212,7 +212,14 @@ class OrchestratorConfig(CoreConfig):
     #: how many times a dead job may be auto-revived before it stays dead (0 disables).
     dead_revive_max: int = 1
 
-    # --- prune disk-space guard ---
+    # --- prune staging + disk-space guard ---
+    #: directory for mkvprune's temp mux and audio encodes (mkvprune's ``--scratch-dir``).
+    #: None = alongside the source, as before. Pointing this at fast local storage keeps the
+    #: mux off the media disk; it must be writable by the orchestrator's UID and, in Docker,
+    #: bind-mounted into the container. Note a scratch dir on another filesystem does not
+    #: reduce what the media disk needs — finalize copies the output back (see
+    #: replace.estimate_placement_bytes) — so both volumes are checked before a prune starts.
+    prune_scratch_dir: str | None = None
     #: require free space >= source_size * this before pruning (mkvprune's own floor is ~1.15).
     prune_min_free_multiplier: float = 1.3
     #: when space is short, requeue the job this many seconds later (without burning an attempt).

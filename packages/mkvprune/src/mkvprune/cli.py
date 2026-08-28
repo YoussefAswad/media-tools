@@ -39,8 +39,10 @@ from mkvprune.replace import (
     check_free_space,
     cleanup,
     estimate_needed_bytes,
+    estimate_placement_bytes,
     finalize_output,
     output_dest_path,
+    same_filesystem,
     temp_mux_path,
 )
 from mkvprune.select import SelectionError, confirm, parse_selection, prompt_selection
@@ -323,6 +325,15 @@ def _execute_plan(pr: ProbeResult, plan: MuxPlan, args: argparse.Namespace) -> s
     os.makedirs(scratch_dir, exist_ok=True)
     src_size = os.path.getsize(input_path)
     check_free_space(scratch_dir, estimate_needed_bytes(src_size))
+
+    # A scratch dir on another filesystem doesn't make the destination's cost go away, it
+    # moves it: finalize has to copy the output back next to the original instead of renaming
+    # it. Checking only the scratch volume would green-light a prune that runs for an hour and
+    # then fails at the last step with a full media disk. Same-filesystem runs skip this —
+    # there the temp mux already occupies the space the check would ask for twice.
+    dest_dir = os.path.dirname(os.path.abspath(output_dest_path(input_path, args.keep_original)))
+    if not same_filesystem(scratch_dir, dest_dir or "."):
+        check_free_space(dest_dir or ".", estimate_placement_bytes(src_size), what="destination")
 
     # The final output is always written into the source directory.
     if not os.access(os.path.dirname(input_path), os.W_OK):
