@@ -333,6 +333,14 @@ td.watched::before { content: "★ "; color: var(--warn); }
 .summary.lib { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 .summary.lib .tile-value { font-size: 22px; }
 .summary.lib .tile-value.small { font-size: 17px; }
+/* a running scan is the page's headline: break out of the tile grid and span it */
+.summary.lib .scan-live { grid-column: 1 / -1; padding: 2px 4px 0; }
+.summary.lib .scan-live .jobbar { max-width: none; }
+.summary.lib .scan-live .jobbar-fill { background: var(--accent); }
+
+/* the Est. Δ convention, spelled out where touch users can read it (was a th title=) */
+.legend { font-size: 12px; line-height: 1.5; margin: 10px 0 0; }
+.legend .saving, .legend .growth { font-weight: 600; }
 
 /* `table-layout: fixed` is what actually keeps this table inside its card: with auto layout the
    two ellipsised columns each reserve their max-width and the row sums wider than the container.

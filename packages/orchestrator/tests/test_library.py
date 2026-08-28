@@ -77,6 +77,25 @@ def test_index_counts_and_enqueue_marking(tmp_path) -> None:
     assert index.counts()["queued"] == 1
 
 
+def test_index_actionable_totals_match_what_enqueue_would_queue(tmp_path) -> None:
+    """The confirmation dialog quotes these numbers, so they must agree with paths_matching:
+    actionable rows only, under the same filters."""
+    services = _services(tmp_path, tmp_path / "lib")
+    index = services.library
+    index.upsert(_row("/lib/a.mkv", needs_work=1, reasons="subs", delta_bytes=-500))
+    index.upsert(_row("/lib/b.mkv", needs_work=1, reasons="audio", delta_bytes=200, delta_known=0))
+    index.upsert(_row("/lib/c.mkv", needs_work=0, delta_bytes=-9999))
+    index.upsert(_row("/lib/d.mkv", error="boom", delta_bytes=-1))
+
+    t = index.actionable_totals()
+    assert t == {"count": 2, "delta": -300, "unknown": 1}
+    assert t["count"] == len(index.paths_matching())
+
+    assert index.actionable_totals(reason="subs") == {"count": 1, "delta": -500, "unknown": 0}
+    assert index.actionable_totals(q="b.mkv") == {"count": 1, "delta": 200, "unknown": 1}
+    assert index.actionable_totals(app="sonarr") == {"count": 0, "delta": 0, "unknown": 0}
+
+
 def test_index_paths_matching_only_returns_work(tmp_path) -> None:
     index = _services(tmp_path, tmp_path / "lib").library
     index.upsert(_row("/lib/a.mkv", needs_work=1, reasons="subs"))

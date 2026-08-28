@@ -390,6 +390,31 @@ class LibraryIndex:
         ).fetchall()
         return [(r["path"], r["app"]) for r in rows]
 
+    def actionable_totals(
+        self,
+        *,
+        q: str | None = None,
+        app: str | None = None,
+        status: str | None = None,
+        reason: str | None = None,
+        root: str | None = None,
+    ) -> dict[str, int]:
+        """What "select all matching" would actually queue, for the same filters the table shows.
+
+        Scoped to ``needs_work`` rows exactly like :meth:`paths_matching`, so the number the
+        confirmation quotes is the number of files that will be rewritten — not the row count,
+        which includes clean and errored files the bulk enqueue skips.
+        """
+        clause, params = self._where(q=q, app=app, status=status, reason=reason, root=root)
+        clause = f"{clause} AND needs_work = 1" if clause else " WHERE needs_work = 1"
+        r = self.db.execute(
+            "SELECT COUNT(*) n, COALESCE(SUM(delta_bytes),0) delta,"
+            " COALESCE(SUM(CASE WHEN delta_known=0 THEN 1 ELSE 0 END),0) unknown"
+            f" FROM library_files{clause}",
+            params,
+        ).fetchone()
+        return {"count": int(r["n"]), "delta": int(r["delta"]), "unknown": int(r["unknown"])}
+
     def counts(self, *, app: str | None = None) -> dict[str, int]:
         """Headline totals for the summary tiles (whole index, ignoring the row filters)."""
         clause, params = self._where(q=None, app=app, status=None, reason=None, root=None)

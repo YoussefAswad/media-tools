@@ -40,7 +40,25 @@
 {% endif %}
 <div class="tile {{ 'queued' if scanning else '' }}">
   <div class="tile-value small">
-    {% if scanning %}scanning…{% elif c.last_scan %}{{ c.last_scan[:10] }}{% else %}never{% endif %}
+    {%- if scan and scan.progress is not none -%}
+      {{ scan.progress|round|int }}%
+    {%- elif scanning -%}
+      {{ "scanning…" if scan.status == "processing" else "queued" }}
+    {%- elif c.last_scan -%}
+      {{ c.last_scan[:10] }}
+    {%- else -%}
+      never
+    {%- endif -%}
   </div>
-  <div class="tile-label">Last scan</div>
+  <div class="tile-label">{{ "Scan" if scanning else "Last scan" }}</div>
 </div>
+{% if scanning %}
+{# spans the whole tile grid: the scan is the page's headline while it runs #}
+<div class="scan-live">
+  <div class="jobbar"><div class="jobbar-fill" style="width: {{ (scan.progress or 0)|round|int }}%"></div></div>
+  <div class="jobbar-note">
+    {{ scan.progress_note or ("waiting for the worker" if scan.status == "queued" else "starting…") }}
+    · <a href="/jobs/{{ scan.id }}">job detail</a>
+  </div>
+</div>
+{% endif %}

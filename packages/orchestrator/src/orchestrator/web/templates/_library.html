@@ -1,3 +1,10 @@
+{# The wrapper always renders (even with no rows) because the bulk-enqueue confirmation reads the
+   filter-set totals off it at submit time — see library.js. #}
+<div class="lib-rows"
+     data-matching-count="{{ matching.count }}"
+     data-matching-delta="{{ matching.delta }}"
+     data-matching-unknown="{{ matching.unknown }}"
+     data-cap="{{ max_enqueue }}">
 {% if not rows %}
   <p class="muted empty">Nothing here. Run a scan, or widen the filters.</p>
 {% else %}
@@ -8,7 +15,7 @@
       <th class="c-file">File</th>
       <th class="c-do">Would do</th>
       <th class="num c-size">Size</th>
-      <th class="num c-delta" title="Dropped tracks removed, re-encoded audio at its new bitrate. “?” where the file doesn't report per-track sizes — the figure shown is then a floor, not a total.">Est. &Delta;</th>
+      <th class="num c-delta">Est. &Delta;</th>
       <th class="c-state">State</th>
     </tr>
   </thead>
@@ -17,7 +24,10 @@
     <tr>
       <td class="check">
         {% if r.needs_work %}
+          {# the delta rides on the checkbox so a selection spanning several pages can still be
+             totalled without re-querying: library.js keeps path -> delta as it goes. #}
           <input type="checkbox" class="libsel" value="{{ r.path }}"
+                 data-delta="{{ r.delta_bytes }}" data-known="{{ r.delta_known }}"
                  aria-label="Select {{ r.name }}">
         {% endif %}
       </td>
@@ -61,6 +71,14 @@
   {% endfor %}
   </tbody>
 </table>
+{# The Est. Δ convention used to live only in a th title=, which touch users never see. #}
+<p class="legend muted">
+  <strong>Est. &Delta;</strong> counts dropped tracks as removed and re-encoded audio at its new
+  bitrate. <span class="saving">Green</span> reclaims space, <span class="growth">amber</span> adds
+  it — re-encoding to AC-3 buys player compatibility, not size. A trailing
+  <code>?</code> means the file doesn't report every track's size, so the figure is a floor
+  rather than a total.
+</p>
 <div class="pager">
   <button type="button" class="chip" data-page="{{ page - 1 }}" {{ "disabled" if page <= 1 }}>&larr; Prev</button>
   <span class="muted">{{ first }}–{{ last }} of {{ total }} · page {{ page }} / {{ pages }}</span>
@@ -68,3 +86,4 @@
   <span class="muted pager-note">Bulk queue is capped at {{ max_enqueue }} files per submit.</span>
 </div>
 {% endif %}
+</div>

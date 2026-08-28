@@ -24,7 +24,7 @@ from orchestrator.config import OrchestratorConfig
 from orchestrator.dispatch import LIBRARY_SCAN, RERUN
 from orchestrator.ledger import MANUAL, QBITTORRENT
 from orchestrator.library import DEFAULT_SORT, resolve_roots
-from orchestrator.queue import CANCELED, DEAD, FAILED, PROCESSING, QUEUED
+from orchestrator.queue import CANCELED, DEAD, FAILED, PROCESSING, QUEUED, Job
 from orchestrator.services import Services, build_services
 from orchestrator.util import (
     _DATE_RE,
@@ -567,17 +567,20 @@ def rerun(request: Request, app_name: str = Form(...), path: str = Form(...)) ->
 
 
 # --- library index (back-catalogue backfill) ---------------------------------------------
-def _queue_state(services: Services) -> tuple[bool, set[str]]:
-    """One pass over the live queue for both things the Library tab needs from it: whether a scan
-    is already in flight (one at a time is plenty), and the local path of every job still queued
-    or processing — the truth behind the "queued" badge."""
+def _queue_state(services: Services) -> tuple[Job | None, set[str]]:
+    """One pass over the live queue for both things the Library tab needs from it: the in-flight
+    scan job if there is one (so the tab can show its progress, and so a second scan isn't
+    queued on top), and the local path of every job still queued or processing — the truth
+    behind the "queued" badge."""
     from mediacore.arr.events import parse_event
 
-    scanning = False
+    scan: Job | None = None
     paths: set[str] = set()
     for job in services.queue.list(statuses=(QUEUED, PROCESSING), limit=500):
         if job.kind == LIBRARY_SCAN:
-            scanning = True
+            # prefer the one actually running over one still waiting behind it
+            if scan is None or job.status == PROCESSING:
+                scan = job
             continue
         payload = job.payload or {}
         app_name = payload.get("app")
@@ -591,15 +594,15 @@ def _queue_state(services: Services) -> tuple[bool, set[str]]:
             continue
         instance = services.arr_instance(app_name)
         paths.add(str(to_local(instance, remote)) if instance else str(remote))
-    return scanning, paths
+    return scan, paths
 
 
-def _sync_queued_flags(services: Services) -> bool:
-    """Re-derive the Library tab's "queued" flags from the live queue. Returns whether a scan is
-    running, since both come from the same pass."""
-    scanning, paths = _queue_state(services)
+def _sync_queued_flags(services: Services) -> Job | None:
+    """Re-derive the Library tab's "queued" flags from the live queue. Returns the in-flight scan
+    job (if any), since both come from the same pass."""
+    scan, paths = _queue_state(services)
     services.library.reconcile_enqueued(paths)
-    return scanning
+    return scan
 
 
 @app.get("/library", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
@@ -641,6 +644,11 @@ def ui_library(
         offset=(page - 1) * size,
     )
     pages = max(1, -(-total // size))
+    # What "select all matching" would really queue under these filters — the confirmation
+    # dialog quotes it, so it has to be the actionable count, not the row count.
+    matching = services.library.actionable_totals(
+        q=q, app=app, status=status, reason=reason, root=root
+    )
     return _TEMPLATES.TemplateResponse(
         request,
         "_library.html",
@@ -652,6 +660,7 @@ def ui_library(
             "first": (page - 1) * size + 1 if total else 0,
             "last": min(page * size, total),
             "max_enqueue": services.config.library.max_enqueue,
+            "matching": matching,
         },
     )
 
@@ -659,7 +668,7 @@ def ui_library(
 @app.get("/ui/library-summary", response_class=HTMLResponse, dependencies=[Depends(require_ui_auth)])
 def ui_library_summary(request: Request, app: str | None = None) -> HTMLResponse:
     services = services_of(request)
-    scanning = _sync_queued_flags(services)
+    scan = _sync_queued_flags(services)
     c = services.library.counts(app=app if app in ("radarr", "sonarr") else None)
     # A negative delta is space reclaimed; a positive one means the >6-channel compatibility path
     # would ADD a downmix track. Show which way it goes rather than an unsigned number — and show
@@ -670,10 +679,19 @@ def ui_library_summary(request: Request, app: str | None = None) -> HTMLResponse
     delta = c["delta"]
     label = human_bytes(abs(delta))
     tone = ("saving" if delta < 0 else "growth") if delta else ""
+    # A scan runs for tens of minutes on the single worker and reports real progress into its job
+    # row. Surfacing it here means the tab that starts a scan is also the tab that shows it,
+    # instead of sending the reader to /jobs to find out how far along it is.
     return _TEMPLATES.TemplateResponse(
         request,
         "_library_summary.html",
-        {"c": c, "delta_label": label, "delta_tone": tone, "scanning": scanning},
+        {
+            "c": c,
+            "delta_label": label,
+            "delta_tone": tone,
+            "scanning": scan is not None,
+            "scan": scan,
+        },
     )
 
 

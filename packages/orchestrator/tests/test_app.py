@@ -321,7 +321,15 @@ def test_ledger_type_column_has_icons(client) -> None:
 
 
 # --- library tab -------------------------------------------------------------------------
-def _index_row(services, path: str, *, needs_work: int = 1, app: str = "radarr"):
+def _index_row(
+    services,
+    path: str,
+    *,
+    needs_work: int = 1,
+    app: str = "radarr",
+    delta_bytes: int = 0,
+    delta_known: int = 1,
+):
     from orchestrator.library import LibraryRow
 
     services.library.upsert(
@@ -336,6 +344,8 @@ def _index_row(services, path: str, *, needs_work: int = 1, app: str = "radarr")
             reasons="subs" if needs_work else "",
             summary="dropped 1 foreign sub(s) [fre]" if needs_work else "nothing to do",
             drop_subs=needs_work,
+            delta_bytes=delta_bytes,
+            delta_known=delta_known,
             scanned_at="2026-01-01T00:00:00.000000+00:00",
         )
     )
@@ -412,6 +422,72 @@ def test_library_queued_badge_clears_when_the_job_is_cancelled(client) -> None:
     services.queue.cancel(job.id)
     assert 'tile-label">Queued<' not in client.get("/ui/library-summary").text
     assert "needs work" in client.get("/ui/library", params={"status": "needs"}).text
+
+
+def test_library_table_publishes_the_totals_the_confirmation_quotes(client) -> None:
+    """The bulk-enqueue confirmation has to quote what will really be queued. The numbers come
+    off the rendered wrapper, and must be scoped to actionable rows under the *current* filters —
+    a clean file is a row in the table but never a file the enqueue touches."""
+    services = client.app.state.services
+    _index_row(services, "/lib/movie0.mkv", delta_bytes=-500)
+    _index_row(services, "/lib/movie1.mkv", delta_bytes=200, delta_known=0)
+    _index_row(services, "/lib/clean.mkv", needs_work=0, delta_bytes=-9999)
+
+    body = client.get("/ui/library").text
+    assert 'data-matching-count="2"' in body  # clean.mkv excluded
+    assert 'data-matching-delta="-300"' in body  # -500 + 200, clean.mkv's -9999 excluded
+    assert 'data-matching-unknown="1"' in body
+
+    # ...and it follows the filters, so "select all matching" can't quote the unfiltered library
+    filtered = client.get("/ui/library", params={"q": "movie0"}).text
+    assert 'data-matching-count="1"' in filtered
+    assert 'data-matching-delta="-500"' in filtered
+
+
+def test_library_rows_carry_their_delta_for_a_cross_page_selection(client) -> None:
+    """The selection spans pages, so each checkbox carries its own delta — page 2 can't re-read
+    page 1's rows."""
+    services = client.app.state.services
+    _index_row(services, "/lib/a.mkv", delta_bytes=-1234, delta_known=0)
+
+    body = client.get("/ui/library").text
+    assert 'data-delta="-1234"' in body
+    assert 'data-known="0"' in body
+
+
+def test_library_summary_shows_a_running_scans_progress(client) -> None:
+    """A scan runs for tens of minutes; the tab that starts it must show how far along it is
+    rather than sending the reader to /jobs."""
+    from orchestrator.dispatch import LIBRARY_SCAN
+
+    services = client.app.state.services
+    idle = client.get("/ui/library-summary").text
+    assert "jobbar-fill" not in idle
+    assert "Last scan" in idle
+
+    services.queue.enqueue(LIBRARY_SCAN, {"root": None, "full": False}, label="library scan")
+    job = services.queue.claim_next()
+    assert job is not None
+    services.queue.set_progress(job.id, 42.0, "900/2208 · 137 need work")
+
+    body = client.get("/ui/library-summary").text
+    assert "42%" in body
+    assert "900/2208 · 137 need work" in body
+    assert 'style="width: 42%"' in body
+    assert f'/jobs/{job.id}' in body
+
+
+def test_library_summary_distinguishes_a_queued_scan_from_a_running_one(client) -> None:
+    """A scan waiting behind another job has no progress yet — saying "scanning…" would be a
+    lie, and a 0% bar would read as a stall."""
+    from orchestrator.dispatch import LIBRARY_SCAN
+
+    services = client.app.state.services
+    services.queue.enqueue(LIBRARY_SCAN, {"root": None, "full": False}, label="library scan")
+
+    body = client.get("/ui/library-summary").text
+    assert "queued" in body
+    assert "waiting for the worker" in body
 
 
 def test_the_job_lists_are_scrollable(client) -> None:
