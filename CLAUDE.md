@@ -400,6 +400,30 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
       rather than raising `InsufficientSpaceError`, because deferring would hide a typo'd path
       behind a 30-minute backoff forever.
 
+21. **The staging dir is a 2x speedup, and the reason is spindle contention, not NVMe speed.**
+    A remux reads and writes the whole file at once, so with the temp mux beside the source both
+    streams hit the same disk. Measured on this host (`/dev/sda2` is a rotational USB Seagate
+    Expansion, NTFS via ntfs3, 91% full): 117 MB/s writing alone, but **45.9 MB/s reading and
+    writing it at the same time**. Staging splits that into two clean sequential passes.
+    A/B on one 6.70 GB source, same argv, byte-identical 6.49 GB output, runs interleaved
+    A/B/A/B with a `sync` inside each timing: **229 s median beside the source vs 115 s on the
+    NVMe scratch — 2.0x, and the spread tightens from 19 s to 2.5 s.** That matches the 439
+    pre-staging production prunes, which held a flat ~40 s/GB from 5 GB to 34 GB (the signature
+    of a bottleneck, not of per-file overhead), and the first post-staging one (*The Post*,
+    3.17 GB in 57.0 s = 18.0 s/GB).
+    Three things to keep straight before quoting the 2x:
+    - **It only speeds up the mux, so an encode job gains proportionally less.** *Oppenheimer*
+      pruned at 32 s/GB *with* staging because it re-encoded an Opus track to AC-3; that is
+      ffmpeg CPU time, which staging does not touch.
+    - **It buys wall clock, not media-disk writes.** Per pitfall 20 the cross-filesystem
+      `_place` still copies the full output back onto the media disk. The win is
+      de-interleaving the writes, not removing them.
+    - **Mounting `/scratch` is not enabling it.** The compose mount landed six hours before
+      `prune_scratch_dir: /scratch` reached `config.yaml`, and everything pruned in that window
+      still staged on the media disk. The mount alone does nothing.
+    Worth re-measuring if the media disk is ever moved off USB/ntfs3 — the whole gain is that
+    disk's read+write penalty, and a different disk has a different one.
+
 ## Origin note
 
 mkvprune and seasonal-shift were **copied** (not `git subtree`-imported) from
