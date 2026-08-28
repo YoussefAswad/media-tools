@@ -3,20 +3,11 @@ from __future__ import annotations
 import time
 import types
 
-from conftest import build_test_services, mk, probe_of, radarr_config
+from conftest import FakeNotifier, build_test_services, mk, probe_of, radarr_config
 from orchestrator.dispatch import Dispatcher
 from orchestrator.queue import QUEUED
 from orchestrator.runner import PruneResult
 from orchestrator.worker import Worker
-
-
-class FakeNotifier:
-    def __init__(self) -> None:
-        self.sent: list = []
-
-    def send(self, msg) -> bool:
-        self.sent.append(msg)
-        return True
 
 
 def test_worker_healthy_logic(tmp_path):

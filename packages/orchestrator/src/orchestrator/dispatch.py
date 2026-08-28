@@ -19,9 +19,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from mediacore.arr.events import ArrEvent, parse_event
+from mediacore.arr.events import parse_event
 from mediacore.audit import FAIL, OK, SKIP, ActionRecord
-from mediacore.notify import PRIORITY_FAILURE, PRIORITY_STATUS, NtfyMessage
+from mediacore.notify import PRIORITY_FAILURE, PRIORITY_STATUS
 from mediacore.paths import to_local
 from mediacore.probe import probe as _default_probe
 
@@ -95,7 +95,7 @@ class Pipeline:
                 ctx.local_path = result.new_path
 
         outcome.final_local_path = ctx.local_path
-        self._status_rollup(ctx.event, outcome)
+        self._status_rollup(ctx, outcome)
         return outcome
 
     # --- bookkeeping the steps don't do themselves -----------------------------------
@@ -119,42 +119,44 @@ class Pipeline:
                 duration_ms=step.duration_ms,
             )
         )
-        if self.services.config.ntfy.status_granularity == "action" and step.result != SKIP:
-            self._notify_step(ctx.event, step)
+        if step.result != SKIP:
+            self._notify_step(ctx, step)
 
-    def _notify_step(self, event: ArrEvent, step: StepResult) -> None:
+    def _notify_step(self, ctx: JobContext, step: StepResult) -> None:
+        event = ctx.event
         pri = PRIORITY_FAILURE if step.result == FAIL else PRIORITY_STATUS
         tag = "rotating_light" if step.result == FAIL else "gear"
-        self.services.notifier.send(
-            NtfyMessage(
-                title=f"{event.label} — {step.tool}",
-                body=f"**{step.action}**: {step.result}\n\n{step.detail or step.error or ''}",
-                tags=[event.app, tag],
-                priority=pri,
-            )
+        self.services.notify.send(
+            "job-step",
+            title=f"{event.label} - {step.tool}",
+            body=f"**{step.action}**: {step.result}\n\n{step.detail or step.error or ''}",
+            tags=[event.app, tag],
+            priority=pri,
+            job_id=ctx.job_id,
+            path=ctx.local_path,
         )
 
-    def _status_rollup(self, event: ArrEvent, outcome: DispatchOutcome) -> None:
-        gran = self.services.config.ntfy.status_granularity
-        if gran == "action":
-            return  # each step was already pinged individually
+    def _status_rollup(self, ctx: JobContext, outcome: DispatchOutcome) -> None:
+        event = ctx.event
+        # The per-step pings, when switched on, already said all of this one step at a time.
+        if self.services.config.notifications.rule("job-step").enabled:
+            return
         any_fail = any(s.result == FAIL for s in outcome.steps)
         did_something = any(s.result == OK for s in outcome.steps)
-        if gran == "off" and not any_fail:
-            return  # status pings suppressed; failures still alert
         if not any_fail and not did_something:
             return  # everything skipped; stay quiet
         lines = [
-            f"- {s.tool}: {s.result}" + (f" — {s.detail or s.error or ''}").rstrip(" —")
+            f"- {s.tool}: {s.result}" + (f" - {s.detail or s.error or ''}").rstrip(" -")
             for s in outcome.steps
         ]
-        self.services.notifier.send(
-            NtfyMessage(
-                title=event.label,
-                body="\n".join(lines),
-                tags=[event.app, "rotating_light" if any_fail else "white_check_mark"],
-                priority=PRIORITY_FAILURE if any_fail else PRIORITY_STATUS,
-            )
+        self.services.notify.send(
+            "job-success",
+            title=event.label,
+            body="\n".join(lines),
+            tags=[event.app, "rotating_light" if any_fail else "white_check_mark"],
+            priority=PRIORITY_FAILURE if any_fail else PRIORITY_STATUS,
+            job_id=ctx.job_id,
+            path=ctx.local_path,
         )
 
 
@@ -259,12 +261,12 @@ class Dispatcher:
                 duration_ms=step.duration_ms,
             )
         )
-        self.services.notifier.send(
-            NtfyMessage(
-                title=label,
-                body=stats.summary(),
-                tags=["card_index_dividers"],
-                priority=PRIORITY_STATUS,
-            )
+        self.services.notify.send(
+            "library-scan",
+            title=label,
+            body=stats.summary(),
+            tags=["card_index_dividers"],
+            priority=PRIORITY_STATUS,
+            job_id=job_id,
         )
         return DispatchOutcome(label=label, steps=[step])

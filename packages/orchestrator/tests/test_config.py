@@ -111,8 +111,25 @@ def test_the_schema_reference_covers_every_section() -> None:
 
     sections = {s.name for s in describe(OrchestratorConfig)}
     for expected in ("worker", "pipeline", "policy", "library", "monitoring",
-                     "monitoring.docker", "arr.radarr", "ntfy", "audit"):
+                     "monitoring.docker", "arr.radarr", "ntfy", "audit",
+                     "notifications", "notifications.quality_findings"):
         assert expected in sections, f"{expected} missing from the reference"
+
+
+def test_the_reference_shows_a_sections_configured_defaults_not_its_classs() -> None:
+    """`monitoring.cpu_temp_alert` is an `AlertRule(warn=75, crit=85)` and
+    `notifications.quality_findings` a `NotifyRule(priority=3, once_per="job")`. Recursing into
+    the annotation's *class* documented a bare AlertRule/NotifyRule for both — the wrong numbers,
+    in the one feature whose whole claim is that it cannot drift from the code."""
+    from orchestrator.config_schema import describe
+
+    secs = {s.name: {f.name: f.default for f in s.fields} for s in describe(OrchestratorConfig)}
+    assert secs["monitoring.cpu_temp_alert"]["warn"] == "75.0"
+    assert secs["notifications.quality_findings"]["once_per"] == "job"
+    assert secs["notifications.job_success"]["priority"] == "2"
+    assert secs["notifications.job_step"]["enabled"] == "False"
+    # a rule left at its class defaults still reads correctly
+    assert secs["notifications.quota"]["once_per"] == "off"
 
 
 def test_the_reference_lifts_help_from_the_source_comments() -> None:

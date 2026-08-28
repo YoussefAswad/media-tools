@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from mediacore.audit import FAIL, OK
-from mediacore.notify import PRIORITY_FINDING, NtfyMessage
+from mediacore.notify import PRIORITY_FINDING
 from mediacore.policy.rules import check
 
 from orchestrator.steps.base import JobContext, StepResult
@@ -38,19 +38,27 @@ class QualityStep:
         if not findings:
             return StepResult("quality-check", "check", OK, "no findings")
 
-        body = "\n".join(
-            f"**Rule {f.rule}** — {f.title}\n" + "\n".join(f"- {d}" for d in f.details)
-            for f in findings
-        )
-        ctx.services.notifier.send(
-            NtfyMessage(
+        # When prune is in this pipeline it is about to fix what was just flagged, and the job
+        # rollup restates the findings anyway — measured on a real day, 153 of 153 rollups
+        # repeated the finding text a median 8 s later, at a *lower* priority than the finding.
+        # Ask ctx.steps (not a config flag) whether prune is configured at all, the same way the
+        # Jellyfin refresh tells "hasn't run yet" from "isn't in the pipeline".
+        notif = ctx.services.config.notifications
+        if not (notif.suppress_findings_when_pruning and "prune" in ctx.steps):
+            body = "\n".join(
+                f"**Rule {f.rule}** — {f.title}\n" + "\n".join(f"- {d}" for d in f.details)
+                for f in findings
+            )
+            ctx.services.notify.send(
+                "quality-findings",
                 title=f"{ctx.event.label}",
                 body=body,
                 tags=[ctx.event.app, "warning"],
                 priority=PRIORITY_FINDING,
                 topic=ctx.services.config.ntfy.topic,
+                job_id=ctx.job_id,
+                path=ctx.local_path,
             )
-        )
         # Human-readable finding titles (not cryptic rule letters).
         titles = "; ".join(f.title for f in findings)
         return StepResult("quality-check", "check", OK, f"findings: {titles}")

@@ -1,4 +1,4 @@
-"""Shared runtime context: config + db + audit + notifier + queue + arr/qbit clients + ledger.
+"""Shared runtime context: config + db + audit + notifications + queue + arr/qbit clients + ledger.
 
 One instance is built at startup and shared by the FastAPI app and the worker thread. Config is
 mutable (the UI can save + hot-reload it), so callers should read ``services.config`` fresh each
@@ -26,6 +26,7 @@ from orchestrator.ledger import Cutoffs, Ledger
 from orchestrator.library import LibraryIndex
 from orchestrator.metrics import Metrics
 from orchestrator.monitor import MISSING, MonitorSource, SourceSnapshot, build_sources
+from orchestrator.notifications import Notifications
 from orchestrator.queue import JobQueue
 from orchestrator.titles import TitleIndex
 
@@ -46,6 +47,8 @@ class Services:
     library: LibraryIndex
     #: path -> title/original-language, for the code paths that have no webhook payload.
     titles: TitleIndex = field(init=False)
+    #: the one choke point every notification goes through (policy + de-dupe + delivery).
+    notify: Notifications = field(init=False)
     qbit: QbitClient | None = None
     jellyfin: JellyfinClient | None = None
     #: every monitored source, enabled or not, each knowing its own interval.
@@ -57,6 +60,7 @@ class Services:
 
     def __post_init__(self) -> None:
         self.titles = TitleIndex(self)
+        self.notify = Notifications(self)
 
     def snapshot(self, name: str) -> SourceSnapshot:
         """The named source's last collection, or a never-collected placeholder."""
@@ -77,7 +81,7 @@ class Services:
         current (hot-reloadable) config/notifier. Add Slack/email/webhook here."""
         return [
             InAppChannel(self.db),
-            NtfyChannel(self.notifier, self.config.monitoring.ntfy_topic),
+            NtfyChannel(self.notify, self.config.monitoring.ntfy_topic),
         ]
 
     def arr_client(self, app: str) -> ArrClient | None:

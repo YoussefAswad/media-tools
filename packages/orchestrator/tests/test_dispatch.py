@@ -225,7 +225,7 @@ def test_seasonal_shift_uses_original_episode_numbers(tmp_path, monkeypatch):
     cfg = OrchestratorConfig(enable_quality_check=False, enable_prune=False)
     cfg.arr = CoreConfig().arr
     cfg.arr.sonarr = ArrInstance(base_url="http://sonarr", api_key="k")
-    cfg.ntfy.status_granularity = "off"  # don't reach out to a real ntfy in tests
+    cfg.notifications.enabled = False  # don't reach out to a real ntfy in tests
     cfg.shows = [
         ShowConfig(
             name="MyShow",
@@ -336,7 +336,7 @@ def test_prune_runs_before_seasonal_shift(tmp_path, monkeypatch):
     cfg = OrchestratorConfig(enable_quality_check=True, enable_prune=True)
     cfg.arr = CoreConfig().arr
     cfg.arr.sonarr = ArrInstance(base_url="http://sonarr", api_key="k")
-    cfg.ntfy.status_granularity = "off"
+    cfg.notifications.enabled = False
     cfg.shows = [ShowConfig(name="MyShow", path=show_dir,
                             seasons={2: SeasonConfig(season_offset=-1, episode_offset=25)})]
     services = build_test_services(tmp_path, cfg)
@@ -465,7 +465,7 @@ def test_jellyfin_not_called_on_prune_failure(tmp_path):
 def test_quality_finding_detail_uses_titles(tmp_path):
     services = build_test_services(tmp_path, radarr_config(
         enable_seasonal_shift=False, enable_prune=False))
-    services.config.ntfy.status_granularity = "off"
+    services.config.notifications.enabled = False
     disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p), prune_runner=lambda a, **k: None)
     disp.dispatch("jt", _radarr_payload(_touch(tmp_path)))
     qc = next(r for r in services.audit.for_job("jt") if r["tool"] == "quality-check")

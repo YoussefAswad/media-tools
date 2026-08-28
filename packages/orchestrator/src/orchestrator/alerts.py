@@ -20,11 +20,14 @@ import logging
 import sqlite3
 import threading
 from dataclasses import dataclass
-from typing import ClassVar, Protocol
+from typing import TYPE_CHECKING, ClassVar, Protocol
 
-from mediacore.notify import PRIORITY_FAILURE, PRIORITY_STATUS, Notifier, NtfyMessage
+from mediacore.notify import PRIORITY_FAILURE, PRIORITY_STATUS
 
 from orchestrator.config import AlertRule
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from orchestrator.notifications import Notifications
 
 log = logging.getLogger(__name__)
 
@@ -117,7 +120,12 @@ class InAppChannel:
 
 
 class NtfyChannel:
-    """Publishes a transition to ntfy (best-effort via the shared Notifier)."""
+    """Publishes a transition to ntfy, through the shared notification policy.
+
+    The engine has already done the interesting suppression (sustain, hysteresis, cooldown), so
+    this asks for no extra de-duplication — it only wants the ``monitoring`` rule's
+    enable/priority/topic.
+    """
 
     _TAGS: ClassVar[dict[str, list[str]]] = {
         OK: ["white_check_mark"],
@@ -125,26 +133,24 @@ class NtfyChannel:
         CRIT: ["rotating_light"],
     }
 
-    def __init__(self, notifier: Notifier, topic: str | None = None) -> None:
-        self.notifier = notifier
+    def __init__(self, notify: Notifications, topic: str | None = None) -> None:
+        self.notify = notify
         self.topic = topic
 
     def send(self, event: AlertEvent) -> None:
         recovered = event.severity == OK
         title = (
-            f"{event.label} — recovered"
+            f"{event.label} - recovered"
             if recovered
-            else f"{event.label} — {event.severity.upper()}"
+            else f"{event.label} - {event.severity.upper()}"
         )
-        priority = PRIORITY_STATUS if event.severity != CRIT else PRIORITY_FAILURE
-        self.notifier.send(
-            NtfyMessage(
-                title=title,
-                body=event.detail or title,
-                tags=self._TAGS.get(event.severity, []),
-                priority=priority,
-                topic=self.topic,
-            )
+        self.notify.send(
+            "monitoring",
+            title=title,
+            body=event.detail or title,
+            tags=self._TAGS.get(event.severity, []),
+            priority=PRIORITY_STATUS if event.severity != CRIT else PRIORITY_FAILURE,
+            topic=self.topic,
         )
 
 

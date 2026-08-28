@@ -60,6 +60,22 @@ def probe_of(*tracks: Track, path: str = "/x/f.mkv") -> ProbeResult:
     )
 
 
+class FakeNotifier:
+    """Collects messages instead of posting them. Services reads ``services.notifier`` at send
+    time, so assigning one of these after construction is enough to capture everything."""
+
+    def __init__(self) -> None:
+        self.sent: list = []
+
+    def send(self, msg) -> bool:
+        self.sent.append(msg)
+        return True
+
+    @property
+    def titles(self) -> list[str]:
+        return [m.title for m in self.sent]
+
+
 def build_test_services(tmp_path: Path, config: OrchestratorConfig | None = None) -> Services:
     cfg = config or OrchestratorConfig()
     cfg.audit.state_dir = tmp_path / "state"

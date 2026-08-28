@@ -89,7 +89,23 @@ def _type_name(annotation: object) -> str:
     return getattr(annotation, "__name__", str(annotation))
 
 
-def _default_repr(field) -> str:
+def _render(value: object) -> str:
+    if isinstance(value, BaseModel):
+        return ""  # a nested section: its own entry lists the details
+    if value is None:
+        return "none"
+    if isinstance(value, set):
+        value = sorted(value)
+    text = str(value)
+    return text if len(text) <= 60 else text[:57] + "\u2026"
+
+
+def _default_repr(field, instance: BaseModel | None = None, name: str = "") -> str:
+    """What this field defaults to. ``instance`` is the *configured* default for a nested
+    section — ``monitoring.cpu_temp_alert`` is an ``AlertRule(warn=75, crit=85)``, not a bare
+    ``AlertRule``, and walking the class alone would document the wrong numbers."""
+    if instance is not None:
+        return _render(getattr(instance, name, None))
     if field.default is not PydanticUndefined and field.default is not None:
         value = field.default
     elif field.default_factory is not None:
@@ -101,12 +117,7 @@ def _default_repr(field) -> str:
         return "none"
     else:
         return ""
-    if isinstance(value, BaseModel):
-        return ""  # a nested section: its own entry lists the details
-    if isinstance(value, set):
-        value = sorted(value)
-    text = str(value)
-    return text if len(text) <= 60 else text[:57] + "…"
+    return _render(value)
 
 
 def _is_model(annotation: object) -> type[BaseModel] | None:
@@ -118,8 +129,26 @@ def _is_model(annotation: object) -> type[BaseModel] | None:
     return None
 
 
-def describe(model: type[BaseModel], prefix: str = "") -> list[SectionDoc]:
-    """Every section of the config, depth-first, in declaration order."""
+def _default_instance(field) -> BaseModel | None:
+    """The nested model instance this field defaults to, when it has one."""
+    if isinstance(field.default, BaseModel):
+        return field.default
+    if field.default_factory is not None:
+        try:
+            made = field.default_factory()
+        except Exception:  # pragma: no cover - a factory needing arguments
+            return None
+        return made if isinstance(made, BaseModel) else None
+    return None
+
+
+def describe(
+    model: type[BaseModel], prefix: str = "", instance: BaseModel | None = None
+) -> list[SectionDoc]:
+    """Every section of the config, depth-first, in declaration order.
+
+    ``instance`` is the default value of the field this model was reached through, so a section
+    documents the defaults it is *actually* configured with rather than its class's."""
     # __doc__, not inspect.getdoc: getdoc walks up to BaseModel and would label every
     # undocumented section with pydantic's own class docstring.
     docstring = inspect.cleandoc(model.__doc__ or "")
@@ -134,13 +163,19 @@ def describe(model: type[BaseModel], prefix: str = "") -> list[SectionDoc]:
     for name, field in model.model_fields.items():
         child = _is_model(field.annotation)
         if child is not None:
-            nested.extend(describe(child, f"{prefix}.{name}" if prefix else name))
+            nested.extend(
+                describe(
+                    child,
+                    f"{prefix}.{name}" if prefix else name,
+                    _default_instance(field) if instance is None else getattr(instance, name, None),
+                )
+            )
             continue
         section.fields.append(
             FieldDoc(
                 name=name,
                 type=_type_name(field.annotation),
-                default=_default_repr(field),
+                default=_default_repr(field, instance, name),
                 help=comments.get(name, ""),
             )
         )

@@ -20,13 +20,39 @@ arr:
     base_url: http://sonarr:8989
     api_key: ${SONARR_API_KEY}
 
+# ntfy is the CONNECTION only. What gets sent is `notifications:` further down.
 ntfy:
   url: http://ntfy:80
   topic: media-quality             # quality-check findings (mediacore.policy)
   # status_topic: media-status     # optional: split action status from findings
   user: ${NTFY_MEDIAQC_USER}
   password: ${NTFY_MEDIAQC_PASSWORD}
-  status_granularity: job          # job | action | off
+  # status_granularity: job        # legacy, still honoured; `notifications:` supersedes it
+
+# Which notifications are sent, at what priority, and how often. Every rule takes
+# `enabled`, `priority` (1..5, unset = the sender's own), `topic` (unset = ntfy's status
+# topic), and `once_per` (off | job | path) with `once_window_s`.
+#
+# `once_per` is the volume control that matters: a retry re-runs the whole pipeline under
+# the same job id, so without it one file that is attempted 7 times sends 7 copies of the
+# same message.
+notifications:
+  enabled: true
+  # quality-check findings. Suppressed by default while `prune` is in the pipeline, because
+  # prune fixes exactly what was flagged and the rollup below restates it seconds later.
+  quality_findings: { priority: 3, once_per: job }
+  suppress_findings_when_pruning: true
+  # one message per pipeline STEP — a firehose; for debugging the pipeline only.
+  job_step: { enabled: false }
+  # the per-file rollup once the pipeline finishes.
+  job_success: { priority: 2 }
+  # dead-lettered jobs. once_per: job so an auto-revived job that dies again stays one alert.
+  job_failed: { once_per: job }
+  # a prune deferred for disk space (it retries itself).
+  job_deferred: { once_per: job }
+  library_scan: { priority: 2 }
+  quota: {}
+  monitoring: {}
 
 # qBittorrent connection for the Downloads bandwidth ledger (omit to disable auto-capture).
 qbit:

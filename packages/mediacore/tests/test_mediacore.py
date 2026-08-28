@@ -240,3 +240,18 @@ def test_a_missing_config_names_every_directory_it_looked_in(tmp_path, monkeypat
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     with pytest.raises(FileNotFoundError, match=r"media-orchestrator.*media-tools"):
         find_default_config()
+
+
+def test_ntfy_headers_transliterate_punctuation_instead_of_replacing_it():
+    """Header values must be latin-1, and the em dash the orchestrator's own titles use is not
+    in it. Plain `.encode("latin-1","replace")` turned every one into "?" — 88 of 554 messages
+    in one measured window read "... .mkv ? failed". Transliterate what we can name, and keep
+    the never-raise fallback for what we can't (CJK, emoji)."""
+    from mediacore.notify import _header_safe
+
+    assert _header_safe("re-run Bleach - S01E202.mkv — failed") == (
+        "re-run Bleach - S01E202.mkv - failed"
+    )
+    assert _header_safe("a\u2013b\u2026c\u2019d") == "a-b...c'd"
+    # anything still unencodable degrades rather than raising
+    assert _header_safe("進撃の巨人") == "?????"

@@ -22,10 +22,29 @@ PRIORITY_FINDING = 4
 PRIORITY_FAILURE = 5
 
 
+#: Punctuation that is *representable* in latin-1's spirit but not in its table. Without this
+#: the fallback below turns every one into "?" — which is what made real notification titles read
+#: "re-run Bleach - S01E202.mkv ? failed" instead of "... - failed" (88 of 554 messages in one
+#: 12-hour window). Transliterate the handful that actually occur, then fall back for the rest.
+_TRANSLIT = str.maketrans(
+    {
+        "\u2014": "-",  # em dash — the one the orchestrator's own titles use
+        "\u2013": "-",  # en dash
+        "\u2026": "...",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u00a0": " ",  # nbsp
+    }
+)
+
+
 def _header_safe(value: str) -> str:
-    """HTTP header values must be latin-1 (requests enforces this). Replace anything else
-    (em dashes, CJK titles, emoji) so a notification never raises. The body stays full UTF-8."""
-    return value.encode("latin-1", "replace").decode("latin-1")
+    """HTTP header values must be latin-1 (requests enforces this). Transliterate the punctuation
+    we know about, then replace anything still unencodable (CJK titles, emoji) so a notification
+    never raises. The body stays full UTF-8."""
+    return value.translate(_TRANSLIT).encode("latin-1", "replace").decode("latin-1")
 
 
 @dataclass

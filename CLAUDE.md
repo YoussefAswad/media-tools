@@ -117,11 +117,20 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
   a CLI subprocess by the orchestrator, never imported for side effects. Keep it that way.
 - **mkvprune always sets the first track (per type) as default.**
 - **Config is grouped by job**: connections (`arr`, `ntfy`, `qbit`, `jellyfin`), media policy
-  (`policy`), operational tuning (`worker`, `pipeline`), plus `library`, `monitoring`, `server`,
-  `web`, `audit`, `shows`. Fifteen scalars used to sit loose at the root mixing all three; they
-  are **still accepted there** (`OrchestratorConfig._lift_legacy_root_keys` lifts them, and
-  `enable_x: false` drops that step from `pipeline.steps`), because nothing rewrites a user's
-  file. An explicit new-style section always wins over a legacy key.
+  (`policy`), operational tuning (`worker`, `pipeline`, `notifications`), plus `library`,
+  `monitoring`, `server`, `web`, `audit`, `shows`. Fifteen scalars used to sit loose at the root
+  mixing all three; they are **still accepted there**
+  (`OrchestratorConfig._lift_legacy_root_keys` lifts them, `enable_x: false` drops that step from
+  `pipeline.steps`, and `ntfy.status_granularity` maps onto the `notifications` rules), because
+  nothing rewrites a user's file. An explicit new-style section always wins over a legacy key.
+  Note `ntfy` is the **connection** (url, topic, credentials) and `notifications` is the
+  **policy** (what is sent, at what priority, how often) — the same split as `arr` vs `policy`.
+- **Every notification goes through `services.notify`** (`orchestrator/notifications.py`), never
+  `services.notifier.send` directly. That one seam owns the per-event enable/priority/topic
+  override and the `once_per` de-duplication, so **adding a notification** = one `send()` call
+  with a new event name, one entry in `notifications.EVENTS`, and one `NotifyRule` field on
+  `NotificationsConfig` (a test asserts those stay in step). The emitter still owns what the
+  message *says*; the facade owns what happens to it.
 - **Config = Pydantic v2 + YAML + `${ENV}` / `${VAR:-default}` expansion.** Secrets stay as `${VAR}`
   references in the YAML (expanded at load, never written back resolved) so the config file is safe
   to edit in the web UI. Env vars are injected by compose from `.env`.
@@ -423,6 +432,35 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
       still staged on the media disk. The mount alone does nothing.
     Worth re-measuring if the media disk is ever moved off USB/ntfs3 — the whole gain is that
     disk's read+write penalty, and a different disk has a different one.
+
+22. **Notifications were the one subsystem with no policy layer, and it showed: 554 messages in
+    12 hours, 60% of them redundant.** Measured from ntfy's own message cache before this was
+    fixed, and each number picked a different bug:
+    - **Every file notified twice, and the second contained the first.** 153 titles got a
+      quality-check finding (priority 4) and then the job rollup (priority 3) a median **8
+      seconds** later, and **153 of 153** rollups restated the finding text verbatim. You were
+      paged about a problem moments before being told it had been fixed automatically. So a
+      finding is suppressed while `prune` is in the pipeline (`suppress_findings_when_pruning`),
+      and *only* then — with no prune configured the finding is the only thing that tells you,
+      which is the rail the test pins.
+    - **Retries re-sent everything.** A retry re-runs the whole pipeline under the same job id,
+      so 30 files that dead-lettered sent their finding **7 times each** and their death twice
+      each: **270 of the 554 messages came from those 30 files**. That is what `once_per: job`
+      exists for. Suppression is recorded only for a message that actually *went out*, so an
+      unreachable ntfy doesn't silently eat the notification.
+    - **The loudest emitter had no switch at all.** `ntfy.status_granularity` gated the rollup
+      and the per-step ping and nothing else; findings, library scans, quota and monitoring
+      alerts were unconditional. Every emitter now has a `NotifyRule`.
+    Two things worth keeping in mind when extending it:
+    - **`status_granularity` is load-time only now.** It is mapped onto the new rules by the
+      model validator, so setting `cfg.ntfy.status_granularity` on an already-built config does
+      nothing (it silently did nothing in three tests before this landed). Set
+      `cfg.notifications.*` instead.
+    - **Header text is latin-1, and "replace" is not the same as transliterate.** The em dash in
+      the orchestrator's own titles became `?` in 88 of those 554 messages
+      (`re-run Bleach - S01E202.mkv ? failed`). `notify._TRANSLIT` maps the punctuation that
+      actually occurs before the never-raise fallback handles CJK/emoji. Prefer ASCII `-` in new
+      titles anyway.
 
 ## Origin note
 

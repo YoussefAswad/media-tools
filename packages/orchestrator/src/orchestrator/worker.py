@@ -12,7 +12,7 @@ import logging
 import threading
 import time
 
-from mediacore.notify import PRIORITY_FAILURE, PRIORITY_STATUS, NtfyMessage
+from mediacore.notify import PRIORITY_FAILURE, PRIORITY_STATUS
 
 from orchestrator.dispatch import ARR_EVENT, Dispatcher, InsufficientSpaceError
 from orchestrator.monitor import MonitorSource, SourceSnapshot
@@ -99,25 +99,28 @@ class Worker(threading.Thread):
             backoff = self.services.config.pipeline.low_space_backoff_s
             self.services.queue.defer(job_id, backoff, note=f"low disk space: {exc}")
             log.warning("job %s deferred for low disk space: %s", job_id, exc)
-            self.services.notifier.send(
-                NtfyMessage(
-                    title=f"{label or job_id} — low disk space",
-                    body=f"Prune deferred (retrying in ~{backoff // 60} min):\n\n{exc}",
-                    tags=["floppy_disk", "warning"],
-                    priority=PRIORITY_FAILURE,
-                )
+            self.services.notify.send(
+                "job-deferred",
+                title=f"{label or job_id} - low disk space",
+                body=f"Prune deferred (retrying in ~{backoff // 60} min):\n\n{exc}",
+                tags=["floppy_disk", "warning"],
+                priority=PRIORITY_FAILURE,
+                job_id=job_id,
             )
         except Exception as exc:
             status = self.services.queue.mark_failed(job_id, str(exc))
             log.warning("job %s failed (%s): %s", job_id, status, exc)
             if status == DEAD:
-                self.services.notifier.send(
-                    NtfyMessage(
-                        title=f"{label or job_id} — failed",
-                        body=f"Job dead-lettered after retries:\n\n```\n{exc}\n```",
-                        tags=["rotating_light"],
-                        priority=PRIORITY_FAILURE,
-                    )
+                # once_per: job by default — a dead job that the auto-revive picks up and that
+                # dies again is the same failure, and used to notify twice (60 messages for 30
+                # files in one measured window).
+                self.services.notify.send(
+                    "job-failed",
+                    title=f"{label or job_id} - failed",
+                    body=f"Job dead-lettered after retries:\n\n```\n{exc}\n```",
+                    tags=["rotating_light"],
+                    priority=PRIORITY_FAILURE,
+                    job_id=job_id,
                 )
 
     # --- metric collection ----------------------------------------------------------
@@ -169,6 +172,7 @@ class Worker(threading.Thread):
             + self.services.audit.prune_old(cfg.worker.retention_days)
             + self.services.metrics.prune_old(cfg.monitoring.retention_days)
             + self.services.alerts.prune_old(cfg.monitoring.retention_days)
+            + self.services.notify.prune_old(cfg.worker.retention_days)
         )
         if removed:
             log.info("retention pruned %d old rows", removed)
@@ -211,15 +215,14 @@ class Worker(threading.Thread):
         if level <= c.alerted_pct:
             return  # already alerted at this (or a higher) level this period
         over = used > c.limit_bytes
-        self.services.notifier.send(
-            NtfyMessage(
-                title=f"Bandwidth quota {round(pct)}% used",
-                body=(
-                    f"Since {c.cutoff_date}: {human_bytes(used)} of {human_bytes(c.limit_bytes)}"
-                    f" ({round(pct)}%){' — OVER LIMIT' if over else ''}."
-                ),
-                tags=["chart_with_upwards_trend", "rotating_light" if over else "warning"],
-                priority=PRIORITY_FAILURE if over else PRIORITY_STATUS,
-            )
+        self.services.notify.send(
+            "quota",
+            title=f"Bandwidth quota {round(pct)}% used",
+            body=(
+                f"Since {c.cutoff_date}: {human_bytes(used)} of {human_bytes(c.limit_bytes)}"
+                f" ({round(pct)}%){' - OVER LIMIT' if over else ''}."
+            ),
+            tags=["chart_with_upwards_trend", "rotating_light" if over else "warning"],
+            priority=PRIORITY_FAILURE if over else PRIORITY_STATUS,
         )
         cutoffs.set_alerted(c.id, level)

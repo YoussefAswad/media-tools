@@ -10,7 +10,7 @@ see :meth:`OrchestratorConfig._lift_legacy_root_keys`.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from mediacore.config import find_default_config, load_config
 from mediacore.models import CoreConfig
@@ -236,6 +236,69 @@ class PipelineConfig(BaseModel):
         return v
 
 
+class NotifyRule(BaseModel):
+    """Delivery policy for one kind of notification.
+
+    Every notification the orchestrator sends goes through :class:`orchestrator.notifications.
+    Notifications`, which looks the sender up here. ``priority``/``topic`` left ``None`` mean
+    "whatever the emitter asked for" — the rule only overrides when you set one.
+    """
+
+    enabled: bool = True
+    #: ntfy priority override (1..5). None = the emitter's own choice.
+    priority: int | None = None
+    #: ntfy topic override. None = the ntfy section's status topic.
+    topic: str | None = None
+    #: Collapse repeats to one message per ``job`` or per ``path``. ``off`` sends every time.
+    #: A retry re-runs the whole pipeline, so without this a job that is attempted 7 times sends
+    #: its finding 7 times — measured: 30 files produced 210 finding messages plus 60
+    #: dead-letter messages, 49% of a day's notifications.
+    once_per: Literal["off", "job", "path"] = "off"
+    #: How long a ``once_per`` suppression lasts. Retries of one job span hours at most.
+    once_window_s: int = 86400
+
+
+class NotificationsConfig(BaseModel):
+    """Which notifications get sent, at what priority, and where.
+
+    Split out from ``ntfy`` on purpose: ``ntfy`` is a *connection* (url, topic, credentials),
+    this is *policy*, the same way ``arr`` is a connection and ``policy`` is what to do with a
+    file. Before this section the only knob was ``ntfy.status_granularity``, which gated the job
+    rollup and nothing else — the loudest emitter by far (quality findings, 60% of a measured
+    day) had no switch at all.
+    """
+
+    enabled: bool = True
+
+    #: Policy findings from quality-check (one message listing what the file violates).
+    quality_findings: NotifyRule = NotifyRule(priority=3, once_per="job")
+    #: One message per pipeline *step*. A firehose; off unless you are debugging the pipeline.
+    job_step: NotifyRule = NotifyRule(enabled=False)
+    #: The per-file rollup once the pipeline finishes: what each step did.
+    job_success: NotifyRule = NotifyRule(priority=2)
+    #: A job that ran out of attempts and was dead-lettered.
+    job_failed: NotifyRule = NotifyRule(once_per="job")
+    #: A prune deferred because the disk was too full (it retries on its own).
+    job_deferred: NotifyRule = NotifyRule(once_per="job")
+    #: A library scan finished (one summary for the whole walk).
+    library_scan: NotifyRule = NotifyRule(priority=2)
+    #: A bandwidth-quota threshold was crossed.
+    quota: NotifyRule = NotifyRule()
+    #: Monitoring alert transitions (disk / container / temperature / SMART).
+    monitoring: NotifyRule = NotifyRule()
+
+    #: When ``prune`` is in the pipeline it *fixes* what quality-check flags, and the rollup
+    #: already restates the finding — measured over a real day, 153 of 153 rollups repeated the
+    #: finding text a median 8 s after it, at a lower priority than the finding itself. So the
+    #: standalone finding is pure duplication there. It is still sent when ``prune`` is not
+    #: configured, which is the case where it is the only thing that tells you.
+    suppress_findings_when_pruning: bool = True
+
+    def rule(self, event: str) -> NotifyRule:
+        """The rule for an event name (``job-success`` -> the ``job_success`` field)."""
+        return getattr(self, event.replace("-", "_"), NotifyRule())
+
+
 #: legacy root key -> (section, new field name). Kept so an existing config.yaml keeps working;
 #: the file is only rewritten when a human edits it in the Config tab.
 _LEGACY_KEYS = {
@@ -274,6 +337,8 @@ class OrchestratorConfig(CoreConfig):
     worker: WorkerConfig = WorkerConfig()
     #: what the per-file pipeline does, in order.
     pipeline: PipelineConfig = PipelineConfig()
+    #: which notifications are sent, at what priority, and where.
+    notifications: NotificationsConfig = NotificationsConfig()
 
     @model_validator(mode="before")
     @classmethod
@@ -295,6 +360,15 @@ class OrchestratorConfig(CoreConfig):
             bucket = data.setdefault(section, {})
             if isinstance(bucket, dict) and field_name not in bucket:
                 bucket[field_name] = value
+        # ntfy.status_granularity used to be the only notification knob: it gated the job
+        # rollup and the per-step ping, and nothing else. Map it onto the two rules that
+        # replaced it. An explicit `notifications:` section wins, same as everywhere else.
+        gran = data.get("ntfy", {}).get("status_granularity") if isinstance(data.get("ntfy"), dict) else None
+        if gran in ("action", "off") and "notifications" not in data:
+            data["notifications"] = {
+                "job_step": {"enabled": gran == "action"},
+                "job_success": {"enabled": False},
+            }
         # enable_x: false used to switch a step off; membership of pipeline.steps does now
         off = [step for key, step in _LEGACY_TOGGLES.items() if data.pop(key, True) is False]
         if off:
