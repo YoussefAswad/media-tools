@@ -179,6 +179,19 @@ The pipeline (in `orchestrator/dispatch.py`) runs, per file, in this order — *
       (`cooldown_s`) — a config file edited on disk is **not** hot-reloaded (only the Config-tab
       save calls `reload_config`); a direct edit needs a container restart/recreate.
 
+19. **The foreign-subtitle rule has a codec scope, and it dominates the "needs work" count.**
+    `policy.subtitle_drop_scope` is `all` (text + image) or `image` (PGS/VobSub only). Measured on
+    the real 2,267-file index: **1,270 files need work under `all`, 477 under `image`** — 793 files
+    (62%) are flagged solely because they carry foreign *text* subs. That matters because the
+    original reason for dropping subs was a TV player that fails on many bitmap subs while
+    handling SRT fine, and because text subs reclaim ~200 KB against a full remux of the file.
+    Classification checks the ffprobe codec name (`subtitle_image_codecs`) *and* the mkvmerge
+    codec id: some tracks report no ffprobe codec name at all (an mp4 `Timed Text` track), and
+    classifying by omission would read a bitmap sub as text.
+    Note `subtitle_image_codecs` existed in config files for a long time while **no code read it**
+    — the rule had stopped gating on codec. It is live again; check a config key is actually a
+    model field before assuming it does anything.
+
 ## Origin note
 
 mkvprune and seasonal-shift were **copied** (not `git subtree`-imported) from

@@ -47,6 +47,14 @@ policy:
   remux_to_mkv: false          # true = always remux mp4/m4v/mov imports to MKV (pure-MKV library);
                                # the subtitle/audio policies below still apply on top
   subtitle_keep_langs: [eng, en, ara, ar]
+  # Which foreign-language subs to drop:
+  #   all   - every codec, text (SRT/ASS) and image (PGS/VobSub) alike
+  #   image - bitmap subs only, leaving foreign SRT/ASS in place
+  # Use `image` when the motivation is a player that chokes on many bitmap subs rather than
+  # saving space: measured on a real library, 1100 files had foreign subs but only 154 had
+  # foreign IMAGE subs, so `all` flags ~7x as many files for a rewrite that buys nothing.
+  subtitle_drop_scope: all
+  subtitle_image_codecs: [hdmv_pgs_subtitle, dvd_subtitle, dvb_subtitle, xsub]
   subtitle_flag_untagged: false
   keep_default_subtitle: false     # true = never drop the current default sub, even if foreign
 

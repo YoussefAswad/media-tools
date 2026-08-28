@@ -43,12 +43,30 @@ def _sub_desc(t: Track) -> str:
     return f"{t.codec_name or t.codec_id} {lang} (id {t.mkv_id})"
 
 
+#: mkvmerge codec ids for bitmap subtitles, used when ffprobe reports no codec name. Kept
+#: alongside the configurable ffprobe names so a track is never misread as text by omission.
+_IMAGE_CODEC_IDS = {"S_HDMV/PGS", "S_VOBSUB", "S_DVBSUB", "S_IMAGE/BMP", "S_HDMV/TEXTST"}
+
+
+def is_image_sub(track: Track, policy: PolicyConfig) -> bool:
+    """True for a bitmap subtitle (PGS/VobSub/DVB), by ffprobe codec name or mkvmerge codec id."""
+    if (track.codec_name or "").lower() in policy.subtitle_image_codecs:
+        return True
+    return (track.codec_id or "").upper() in _IMAGE_CODEC_IDS
+
+
 def foreign_subs(probe: ProbeResult, policy: PolicyConfig) -> list[Track]:
-    """Subtitle tracks whose language is not in the keep languages — ANY codec (text SRT/ASS
-    and image PGS/VOBSUB alike). Untagged/``und`` tracks count only when
-    ``subtitle_flag_untagged`` is set."""
+    """Subtitle tracks whose language is not in the keep languages.
+
+    ``policy.subtitle_drop_scope`` decides the codec scope: ``all`` covers text (SRT/ASS) and
+    image (PGS/VobSub) alike, while ``image`` leaves foreign text subs alone. Untagged/``und``
+    tracks count only when ``subtitle_flag_untagged`` is set.
+    """
+    image_only = policy.subtitle_drop_scope == "image"
     out: list[Track] = []
     for t in probe.subtitles:
+        if image_only and not is_image_sub(t, policy):
+            continue
         if is_undetermined(t.language):
             if policy.subtitle_flag_untagged:
                 out.append(t)
@@ -58,8 +76,8 @@ def foreign_subs(probe: ProbeResult, policy: PolicyConfig) -> list[Track]:
     return out
 
 
-# Back-compat alias. NOTE: a misnomer — this flags ALL foreign-language subs, not only image-based
-# ones (Rule B stopped gating on codec). Kept so callers/tests importing the old name still resolve.
+# Back-compat alias. The codec scope is now `policy.subtitle_drop_scope`, so this name is only
+# accurate under `scope: image`. Kept so callers/tests importing the old name still resolve.
 foreign_image_subs = foreign_subs
 
 

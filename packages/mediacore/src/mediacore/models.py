@@ -11,11 +11,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 # Canonical policy defaults, mirroring the original arr-quality-check.sh knobs.
 DEFAULT_AUDIO_ALLOW: set[str] = {"ac3", "eac3", "truehd", "mlp", "dts"}
 DEFAULT_SUBTITLE_KEEP_LANGS: set[str] = {"eng", "en", "ara", "ar"}
+#: ffprobe codec names for bitmap subtitle formats (the ones a TV player tends to choke on).
+DEFAULT_SUBTITLE_IMAGE_CODECS: set[str] = {
+    "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub", "hdmv_text_subtitle",
+}
 
 
 class ArrInstance(BaseModel):
@@ -65,6 +69,13 @@ class PolicyConfig(BaseModel):
     audio_min_channels: int = 2
     audio_max_tracks: int = 2
     subtitle_keep_langs: set[str] = set(DEFAULT_SUBTITLE_KEEP_LANGS)
+    #: Which foreign-language subtitles to drop. ``all`` drops every codec; ``image`` drops only
+    #: bitmap subs (PGS/VobSub) and leaves foreign SRT/ASS in place — the right scope when the
+    #: motivation is a player that chokes on many image subs rather than saving space, since
+    #: text subs cost ~200 KB a file and image subs run to megabytes each.
+    subtitle_drop_scope: Literal["all", "image"] = "all"
+    #: ffprobe codec names counted as image-based subtitles for ``subtitle_drop_scope: image``.
+    subtitle_image_codecs: set[str] = set(DEFAULT_SUBTITLE_IMAGE_CODECS)
     #: Whether an untagged/``und`` subtitle counts as foreign (default: keep it).
     subtitle_flag_untagged: bool = False
     #: Guard: never drop the subtitle currently flagged default, even if foreign.
