@@ -94,46 +94,34 @@ web:
   basic_auth_user: ${ORCH_UI_USER:-}
   basic_auth_password: ${ORCH_UI_PASSWORD:-}
 
-# Pipeline toggles
-enable_seasonal_shift: true
-enable_quality_check: true
-enable_prune: true
-enable_ledger: true          # capture download bandwidth from qBittorrent at import
-max_attempts: 3
-retry_backoff_s: [30, 300, 1800]   # per-attempt requeue delay (clamped to the last entry)
+# What the per-file pipeline does, in order. A step runs because it is in this list — there are
+# no enable_* booleans any more. Order is load-bearing: ledger first so consumed bandwidth is
+# recorded even if a later step fails, prune before seasonal-shift so the rename moves a file
+# that is already in its final form. Drop a name to switch that step off.
+pipeline:
+  steps: [ledger, quality-check, prune, seasonal-shift, jellyfin]
+  mkvprune_executable: mkvprune
+  # scratch_dir: /scratch        # stage mkvprune's temp mux here instead of beside the source.
+                                 # Must be writable by this container's UID and bind-mounted in.
+                                 # A scratch dir on another filesystem does NOT reduce what the
+                                 # media disk needs (finalize copies the result back), so both
+                                 # volumes are checked before a prune starts.
+  min_free_multiplier: 1.3       # require free space >= source_size * this before pruning
+  low_space_backoff_s: 1800      # when short, defer the job this long (no attempt consumed)
 
-# Background maintenance (runs on the worker thread between jobs)
-maintenance_interval_s: 300   # how often retention / dead-revive / quota checks run
-retention_days: 90            # delete finished jobs + audit rows older than this (0 = keep; JSONL always kept)
-quota_alert_pcts: [85, 100]   # ntfy once when quota usage crosses each level (needs a cutoff limit)
-dead_revive_cooldown_s: 3600  # auto-requeue a dead job once it has sat idle this long
-dead_revive_max: 1            # times a dead job may be auto-revived (0 disables)
+# How the single worker retries, defers and tidies up after itself.
+worker:
+  max_attempts: 3
+  retry_backoff_s: [30, 300, 1800]  # per-attempt requeue delay (clamped to the last entry)
+  maintenance_interval_s: 300       # how often retention / dead-revive / quota checks run
+  retention_days: 90                # delete finished jobs + audit rows older than this
+                                    # (0 = keep; the JSONL audit files are always kept)
+  quota_alert_pcts: [85, 100]       # ntfy once per level crossed (needs a cutoff limit)
+  dead_revive_cooldown_s: 3600      # auto-requeue a dead job once it has sat idle this long
+  dead_revive_max: 1                # times a dead job may be auto-revived (0 disables)
 
-# Prune staging + disk-space guard
-# prune_scratch_dir: where mkvprune builds the temp mux and the audio encodes. Unset = beside the
-# source (the old behaviour). Point it at fast local storage to keep the mux off the media disk;
-# it must be writable by PUID and bind-mounted into the container. It does NOT reduce what the
-# media disk needs: a scratch dir on another filesystem means finalize copies the output back
-# beside the original rather than renaming it, so BOTH volumes are checked before a prune starts.
-prune_scratch_dir: /scratch
-prune_min_free_multiplier: 1.3   # require free space >= source_size * this before pruning
-prune_low_space_backoff_s: 1800  # when short, defer the job this long (no attempt consumed)
-
-# Library tab: the index of files ALREADY on disk, so the pipeline can be re-run over the back
-# catalogue. Scanning is read-only (probe + decide) — it never rewrites a file; queueing the work
-# it finds is a separate click. Roots are paths as THIS container sees them, and `app` decides
-# which arr a re-run from that tree is addressed to, so keep movie and episode trees separate.
-library:
-  enabled: true
-  roots: []                  # empty = derive from each arr's local_media_root / media_root
-  # roots:
-  #   - { path: /data/movies, app: radarr }
-  #   - { path: /data/anime,  app: sonarr }
-  #   - { path: /data/tv,     app: sonarr }
-  extensions: [".mkv", ".mp4", ".m4v", ".mov"]
-  min_size: 100MB            # ignore samples / featurettes / stray artwork
-  max_enqueue: 200           # hard cap on one bulk enqueue from the Library tab
-  page_size: 100             # rows per page in the Library table
+# The fifteen loose keys these replaced (max_attempts, enable_prune, prune_scratch_dir, ...) are
+# still read from the root of an existing file, so an older config.yaml keeps working as-is.
 
 # System monitoring (Monitoring tab). Disk usage is read in-container via statvfs, so each watched
 # `path` must be one this container can see. With the default mounts, /data = the media disk and

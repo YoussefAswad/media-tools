@@ -27,8 +27,8 @@ class JellyfinStep:
         if ctx.services.jellyfin is None:
             return False
         # Only once prune has had its turn (ok or skip), so Jellyfin reads the final file — but
-        # still when pruning is switched off entirely, since the import itself is news to it.
-        return ctx.ran("mkvprune") or not ctx.services.config.enable_prune
+        # still when prune isn't in the pipeline at all, since the import itself is news to it.
+        return ctx.ran("mkvprune") or "prune" not in ctx.steps
 
     def run(self, ctx: JobContext) -> StepResult:
         jf = ctx.services.jellyfin

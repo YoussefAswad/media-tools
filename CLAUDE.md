@@ -59,8 +59,8 @@ The pipeline is an ordered **registry of steps** (`orchestrator/steps/`), run by
 5. **Jellyfin refresh** — best-effort, after prune ran (ok or skip).
 6. **status rollup** — ntfy.
 
-**Adding a pipeline step** = one class in `orchestrator/steps/` plus one line in
-`steps.default_pipeline()`. A step implements `name`, `silent`, `applies(ctx)` and `run(ctx)`
+**Adding a pipeline step** = one class in `orchestrator/steps/`, one entry in
+`steps.STEP_TYPES`, and its name in `pipeline.steps` in the config. A step implements `name`, `silent`, `applies(ctx)` and `run(ctx)`
 (see `steps/base.py`). The *framework* owns timing, the audit record, the per-action ntfy ping,
 and following a file the step moved — a step never does those itself. Three rules worth knowing:
 
@@ -72,6 +72,13 @@ and following a file the step moved — a step never does those itself. Three ru
   a job, not work done to the file.
 - **A step that moves the file returns `StepResult.new_path`**; the pipeline follows it so later
   steps and the job's final path see the new location. Don't mutate `ctx.local_path`.
+
+**The pipeline IS `pipeline.steps` in the config** — an ordered list of names. A step runs
+because it is in that list, which is why there are no `enable_*` booleans any more; a name not in
+`STEP_TYPES` is a startup validation error rather than a silently dropped step. A step therefore
+asks `ctx.steps` (the names in this pipeline), not a config flag, when it needs to know whether
+another step is configured at all — that is how the Jellyfin refresh tells "prune hasn't run yet"
+from "prune isn't in the pipeline".
 
 `Dispatcher` routes on job *kind* before any of that: `arr_event`/`rerun` run the per-file
 pipeline, `library_scan` is its own handler (no event, no file to change).
@@ -109,6 +116,12 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
 - **mkvprune stays pure.** Standard library only, no network, no third-party deps. It's invoked as
   a CLI subprocess by the orchestrator, never imported for side effects. Keep it that way.
 - **mkvprune always sets the first track (per type) as default.**
+- **Config is grouped by job**: connections (`arr`, `ntfy`, `qbit`, `jellyfin`), media policy
+  (`policy`), operational tuning (`worker`, `pipeline`), plus `library`, `monitoring`, `server`,
+  `web`, `audit`, `shows`. Fifteen scalars used to sit loose at the root mixing all three; they
+  are **still accepted there** (`OrchestratorConfig._lift_legacy_root_keys` lifts them, and
+  `enable_x: false` drops that step from `pipeline.steps`), because nothing rewrites a user's
+  file. An explicit new-style section always wins over a legacy key.
 - **Config = Pydantic v2 + YAML + `${ENV}` / `${VAR:-default}` expansion.** Secrets stay as `${VAR}`
   references in the YAML (expanded at load, never written back resolved) so the config file is safe
   to edit in the web UI. Env vars are injected by compose from `.env`.

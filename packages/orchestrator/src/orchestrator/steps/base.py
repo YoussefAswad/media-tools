@@ -64,6 +64,9 @@ class JobContext:
     #: Every result so far, silent ones included, so a step's ``applies()`` can depend on what
     #: already happened (the Jellyfin refresh only runs once prune has had its turn).
     results: list[StepResult] = field(default_factory=list)
+    #: The names of every step in this pipeline, so a step can tell "hasn't run yet" apart from
+    #: "isn't configured to run at all" — the Jellyfin refresh needs exactly that distinction.
+    steps: tuple[str, ...] = ()
 
     def ran(self, tool: str) -> bool:
         """Whether a step with this ``tool`` name completed (ok or skip) earlier in this job."""

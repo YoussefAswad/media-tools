@@ -37,7 +37,7 @@ class RenumberStep:
     silent = False
 
     def applies(self, ctx: JobContext) -> bool:
-        return ctx.services.config.enable_seasonal_shift and ctx.event.app == "sonarr"
+        return ctx.event.app == "sonarr"  # Sonarr-only; the rest is pipeline membership
 
     def run(self, ctx: JobContext) -> StepResult:
         local_path = Path(ctx.local_path)

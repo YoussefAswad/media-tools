@@ -35,7 +35,7 @@ from orchestrator.steps import (
     PruneRunner,
     Step,
     StepResult,
-    default_pipeline,
+    build_pipeline,
 )
 
 log = logging.getLogger(__name__)
@@ -170,7 +170,12 @@ class Dispatcher:
         self.services = services
         self.probe_fn: ProbeFn = probe_fn or _default_probe
         self.prune_runner: PruneRunner = prune_runner or run_mkvprune
-        self.pipeline = Pipeline(services, steps if steps is not None else default_pipeline())
+        # The pipeline is config: `pipeline.steps` names them, in order. An explicit list still
+        # wins, which is what lets a test run one step on its own.
+        self.pipeline = Pipeline(
+            services,
+            steps if steps is not None else build_pipeline(services.config.pipeline.steps),
+        )
 
     def dispatch(
         self,
@@ -208,6 +213,7 @@ class Dispatcher:
             probe_fn=self.probe_fn,
             prune_runner=self.prune_runner,
             set_progress=set_progress,
+            steps=tuple(s.name for s in self.pipeline.steps),
         )
         return self.pipeline.run(ctx, set_step=set_step)
 

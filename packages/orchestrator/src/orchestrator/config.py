@@ -1,17 +1,21 @@
-"""Orchestrator config = the shared CoreConfig plus server settings and seasonal-shift shows.
+"""Orchestrator config: the shared CoreConfig plus this service's own sections.
 
-Reuses mediacore's config sections and seasonal-shift's ``ShowConfig`` directly, so the one
-``config.yaml`` drives every tool.
+Grouped by job, because the flat layout mixed three of them at the YAML root: connection
+settings (``arr``, ``ntfy``, ``qbit``, ``jellyfin``), media policy (``policy``), and operational
+tuning — which is now ``worker`` (retries, retention, maintenance) and ``pipeline`` (which steps
+run, in what order, and how prune is staged). The fifteen legacy root keys are still accepted;
+see :meth:`OrchestratorConfig._lift_legacy_root_keys`.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from mediacore.config import find_default_config, load_config
 from mediacore.models import CoreConfig
 from mediacore.renumber.models import ShowConfig
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ServerConfig(BaseModel):
@@ -176,30 +180,14 @@ class LibraryConfig(BaseModel):
         return parse_bytes(self.min_size)
 
 
-class OrchestratorConfig(CoreConfig):
-    server: ServerConfig = ServerConfig()
-    #: system monitoring (watched disks, thresholds, alert timing).
-    monitoring: MonitoringConfig = MonitoringConfig()
-    #: the Library tab's index of files already on disk (backfill source).
-    library: LibraryConfig = LibraryConfig()
-    #: seasonal-shift show offsets (matched to a Sonarr series by ``name``).
-    shows: list[ShowConfig] = Field(default_factory=list)
 
-    # pipeline toggles
-    enable_seasonal_shift: bool = True
-    enable_quality_check: bool = True
-    enable_prune: bool = True
-    #: Capture download bandwidth from qBittorrent at import (requires the `qbit` config block).
-    enable_ledger: bool = True
+class WorkerConfig(BaseModel):
+    """How the single worker retries, defers, and tidies up after itself."""
 
-    #: max worker attempts before a job is dead-lettered.
+    #: max attempts before a job is dead-lettered.
     max_attempts: int = 3
     #: per-attempt requeue backoff in seconds (indexed by attempt, clamped to the last entry).
     retry_backoff_s: list[int] = Field(default_factory=lambda: [30, 300, 1800])
-    #: path to the mkvprune executable (on PATH by default in the container image).
-    mkvprune_executable: str = "mkvprune"
-
-    # --- background maintenance (runs on the worker thread between jobs) ---
     #: how often the worker runs retention / dead-letter revive / quota checks.
     maintenance_interval_s: int = 300
     #: delete finished jobs + audit action rows older than this many days (0 = keep forever).
@@ -212,18 +200,110 @@ class OrchestratorConfig(CoreConfig):
     #: how many times a dead job may be auto-revived before it stays dead (0 disables).
     dead_revive_max: int = 1
 
-    # --- prune staging + disk-space guard ---
-    #: directory for mkvprune's temp mux and audio encodes (mkvprune's ``--scratch-dir``).
-    #: None = alongside the source, as before. Pointing this at fast local storage keeps the
-    #: mux off the media disk; it must be writable by the orchestrator's UID and, in Docker,
-    #: bind-mounted into the container. Note a scratch dir on another filesystem does not
-    #: reduce what the media disk needs — finalize copies the output back (see
-    #: replace.estimate_placement_bytes) — so both volumes are checked before a prune starts.
-    prune_scratch_dir: str | None = None
+
+class PipelineConfig(BaseModel):
+    """What the per-file pipeline does, in order.
+
+    ``steps`` is the pipeline: a step runs because it is in this list, which is why there are no
+    ``enable_*`` booleans any more. Order is load-bearing — ledger first so bandwidth survives a
+    later failure, prune before seasonal-shift so the rename moves a finished file — so it is
+    written out rather than inferred.
+    """
+
+    steps: list[str] = Field(
+        default_factory=lambda: ["ledger", "quality-check", "prune", "seasonal-shift", "jellyfin"]
+    )
+    #: path to the mkvprune executable (on PATH by default in the container image).
+    mkvprune_executable: str = "mkvprune"
+    #: directory for mkvprune's temp mux and audio encodes (its ``--scratch-dir``). None =
+    #: alongside the source. Note a scratch dir on another filesystem does not reduce what the
+    #: media disk needs — finalize copies the output back — so both volumes are checked.
+    scratch_dir: str | None = None
     #: require free space >= source_size * this before pruning (mkvprune's own floor is ~1.15).
-    prune_min_free_multiplier: float = 1.3
+    min_free_multiplier: float = 1.3
     #: when space is short, requeue the job this many seconds later (without burning an attempt).
-    prune_low_space_backoff_s: int = 1800
+    low_space_backoff_s: int = 1800
+
+    @field_validator("steps")
+    @classmethod
+    def _known_steps(cls, v: list[str]) -> list[str]:
+        from orchestrator.steps import STEP_TYPES
+
+        unknown = [n for n in v if n not in STEP_TYPES]
+        if unknown:
+            known = ", ".join(sorted(STEP_TYPES))
+            raise ValueError(f"unknown pipeline step(s) {unknown}; known steps are: {known}")
+        return v
+
+
+#: legacy root key -> (section, new field name). Kept so an existing config.yaml keeps working;
+#: the file is only rewritten when a human edits it in the Config tab.
+_LEGACY_KEYS = {
+    "max_attempts": ("worker", "max_attempts"),
+    "retry_backoff_s": ("worker", "retry_backoff_s"),
+    "maintenance_interval_s": ("worker", "maintenance_interval_s"),
+    "retention_days": ("worker", "retention_days"),
+    "quota_alert_pcts": ("worker", "quota_alert_pcts"),
+    "dead_revive_cooldown_s": ("worker", "dead_revive_cooldown_s"),
+    "dead_revive_max": ("worker", "dead_revive_max"),
+    "mkvprune_executable": ("pipeline", "mkvprune_executable"),
+    "prune_scratch_dir": ("pipeline", "scratch_dir"),
+    "prune_min_free_multiplier": ("pipeline", "min_free_multiplier"),
+    "prune_low_space_backoff_s": ("pipeline", "low_space_backoff_s"),
+}
+
+#: legacy ``enable_x: false`` root key -> the step it used to switch off.
+_LEGACY_TOGGLES = {
+    "enable_ledger": "ledger",
+    "enable_quality_check": "quality-check",
+    "enable_prune": "prune",
+    "enable_seasonal_shift": "seasonal-shift",
+}
+
+
+class OrchestratorConfig(CoreConfig):
+    server: ServerConfig = ServerConfig()
+    #: system monitoring (watched disks, thresholds, alert timing).
+    monitoring: MonitoringConfig = MonitoringConfig()
+    #: the Library tab's index of files already on disk (backfill source).
+    library: LibraryConfig = LibraryConfig()
+    #: seasonal-shift show offsets (matched to a Sonarr series by ``name``).
+    shows: list[ShowConfig] = Field(default_factory=list)
+
+    #: how the worker retries, defers and tidies up.
+    worker: WorkerConfig = WorkerConfig()
+    #: what the per-file pipeline does, in order.
+    pipeline: PipelineConfig = PipelineConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_legacy_root_keys(cls, data: Any) -> Any:
+        """Accept the pre-sections layout: fifteen loose scalars at the YAML root.
+
+        They sat next to ``arr:`` and ``ntfy:`` mixing three different jobs — connection
+        settings, media policy, operational tuning. Lifting them here means an existing
+        config.yaml keeps working untouched; nothing rewrites the file behind the user's back.
+        An explicit new-style section always wins over a legacy key.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for old, (section, field_name) in _LEGACY_KEYS.items():
+            if old not in data:
+                continue
+            value = data.pop(old)
+            bucket = data.setdefault(section, {})
+            if isinstance(bucket, dict) and field_name not in bucket:
+                bucket[field_name] = value
+        # enable_x: false used to switch a step off; membership of pipeline.steps does now
+        off = [step for key, step in _LEGACY_TOGGLES.items() if data.pop(key, True) is False]
+        if off:
+            pipeline = data.setdefault("pipeline", {})
+            if isinstance(pipeline, dict) and "steps" not in pipeline:
+                pipeline["steps"] = [
+                    s for s in PipelineConfig().steps if s not in off
+                ]
+        return data
 
 
 def load_orchestrator_config(path: Path | None = None) -> OrchestratorConfig:

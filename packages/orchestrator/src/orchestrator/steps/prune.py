@@ -52,7 +52,7 @@ class PruneStep:
     silent = False
 
     def applies(self, ctx: JobContext) -> bool:
-        return ctx.services.config.enable_prune
+        return True  # being in pipeline.steps is the switch
 
     def run(self, ctx: JobContext) -> StepResult:
         cfg = ctx.services.config
@@ -78,7 +78,7 @@ class PruneStep:
         # {stem}.tmp.mkv that mkvprune refuses to overwrite. Safe to remove — the worker is
         # single-threaded, so nothing else is writing it. The temp lands in the scratch dir,
         # so this has to look where mkvprune would actually write it, not next to the source.
-        scratch_dir = cfg.prune_scratch_dir
+        scratch_dir = cfg.pipeline.scratch_dir
         stem = os.path.splitext(os.path.basename(local_path))[0]
         stale = os.path.join(scratch_dir or os.path.dirname(local_path), stem + ".tmp.mkv")
         if os.path.exists(stale):
@@ -91,7 +91,7 @@ class PruneStep:
         argv = build_mkvprune_argv(
             local_path,
             decision,
-            executable=cfg.mkvprune_executable,
+            executable=cfg.pipeline.mkvprune_executable,
             scratch_dir=scratch_dir,
         )
         argv.insert(1, "--progress-json")  # after the executable
@@ -200,9 +200,9 @@ class PruneStep:
             return
 
         cfg = ctx.services.config
-        needed = int(src_size * cfg.prune_min_free_multiplier)
+        needed = int(src_size * cfg.pipeline.min_free_multiplier)
         source_dir = os.path.dirname(local_path) or "."
-        scratch_dir = cfg.prune_scratch_dir
+        scratch_dir = cfg.pipeline.scratch_dir
         targets = [("source", source_dir)]
         if scratch_dir and not _same_filesystem(scratch_dir, source_dir):
             targets.append(("scratch", scratch_dir))

@@ -96,7 +96,7 @@ class Worker(threading.Thread):
         except InsufficientSpaceError as exc:
             # Not enough disk to prune: defer (long backoff, no attempt consumed) so the job waits
             # for space to free up instead of dead-lettering. Alert once.
-            backoff = self.services.config.prune_low_space_backoff_s
+            backoff = self.services.config.pipeline.low_space_backoff_s
             self.services.queue.defer(job_id, backoff, note=f"low disk space: {exc}")
             log.warning("job %s deferred for low disk space: %s", job_id, exc)
             self.services.notifier.send(
@@ -152,7 +152,7 @@ class Worker(threading.Thread):
     def _maybe_maintain(self) -> None:
         cfg = self.services.config
         now = time.monotonic()
-        if now - self._last_maintenance < cfg.maintenance_interval_s:
+        if now - self._last_maintenance < cfg.worker.maintenance_interval_s:
             return
         self._last_maintenance = now
         with contextlib.suppress(Exception):
@@ -165,8 +165,8 @@ class Worker(threading.Thread):
         # 1. retention: trim finished jobs + old audit rows (JSONL kept as source of truth) and
         #    old metric samples (their own retention window).
         removed = (
-            q.prune_old(cfg.retention_days)
-            + self.services.audit.prune_old(cfg.retention_days)
+            q.prune_old(cfg.worker.retention_days)
+            + self.services.audit.prune_old(cfg.worker.retention_days)
             + self.services.metrics.prune_old(cfg.monitoring.retention_days)
             + self.services.alerts.prune_old(cfg.monitoring.retention_days)
         )
@@ -176,7 +176,7 @@ class Worker(threading.Thread):
 
         # 2. dead-letter revive: give transient-cause deaths one more spaced-out chance.
         revived = q.revive_dead(
-            cooldown_s=cfg.dead_revive_cooldown_s, max_revives=cfg.dead_revive_max
+            cooldown_s=cfg.worker.dead_revive_cooldown_s, max_revives=cfg.worker.dead_revive_max
         )
         if revived:
             log.info("auto-revived %d dead job(s)", revived)
@@ -198,13 +198,13 @@ class Worker(threading.Thread):
         cfg = self.services.config
         cutoffs = self.services.cutoffs
         c = cutoffs.latest()
-        if c is None or c.limit_bytes <= 0 or not cfg.quota_alert_pcts:
+        if c is None or c.limit_bytes <= 0 or not cfg.worker.quota_alert_pcts:
             return
         used = self.services.ledger.totals(
             start=f"{c.cutoff_date}T00:00:00+00:00", end=None
         )["total"]
         pct = (used / c.limit_bytes * 100) if c.limit_bytes else 0
-        crossed = [t for t in sorted(cfg.quota_alert_pcts) if pct >= t]
+        crossed = [t for t in sorted(cfg.worker.quota_alert_pcts) if pct >= t]
         if not crossed:
             return
         level = crossed[-1]

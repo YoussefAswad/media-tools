@@ -66,7 +66,7 @@ def build_test_services(tmp_path: Path, config: OrchestratorConfig | None = None
     db = open_db(cfg.audit.state_dir)
     audit = Audit(db, cfg.audit.state_dir)
     notifier = Notifier(cfg.ntfy)
-    queue = JobQueue(db, max_attempts=cfg.max_attempts)
+    queue = JobQueue(db, max_attempts=cfg.worker.max_attempts)
     return Services(
         config=cfg,
         config_path=tmp_path / "config.yaml",

@@ -25,7 +25,7 @@ class QualityStep:
     silent = False
 
     def applies(self, ctx: JobContext) -> bool:
-        return ctx.services.config.enable_quality_check
+        return True  # being in pipeline.steps is the switch
 
     def run(self, ctx: JobContext) -> StepResult:
         try:

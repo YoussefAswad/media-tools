@@ -29,14 +29,30 @@ from orchestrator.steps.prune import PruneStep
 from orchestrator.steps.quality import QualityStep
 from orchestrator.steps.renumber import RenumberStep
 
+#: config name -> step class. A step exists for the pipeline exactly when it is in here, and a
+#: name outside this map is a config validation error rather than a silently dropped step.
+STEP_TYPES: dict[str, type] = {
+    "ledger": LedgerStep,
+    "quality-check": QualityStep,
+    "prune": PruneStep,
+    "seasonal-shift": RenumberStep,
+    "jellyfin": JellyfinStep,
+}
+
+
+def build_pipeline(names: list[str]) -> list[Step]:
+    """Instantiate the named steps, in the order given. Built fresh per dispatcher so nothing
+    is shared between them."""
+    return [STEP_TYPES[n]() for n in names]
+
 
 def default_pipeline() -> list[Step]:
-    """The standard order. Built fresh per dispatcher so a caller (a test, a future
-    config-driven order) can substitute its own list without mutating shared state."""
-    return [LedgerStep(), QualityStep(), PruneStep(), RenumberStep(), JellyfinStep()]
+    """The standard order, for callers with no config to hand (tests, mostly)."""
+    return build_pipeline(list(STEP_TYPES))
 
 
 __all__ = [
+    "STEP_TYPES",
     "DispatchError",
     "InsufficientSpaceError",
     "JellyfinStep",
@@ -49,5 +65,6 @@ __all__ = [
     "RenumberStep",
     "Step",
     "StepResult",
+    "build_pipeline",
     "default_pipeline",
 ]

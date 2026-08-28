@@ -23,11 +23,9 @@ class LedgerStep:
     silent = True
 
     def applies(self, ctx: JobContext) -> bool:
-        return (
-            ctx.services.config.enable_ledger
-            and ctx.services.qbit is not None
-            and bool(ctx.event.download_id)
-        )
+        # No enable flag: being in pipeline.steps is the switch. What's left is the two things
+        # that make the step possible at all.
+        return ctx.services.qbit is not None and bool(ctx.event.download_id)
 
     def run(self, ctx: JobContext) -> StepResult:
         from orchestrator.util import human_bytes

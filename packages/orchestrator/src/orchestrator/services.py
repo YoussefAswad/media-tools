@@ -90,8 +90,8 @@ class Services:
             new_cfg = load_orchestrator_config(self.config_path)
             self.config = new_cfg
             self.notifier = Notifier(new_cfg.ntfy)
-            self.queue.max_attempts = new_cfg.max_attempts
-            self.queue.backoff_schedule = tuple(new_cfg.retry_backoff_s) or self.queue.backoff_schedule
+            self.queue.max_attempts = new_cfg.worker.max_attempts
+            self.queue.backoff_schedule = tuple(new_cfg.worker.retry_backoff_s) or self.queue.backoff_schedule
             self.qbit = QbitClient.from_config(new_cfg.qbit) if new_cfg.qbit else None
             self.jellyfin = (
                 JellyfinClient.from_config(new_cfg.jellyfin) if new_cfg.jellyfin else None
@@ -111,7 +111,7 @@ def build_services(config_path: Path) -> Services:
     audit = Audit(db, config.audit.state_dir)
     notifier = Notifier(config.ntfy)
     queue = JobQueue(
-        db, max_attempts=config.max_attempts, backoff_schedule=tuple(config.retry_backoff_s)
+        db, max_attempts=config.worker.max_attempts, backoff_schedule=tuple(config.worker.retry_backoff_s)
     )
     queue.requeue_stuck()
     ledger = Ledger(db)
