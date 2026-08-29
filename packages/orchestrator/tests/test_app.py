@@ -717,4 +717,59 @@ def test_wan_summary_reports_the_ledger_share(client) -> None:
     src.collect()
     body = client.get("/ui/wan-summary?range=all").text
     assert "Household WAN" in body
+    # Recording started today, so no complete day exists to compare against yet.
+    assert "Recording since" in body
+
+
+def test_the_ledger_share_appears_once_a_full_wan_day_exists(client) -> None:
+    """Once recording covers a whole day, the share is computed over that day only."""
+    import datetime as _dt
+
+    services, _src = _enable_wan(client)
+    today = _dt.datetime.now(_dt.UTC)
+    yesterday = (today - _dt.timedelta(days=1)).date().isoformat()
+    # Recording began yesterday (partial), so today is the first fully covered day.
+    services.wan.db.execute(
+        "INSERT INTO wan_usage (day, mac, host, kind, rx, tx) VALUES (?,?,?,?,?,?)",
+        (yesterday, "AA:BB", "TV", "wired", 5_000, 0),
+    )
+    services.wan.db.execute(
+        "INSERT INTO wan_usage (day, mac, host, kind, rx, tx) VALUES (?,?,?,?,?,?)",
+        (today.date().isoformat(), "AA:BB", "TV", "wired", 1_000, 0),
+    )
+    services.wan.db.commit()
+    services.ledger.add_manual(
+        name="today-download", kind="movie", downloaded_bytes=500, uploaded_bytes=0,
+        completed_at=today.isoformat(),
+    )
+    body = client.get("/ui/wan-summary?range=all").text
     assert "Tracked as downloads" in body
+    assert "50%" in body  # 500 of today's 1,000, with yesterday's partial day excluded
+
+
+def test_the_ledger_share_is_clamped_to_the_wan_records_own_window(client) -> None:
+    """The ledger reaches back months; the WAN record starts the day the source was switched on.
+    Dividing one by the other over "all time" reported 100% tracked on a two-minute-old record.
+    """
+    import datetime as _dt
+
+    services, src = _enable_wan(client)
+    src.collect()
+    from mediacore.router import DeviceStats
+
+    src.client.devices = lambda: [  # type: ignore[union-attr]
+        DeviceStats("AA:BB", "TV", "wired", 1_000_000, 0, curr_rx=0, curr_tx=0)
+    ]
+    src.collect()
+
+    # A big old download, long before WAN recording began.
+    old = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(days=90)).isoformat()
+    services.ledger.add_manual(
+        name="ancient", kind="movie", downloaded_bytes=50_000_000_000,
+        uploaded_bytes=0, completed_at=old,
+    )
+    body = client.get("/ui/wan-summary?range=all").text
+    # No complete WAN day exists yet, so there is nothing honest to divide: the panel says when
+    # recording started instead of inventing a share.
+    assert "100%" not in body
+    assert "Recording since" in body

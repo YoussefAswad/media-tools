@@ -259,18 +259,41 @@ def ui_wan_summary(
         {"value": human_bytes(wan["uploaded"], iec=iec), "label": "Uploaded", "tone": "skip"},
         {"value": str(wan["devices"]), "label": "Devices seen", "tone": ""},
     ]
-    if wan["total"]:
-        ledger_total = services.ledger.totals(start=lo, end=hi)["total"]
-        share = round(min(ledger_total / wan["total"], 1.0) * 100)
+    # How much of the household's usage the ledger explains. Only computed over days the WAN
+    # record *fully* covers: it begins partway through whatever day the router source was first
+    # switched on, while the ledger already holds that whole day, so including it made the share
+    # read a confident 100% off a record twenty minutes old. The first complete day is the day
+    # after recording began; until one exists there is nothing honest to divide.
+    first = services.wan.first_day()
+    full_from = _day_after(first) if first else None
+    share_lo = max(lo or "", f"{full_from}T00:00:00+00:00") if full_from else None
+    covered = services.wan.totals(start=share_lo, end=hi) if share_lo else None
+    if covered and covered["total"]:
+        ledger_total = services.ledger.totals(start=share_lo, end=hi)["total"]
+        share = round(min(ledger_total / covered["total"], 1.0) * 100)
         tiles.append(
             {
                 "value": f"{share}%",
                 "label": "Tracked as downloads",
                 "tone": "",
                 "title": (
-                    f"{human_bytes(ledger_total, iec=iec)} of the household's "
-                    f"{human_bytes(wan['total'], iec=iec)} is accounted for by the ledger below. "
-                    "The rest is streaming, updates, browsing and other devices."
+                    f"Of {human_bytes(covered['total'], iec=iec)} used since {full_from}, "
+                    f"{human_bytes(ledger_total, iec=iec)} is accounted for by the ledger below. "
+                    "The rest is streaming, updates, browsing and other devices. "
+                    f"Recording began partway through {first}, so that day is excluded."
+                ),
+            }
+        )
+    elif first:
+        tiles.append(
+            {
+                "value": first,
+                "label": "Recording since",
+                "small": True,
+                "tone": "",
+                "title": (
+                    "A download share needs at least one full day of WAN data to compare "
+                    "against; the first partial day would overstate it."
                 ),
             }
         )
@@ -308,6 +331,11 @@ def ui_wan_devices(
             "iec": use_iec(units),
         },
     )
+
+
+def _day_after(day: str) -> str:
+    """The YYYY-MM-DD after ``day`` — the first day WAN recording covers end to end."""
+    return (_dt.date.fromisoformat(day) + _dt.timedelta(days=1)).isoformat()
 
 
 def _wan_live(services: Services) -> bool:

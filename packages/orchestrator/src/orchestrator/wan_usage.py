@@ -220,6 +220,16 @@ class WanUsage:
             "devices": r["devices"],
         }
 
+    def first_day(self) -> str | None:
+        """The earliest day this store has data for, or None when it is empty.
+
+        The ledger reaches back months while this record starts the day the router source was
+        switched on, so anything comparing the two has to clamp to this or it compares a long
+        history against a short one and reports nonsense.
+        """
+        r = self.db.execute("SELECT MIN(day) d FROM wan_usage").fetchone()
+        return r["d"] if r and r["d"] else None
+
     def by_device(
         self, *, start: str | None = None, end: str | None = None
     ) -> list[DeviceUsage]:
