@@ -14,6 +14,7 @@ from orchestrator.library import LibraryIndex
 from orchestrator.metrics import Metrics
 from orchestrator.queue import JobQueue
 from orchestrator.services import Services
+from orchestrator.wan_usage import WanUsage
 
 
 def mk(
@@ -95,6 +96,7 @@ def build_test_services(tmp_path: Path, config: OrchestratorConfig | None = None
         library=LibraryIndex(db),
         metrics=Metrics(db),
         alerts=AlertEngine(db),
+        wan=WanUsage(db),
     )
 
 

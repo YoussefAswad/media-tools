@@ -29,6 +29,7 @@
   </div>
   <button class="ghost" type="button" onclick="var e=document.getElementById('add-entry');e.hidden=!e.hidden">+ Add entry</button>
   <button class="ghost" type="button" onclick="var e=document.getElementById('manage-cutoffs');e.hidden=!e.hidden">Manage cutoffs</button>
+  <div data-src="/ui/wan-pause" data-interval="30000"></div>
 </div>
 
 <section class="card" id="add-entry" hidden>
@@ -62,7 +63,22 @@
 
 <div data-src="/ui/ledger-remaining" data-interval="0" data-unit-aware></div>
 
-<div class="summary" data-src="/ui/ledger-summary" data-interval="0" data-ranged data-unit-aware>Loading…</div>
+<div class="summary" data-src="/ui/wan-summary" data-interval="0" data-ranged data-unit-aware></div>
+
+<section class="card">
+  <div class="card-head">
+    <h2>By device <span class="muted">— household internet use</span></h2>
+    <span class="muted">every device, LAN traffic excluded</span>
+  </div>
+  <div data-src="/ui/wan-devices" data-interval="0" data-ranged data-unit-aware>Loading…</div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Downloads ledger <span class="muted">— what the pipeline imported</span></h2>
+  </div>
+  <div class="summary" data-src="/ui/ledger-summary" data-interval="0" data-ranged data-unit-aware>Loading…</div>
+</section>
 
 <section class="card">
   <h2>Bandwidth by day</h2>

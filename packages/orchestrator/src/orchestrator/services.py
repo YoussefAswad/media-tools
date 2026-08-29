@@ -25,10 +25,17 @@ from orchestrator.config import OrchestratorConfig, load_orchestrator_config
 from orchestrator.ledger import Cutoffs, Ledger
 from orchestrator.library import LibraryIndex
 from orchestrator.metrics import Metrics
-from orchestrator.monitor import MISSING, MonitorSource, SourceSnapshot, build_sources
+from orchestrator.monitor import (
+    MISSING,
+    MonitorSource,
+    SourceSnapshot,
+    WanDeps,
+    build_sources,
+)
 from orchestrator.notifications import Notifications
 from orchestrator.queue import JobQueue
 from orchestrator.titles import TitleIndex
+from orchestrator.wan_usage import WanUsage
 
 
 @dataclass
@@ -43,6 +50,8 @@ class Services:
     cutoffs: Cutoffs
     metrics: Metrics
     alerts: AlertEngine
+    #: per-device WAN usage, built by differencing the router's cumulative counters.
+    wan: WanUsage
     #: index of what the pipeline would do to files already on disk (the Library tab).
     library: LibraryIndex
     #: path -> title/original-language, for the code paths that have no webhook payload.
@@ -61,6 +70,10 @@ class Services:
     def __post_init__(self) -> None:
         self.titles = TitleIndex(self)
         self.notify = Notifications(self)
+
+    def _wan_deps(self) -> WanDeps:
+        """The WAN source's two non-config dependencies: where to write, and the pause flag."""
+        return WanDeps(usage=self.wan, get_meta=self.queue.get_meta)
 
     def snapshot(self, name: str) -> SourceSnapshot:
         """The named source's last collection, or a never-collected placeholder."""
@@ -103,7 +116,7 @@ class Services:
             # Rebuild every source against the new config, and drop the snapshot of any source
             # that is now switched off — keeping it would render stale numbers as if they were
             # live, which is exactly what the ok flag exists to prevent.
-            self.sources = build_sources(new_cfg.monitoring)
+            self.sources = build_sources(new_cfg.monitoring, wan=self._wan_deps())
             for src in self.sources:
                 if not src.enabled:
                     self.snapshots.pop(src.name, None)
@@ -123,9 +136,10 @@ def build_services(config_path: Path) -> Services:
     library = LibraryIndex(db)
     metrics = Metrics(db)
     alerts = AlertEngine(db)
+    wan = WanUsage(db)
     qbit = QbitClient.from_config(config.qbit) if config.qbit else None
     jellyfin = JellyfinClient.from_config(config.jellyfin) if config.jellyfin else None
-    return Services(
+    services = Services(
         config=config,
         config_path=config_path,
         db=db,
@@ -137,7 +151,9 @@ def build_services(config_path: Path) -> Services:
         metrics=metrics,
         library=library,
         alerts=alerts,
+        wan=wan,
         qbit=qbit,
         jellyfin=jellyfin,
-        sources=build_sources(config.monitoring),
     )
+    services.sources = build_sources(config.monitoring, wan=services._wan_deps())
+    return services

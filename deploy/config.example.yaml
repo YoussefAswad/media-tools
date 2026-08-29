@@ -190,6 +190,34 @@ monitoring:
     enabled: false             # set true if dashdot is running and reachable
     url: http://dash:3001      # dashdot's internal address (service name : container port)
     interval_s: 15             # CPU/RAM/temps/net move fast; cheap (a few small HTTP GETs)
+  # Per-device WAN usage, read from the router's own statistics table — the only source that
+  # knows how much INTERNET each device in the house used. The host NIC counter is no substitute:
+  # measured on this network it is ~99.96% LAN traffic (Samba/Jellyfin), and the router's UPnP
+  # byte counters are fabricated. Feeds the Bandwidth tab's "By device" panel.
+  #
+  # NOTE: the router accepts a SINGLE admin session, so polling it logs you out of the router's
+  # own web UI and vice versa. The Bandwidth tab has a "Pause 15 min" button that hands the
+  # session back; it is a deadline, not a toggle, so it always lifts itself.
+  #
+  # Currently implemented for TP-Link "GDPR encrypt" firmware (e.g. Archer VR600). The statistics
+  # feature must be on; manage_settings turns it back on if a firmware update clears it.
+  router:
+    enabled: false             # set true once the password is set
+    url: http://192.168.1.1
+    username: admin
+    password: ${ROUTER_PASSWORD}
+    interval_s: 60             # one small HTTP round trip per poll
+    # The fastest the WAN link could conceivably run, used to reject impossible counter jumps
+    # (the router emits a garbage record right after a settings change — a measured 27 GB in one
+    # minute). Generous is fine; this is a sanity bound, not a rate limit. Startup refuses a
+    # combination where a 32-bit counter could wrap between two polls.
+    link_max_bytes_s: 25000000
+    manage_settings: true      # re-enable the router's statistics feature if it gets turned off
+    # MAC -> friendly name. Modern phones randomise their MAC, so one handset can show up as
+    # several short-lived devices; naming the ones you care about keeps the table readable.
+    device_aliases: {}
+    # device_aliases:
+    #   "AA:BB:CC:DD:EE:FF": Youssef's phone
   cpu_temp_alert:              # long sustain ignores transient encode/prune temperature spikes
     warn: 75                   # °C
     crit: 85

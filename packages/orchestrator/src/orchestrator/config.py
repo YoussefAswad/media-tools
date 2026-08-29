@@ -93,6 +93,53 @@ class SmartSource(BaseModel):
     interval_s: int = 900
 
 
+class RouterSource(BaseModel):
+    """Per-device WAN usage read from the router's own statistics table.
+
+    This is the only source that knows how much *internet* each device in the house used. The
+    obvious alternatives were measured and rejected: the host NIC counter is ~99.96% LAN traffic
+    on this network, and the router's UPnP byte counters are fabricated. Disabled by default —
+    enabling it needs the router password and costs a permanent admin session (see below).
+
+    **The router allows one admin session.** Polling evicts anyone logged into the router's own
+    web UI and vice versa, which is what the Bandwidth tab's pause control is for.
+    """
+
+    enabled: bool = False
+    url: str = "http://192.168.1.1"
+    username: str = "admin"
+    password: str = ""
+    #: how often the per-device counters are polled (seconds). One small HTTP round trip.
+    interval_s: int = 60
+    #: the fastest the WAN link could conceivably run, used to reject impossible counter jumps
+    #: (the router emits a garbage record right after a settings change — a measured 27 GB in one
+    #: minute). Generous is fine; this is a sanity bound, not a rate limit.
+    link_max_bytes_s: int = 25_000_000
+    #: re-enable the router's statistics feature at startup if a firmware update or factory reset
+    #: turned it off. Reads first and writes only on a difference — these settings live in the
+    #: router's flash.
+    manage_settings: bool = True
+    #: MAC -> friendly name, for devices whose reported hostname is unhelpful or which rotate
+    #: their MAC (modern phones randomise, so one handset can appear as several devices).
+    device_aliases: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _counters_cannot_wrap_between_polls(self) -> RouterSource:
+        """The delta engine reads a counter going backwards as a reset, never as a 32-bit wrap.
+
+        That is only safe while a wrap (4 GiB) cannot happen inside one poll interval, so the
+        assumption is asserted here rather than left as a comment for someone to violate later by
+        raising ``interval_s``.
+        """
+        if self.enabled and self.interval_s * self.link_max_bytes_s >= 4 * 1024**3:
+            raise ValueError(
+                f"router.interval_s ({self.interval_s}s) is too long for "
+                f"link_max_bytes_s ({self.link_max_bytes_s} B/s): a 32-bit counter could wrap "
+                "between polls and be miscounted as a reset. Lower interval_s."
+            )
+        return self
+
+
 class MonitoringConfig(BaseModel):
     """System-monitoring feature: watched disks + alert timing. Phase 1 covers disk usage; later
     phases add container/system/SMART sources onto the same collect→store→alert→UI pipeline."""
@@ -120,6 +167,8 @@ class MonitoringConfig(BaseModel):
     cpu_temp_alert: AlertRule = AlertRule(warn=75, crit=85, sustain_s=300, clear_s=120)
     #: sustained high memory usage (%).
     mem_alert: AlertRule = AlertRule(warn=90, crit=97, sustain_s=300, clear_s=120)
+    #: per-device WAN usage via the router's statistics table (the Bandwidth tab).
+    router: RouterSource = RouterSource()
     #: drive SMART health + temperature via Scrutiny.
     smart: SmartSource = SmartSource()
     #: SMART health failure → crit immediately (no sustain); re-notify at most daily.

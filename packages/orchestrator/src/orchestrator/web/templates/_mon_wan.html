@@ -1,0 +1,50 @@
+{% from "_source_state.html" import panel %}
+{% set off %}Per-device WAN usage is off. Enable <code>monitoring.router</code>.{% endset %}
+{% set down %}Router unreachable — check <code>monitoring.router.url</code> and the password.{% endset %}
+{#
+  "Paused" is deliberately not routed through the unreachable branch: the router is presumably
+  fine, and saying it is unreachable would send someone debugging a network that is not broken.
+#}
+{% call panel(enabled, status, off, down, empty=not rows and not paused_until,
+              empty_msg="Collecting — the first poll only sets a baseline.") %}
+  {% if paused_until %}
+    <div class="empty muted">
+      Polling paused for {{ minutes_left }} more minutes so the router's admin session is free.
+    </div>
+  {% else %}
+  <div class="mon-list">
+    <div class="summary">
+      <div class="tile ok">
+        <div class="tile-value">{{ rate_rx|bytes }}/s</div>
+        <div class="tile-label">Down now</div>
+      </div>
+      <div class="tile skip">
+        <div class="tile-value">{{ rate_tx|bytes }}/s</div>
+        <div class="tile-label">Up now</div>
+      </div>
+      <div class="tile">
+        <div class="tile-value">{{ rows|length }}</div>
+        <div class="tile-label">Devices</div>
+      </div>
+      <div class="tile">
+        <div class="tile-value small">{{ today|bytes }}</div>
+        <div class="tile-label">Household today</div>
+      </div>
+    </div>
+    <table class="actions">
+      <thead><tr><th>Device</th><th>Link</th><th>Down now</th><th>Up now</th></tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <td class="path" title="{{ r.mac }}">{{ r.host }}</td>
+          <td class="nowrap muted">{{ r.kind or "—" }}</td>
+          <td class="nowrap">{{ r.curr_rx|bytes }}/s</td>
+          <td class="nowrap">{{ r.curr_tx|bytes }}/s</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% if last_poll %}<p class="muted">Last poll {{ last_poll }}Z</p>{% endif %}
+  </div>
+  {% endif %}
+{% endcall %}

@@ -1,0 +1,25 @@
+{#
+  Router polling status. The router accepts a single admin session, so polling it logs you out of
+  its own web UI and vice versa — pausing hands the session back for a while. The pause is a
+  deadline, not a toggle, so it always lifts itself.
+#}
+<div class="worker-status">
+  {% if paused_until %}
+    <span class="badge warn">⏸ Router polling paused</span>
+    <span class="muted">resumes in {{ minutes_left }} min</span>
+    <form method="post" action="/wan/resume">
+      <button class="ghost">Resume now</button>
+    </form>
+  {% else %}
+    {% if unreachable %}
+      <span class="badge fail">⚠ Router unreachable</span>
+    {% else %}
+      <span class="badge ok">▶ Polling router</span>
+    {% endif %}
+    <form method="post" action="/wan/pause"
+          title="Frees the router's single admin session so you can log into it yourself">
+      <input type="hidden" name="minutes" value="{{ default_minutes }}">
+      <button class="ghost">Pause {{ default_minutes }} min</button>
+    </form>
+  {% endif %}
+</div>

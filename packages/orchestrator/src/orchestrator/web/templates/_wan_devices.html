@@ -1,0 +1,35 @@
+{% if not enabled %}
+  <p class="muted empty">
+    Per-device usage is off. Enable <code>monitoring.router</code> and set the router password.
+  </p>
+{% elif not rows %}
+  <p class="muted empty">Nothing recorded in this range yet.</p>
+{% else %}
+<table class="actions ledger">
+  <thead><tr>
+    <th>Device</th><th>Link</th><th>Down</th><th>Up</th><th>Total</th><th>Share</th><th>Now</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td class="path" title="{{ r.mac }}">{{ r.host }}</td>
+      <td class="nowrap">
+        {% if r.kind == "wired" %}<span class="badge type">🔌 Wired</span>
+        {% elif r.kind %}<span class="badge type">📶 {{ r.kind }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="nowrap">{{ r.rx|bytes }}</td>
+      <td class="nowrap">{{ r.tx|bytes }}</td>
+      <td class="nowrap"><strong>{{ r.total|bytes }}</strong></td>
+      <td class="nowrap">
+        <div class="remaining-bar" title="{{ r.share|round|int }}% of household usage">
+          <div class="remaining-fill" style="width: {{ r.share }}%"></div>
+        </div>
+      </td>
+      {# The router's current sampling interval, so this is a live rate rather than a stored one. #}
+      <td class="muted nowrap">{% if r.rate %}{{ r.rate|bytes }}/s{% else %}—{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

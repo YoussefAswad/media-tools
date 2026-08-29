@@ -1,11 +1,14 @@
-"""The Monitoring tab: disks, alerts, host system, drive SMART and containers."""
+"""The Monitoring tab: disks, alerts, host system, drive SMART, containers and the router."""
 
 from __future__ import annotations
+
+import datetime as _dt
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
 from orchestrator.monitor import read_disk
+from orchestrator.monitor.wan import paused_until
 from orchestrator.queue import PROCESSING, QUEUED
 from orchestrator.util import human_bytes, human_uptime, humanize_days
 from orchestrator.web.deps import page, partial, require_ui_auth, services_of, use_iec
@@ -213,3 +216,41 @@ def ui_mon_containers_summary(request: Request) -> HTMLResponse:
         "problems": problems,
     }
     return partial(request, "_mon_containers_summary.html", ctx)
+
+
+@router.get("/ui/mon-wan", response_class=HTMLResponse)
+def ui_mon_wan(request: Request, units: str | None = None) -> HTMLResponse:
+    """Live per-device WAN rates. Reads the worker's snapshot, never the router — this partial
+    polls every 15s and the router only tolerates one session (see pitfall 11's regression)."""
+    services = services_of(request)
+    snap = services.snapshot("wan")
+    data = snap.data
+    today = _dt.datetime.now(_dt.UTC).date().isoformat()
+    # Read the durable flag, not the snapshot's copy of it: the snapshot only learns about a pause
+    # on the next collection, so between pressing Pause and the next poll this panel would keep
+    # rendering the last rates as if they were live.
+    until = paused_until(services.queue.get_meta) or (data.paused_until if data else None)
+    return partial(
+        request,
+        "_mon_wan.html",
+        {
+            "enabled": services.source_enabled("wan"),
+            "status": snap.ok,
+            "rows": sorted(
+                data.devices if data else [],
+                key=lambda d: d.curr_rx + d.curr_tx,
+                reverse=True,
+            ),
+            "rate_rx": data.rate_rx if data else 0,
+            "rate_tx": data.rate_tx if data else 0,
+            "today": services.wan.totals(start=today, end=today)["total"],
+            "last_poll": (data.last_poll or "")[11:19] if data and data.last_poll else None,
+            "paused_until": until,
+            "minutes_left": (
+                max(1, round((until - _dt.datetime.now(_dt.UTC)).total_seconds() / 60))
+                if until
+                else 0
+            ),
+            "iec": use_iec(units),
+        },
+    )

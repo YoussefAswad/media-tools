@@ -1,4 +1,4 @@
-"""Monitored sources: disks, containers, host system, drive SMART.
+"""Monitored sources: disks, containers, host system, drive SMART, per-device WAN usage.
 
 Each source declares its own name, enabled-ness and interval, and knows how to collect itself.
 The worker loops over :func:`build_sources` with one generic interval gate; the web routes read
@@ -17,12 +17,25 @@ from orchestrator.monitor.disk import DiskMonitor, DiskReport, collect_disks, re
 from orchestrator.monitor.docker import ContainerMonitor, collect_containers
 from orchestrator.monitor.smart import SmartMonitor, collect_smart
 from orchestrator.monitor.system import SystemMonitor, collect_system
+from orchestrator.monitor.wan import WanDeps, WanMonitor, WanSnapshot, paused_until
 
 
-def build_sources(mon: MonitoringConfig) -> list[MonitorSource]:
+def build_sources(
+    mon: MonitoringConfig, *, wan: WanDeps | None = None
+) -> list[MonitorSource]:
     """Every source, enabled or not. A disabled one is kept in the list so the UI can tell
-    "switched off" apart from "never collected" without a second lookup."""
-    return [DiskMonitor(mon), ContainerMonitor(mon), SystemMonitor(mon), SmartMonitor(mon)]
+    "switched off" apart from "never collected" without a second lookup.
+
+    ``wan`` carries the one thing a source cannot get from config: the WAN source both writes a
+    durable record and reads a durable pause flag. Omitting it leaves that source switched off.
+    """
+    return [
+        DiskMonitor(mon),
+        ContainerMonitor(mon),
+        SystemMonitor(mon),
+        SmartMonitor(mon),
+        WanMonitor(mon, wan),
+    ]
 
 
 __all__ = [
@@ -35,11 +48,15 @@ __all__ = [
     "SmartMonitor",
     "SourceSnapshot",
     "SystemMonitor",
+    "WanDeps",
+    "WanMonitor",
+    "WanSnapshot",
     "build_sources",
     "collect_containers",
     "collect_disks",
     "collect_smart",
     "collect_system",
+    "paused_until",
     "read_disk",
     "scalar_severity",
 ]

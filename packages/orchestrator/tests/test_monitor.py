@@ -211,21 +211,36 @@ def _mon(**kw):
     return MonitoringConfig(**kw)
 
 
+def _wan_deps():
+    """The WAN source's two non-config dependencies, backed by an in-memory db."""
+    import tempfile
+    from pathlib import Path
+
+    from mediacore.db import open_db
+    from orchestrator.monitor import WanDeps
+    from orchestrator.wan_usage import WanUsage
+
+    db = open_db(Path(tempfile.mkdtemp()))
+    return WanDeps(usage=WanUsage(db), get_meta=lambda _key: None)
+
+
 def test_build_sources_lists_every_source_enabled_or_not() -> None:
     """A disabled source stays in the list so the UI can tell "switched off" from "never
     collected" without a second lookup."""
     from orchestrator.monitor import build_sources
 
     names = [s.name for s in build_sources(_mon())]
-    assert names == ["disk", "docker", "system", "smart"]
+    assert names == ["disk", "docker", "system", "smart", "wan"]
 
 
 def test_only_configured_sources_report_enabled() -> None:
-    from orchestrator.config import DockerSource, SmartSource, SystemSource
+    from orchestrator.config import DockerSource, RouterSource, SmartSource, SystemSource
     from orchestrator.monitor import build_sources
 
     off = {s.name: s.enabled for s in build_sources(_mon())}
-    assert off == {"disk": True, "docker": False, "system": False, "smart": False}
+    assert off == {
+        "disk": True, "docker": False, "system": False, "smart": False, "wan": False
+    }
 
     on = {
         s.name: s.enabled
@@ -234,10 +249,31 @@ def test_only_configured_sources_report_enabled() -> None:
                 docker=DockerSource(enabled=True),
                 system=SystemSource(enabled=True),
                 smart=SmartSource(enabled=True),
-            )
+                router=RouterSource(enabled=True, password="pw"),
+            ),
+            wan=_wan_deps(),
         )
     }
     assert all(on.values())
+
+
+def test_the_wan_source_stays_off_without_its_dependencies() -> None:
+    """It writes a durable record and reads a durable pause flag; with neither wired up there is
+    nowhere to put a poll, so it must not claim to be enabled."""
+    from orchestrator.config import RouterSource
+    from orchestrator.monitor import build_sources
+
+    mon = _mon(router=RouterSource(enabled=True, password="pw"))
+    assert {s.name: s.enabled for s in build_sources(mon)}["wan"] is False
+
+
+def test_the_wan_source_stays_off_without_a_password() -> None:
+    """An enabled-but-unconfigured router would otherwise log an auth failure every interval."""
+    from orchestrator.config import RouterSource
+    from orchestrator.monitor import build_sources
+
+    mon = _mon(router=RouterSource(enabled=True))
+    assert {s.name: s.enabled for s in build_sources(mon, wan=_wan_deps())}["wan"] is False
 
 
 def test_each_source_reports_its_own_interval() -> None:

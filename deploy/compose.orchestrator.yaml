@@ -15,6 +15,10 @@ services:
       - SONARR_API_KEY=${SONARR_API_KEY}
       - NTFY_MEDIAQC_USER=${NTFY_MEDIAQC_USER}
       - NTFY_MEDIAQC_PASSWORD=${NTFY_MEDIAQC_PASSWORD}
+      # Router admin password, for the Bandwidth tab's per-device WAN usage (monitoring.router).
+      # The router's API also exposes its storage-service credentials, so treat this as a
+      # higher-value secret than it looks.
+      - ROUTER_PASSWORD=${ROUTER_PASSWORD}
       # - ORCH_UI_USER=${ORCH_UI_USER}
       # - ORCH_UI_PASSWORD=${ORCH_UI_PASSWORD}
     volumes:

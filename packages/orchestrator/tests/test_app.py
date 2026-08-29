@@ -641,3 +641,80 @@ def test_the_config_page_offers_a_generated_settings_reference(client) -> None:
     assert "pipeline" in body and "worker" in body
     assert "max_attempts" in body and "steps" in body
     assert "dead-lettered" in body  # the #: comment became the field's note
+
+
+# --- WAN panels ------------------------------------------------------------------------------
+
+
+def _enable_wan(client):
+    """Switch the router source on for a test, with a stub client so nothing dials out."""
+    from mediacore.router import DeviceStats
+    from orchestrator.monitor import build_sources
+
+    services = client.app.state.services
+    services.config.monitoring.router.enabled = True
+    services.config.monitoring.router.password = "pw"
+    services.config.monitoring.router.manage_settings = False
+    services.sources = build_sources(services.config.monitoring, wan=services._wan_deps())
+    src = services.source("wan")
+    src.client.devices = lambda: [  # type: ignore[union-attr]
+        DeviceStats("AA:BB", "TV", "wired", 1000, 100, curr_rx=4096, curr_tx=512),
+    ]
+    return services, src
+
+
+def test_a_paused_panel_never_renders_stale_rates_as_live(client) -> None:
+    """Regression: the Monitoring panel read the pause flag out of the *snapshot*, which only
+    learns about a pause on the next collection — so between pressing Pause and the next poll it
+    kept rendering the last rates as though they were live. Exactly the failure the ok flag and
+    the source-state preamble exist to prevent."""
+    services, src = _enable_wan(client)
+    from orchestrator.monitor import SourceSnapshot
+
+    src.collect()  # cold start; populates a snapshot with real-looking rates
+    _s, _e, data = src.collect()
+    services.snapshots["wan"] = SourceSnapshot(data=data, ok=True)
+    assert "Down now" in client.get("/ui/mon-wan").text
+
+    client.post("/wan/pause", data={"minutes": 15}, follow_redirects=False)
+    body = client.get("/ui/mon-wan").text
+    assert "Polling paused" in body
+    assert "Down now" not in body  # the stale rate must be gone, not merely relabelled
+
+
+def test_pause_minutes_are_clamped(client) -> None:
+    """A typo must not blind the household's usage for a week."""
+    from orchestrator.monitor.wan import PAUSE_KEY, paused_until
+
+    services, _src = _enable_wan(client)
+    client.post("/wan/pause", data={"minutes": 99999}, follow_redirects=False)
+    until = paused_until(services.queue.get_meta)
+    assert until is not None
+    import datetime as _dt
+
+    remaining = (until - _dt.datetime.now(_dt.UTC)).total_seconds()
+    assert remaining <= 240 * 60 + 5
+    client.post("/wan/resume", follow_redirects=False)
+    assert services.queue.get_meta(PAUSE_KEY) is None
+
+
+def test_wan_panels_are_absent_when_the_source_is_off(client) -> None:
+    """No half-rendered panel on a stack that has no router configured."""
+    assert client.get("/ui/wan-summary").text.strip() == ""
+    assert client.get("/ui/wan-pause").text.strip() == ""
+    assert "is off" in client.get("/ui/wan-devices").text
+
+
+def test_wan_summary_reports_the_ledger_share(client) -> None:
+    """The gap between household WAN and the download ledger is the point of the panel."""
+    _services, src = _enable_wan(client)
+    src.collect()
+    from mediacore.router import DeviceStats
+
+    src.client.devices = lambda: [  # type: ignore[union-attr]
+        DeviceStats("AA:BB", "TV", "wired", 3000, 100, curr_rx=0, curr_tx=0)
+    ]
+    src.collect()
+    body = client.get("/ui/wan-summary?range=all").text
+    assert "Household WAN" in body
+    assert "Tracked as downloads" in body

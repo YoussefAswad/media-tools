@@ -1,11 +1,19 @@
-"""The bandwidth ledger: entries, quota cutoffs, totals and the daily chart."""
+"""The Bandwidth tab: the download ledger, quota cutoffs, and household per-device WAN usage.
+
+Two measurements live here on purpose. The ledger records what qBittorrent consumed for a
+download; the WAN panels record what every device in the house actually pulled from the internet.
+The ledger is a subset, so the tab shows both rather than letting one stand in for the other.
+"""
 
 from __future__ import annotations
+
+import datetime as _dt
 
 from fastapi import APIRouter, Depends, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from orchestrator.ledger import MANUAL, QBITTORRENT
+from orchestrator.monitor.wan import PAUSE_KEY, paused_until
 from orchestrator.services import Services
 from orchestrator.util import _DATE_RE, RANGES, human_bytes, parse_bytes, parse_range, range_bounds
 from orchestrator.web.deps import KINDS, page, partial, require_ui_auth, services_of, use_iec
@@ -215,4 +223,137 @@ def downloads_edit(
 @router.post("/downloads/{row_id}/delete")
 def downloads_delete(request: Request, row_id: int) -> Response:
     services_of(request).ledger.delete(row_id)
+    return RedirectResponse("/downloads", status_code=303)
+
+
+# --- WAN usage (per-device, from the router) ------------------------------------------------
+
+
+def _wan_bounds(
+    services: Services, range: str | None, start: str | None, end: str | None
+) -> tuple[str | None, str | None]:
+    """The same window the ledger panels use, so the two sit on one axis and compare honestly."""
+    return _ledger_bounds(services, range, start, end)
+
+
+@router.get("/ui/wan-summary", response_class=HTMLResponse)
+def ui_wan_summary(
+    request: Request, range: str | None = None, start: str | None = None,
+    end: str | None = None, units: str | None = None,
+) -> HTMLResponse:
+    """Household WAN totals for the window, with the ledger's share of them.
+
+    The ledger counts torrent traffic on one host; this counts every device's internet use. The
+    gap between them is the point of the panel, so both are shown rather than one replacing the
+    other.
+    """
+    services = services_of(request)
+    if not services.source_enabled("wan"):
+        return HTMLResponse("")
+    lo, hi = _wan_bounds(services, range, start, end)
+    wan = services.wan.totals(start=lo, end=hi)
+    iec = use_iec(units)
+    tiles: list[dict] = [
+        {"value": human_bytes(wan["total"], iec=iec), "label": "Household WAN", "tone": "ok"},
+        {"value": human_bytes(wan["downloaded"], iec=iec), "label": "Downloaded", "tone": "queued"},
+        {"value": human_bytes(wan["uploaded"], iec=iec), "label": "Uploaded", "tone": "skip"},
+        {"value": str(wan["devices"]), "label": "Devices seen", "tone": ""},
+    ]
+    if wan["total"]:
+        ledger_total = services.ledger.totals(start=lo, end=hi)["total"]
+        share = round(min(ledger_total / wan["total"], 1.0) * 100)
+        tiles.append(
+            {
+                "value": f"{share}%",
+                "label": "Tracked as downloads",
+                "tone": "",
+                "title": (
+                    f"{human_bytes(ledger_total, iec=iec)} of the household's "
+                    f"{human_bytes(wan['total'], iec=iec)} is accounted for by the ledger below. "
+                    "The rest is streaming, updates, browsing and other devices."
+                ),
+            }
+        )
+    return partial(request, "_summary.html", {"tiles": tiles, "iec": iec})
+
+
+@router.get("/ui/wan-devices", response_class=HTMLResponse)
+def ui_wan_devices(
+    request: Request, range: str | None = None, start: str | None = None,
+    end: str | None = None, units: str | None = None,
+) -> HTMLResponse:
+    services = services_of(request)
+    lo, hi = _wan_bounds(services, range, start, end)
+    rows = services.wan.by_device(start=lo, end=hi)
+    total = sum(r.total for r in rows)
+    live = {d.mac: d for d in services.snapshot("wan").data.devices} if _wan_live(services) else {}
+    return partial(
+        request,
+        "_wan_devices.html",
+        {
+            "rows": [
+                {
+                    "host": r.host,
+                    "mac": r.mac,
+                    "kind": r.kind,
+                    "rx": r.rx,
+                    "tx": r.tx,
+                    "total": r.total,
+                    "share": (r.total / total * 100) if total else 0,
+                    "rate": (live[r.mac].curr_rx + live[r.mac].curr_tx) if r.mac in live else None,
+                }
+                for r in rows
+            ],
+            "enabled": services.source_enabled("wan"),
+            "iec": use_iec(units),
+        },
+    )
+
+
+def _wan_live(services: Services) -> bool:
+    snap = services.snapshot("wan")
+    return bool(snap.ok and snap.data is not None and not snap.data.paused)
+
+
+@router.get("/ui/wan-pause", response_class=HTMLResponse)
+def ui_wan_pause(request: Request) -> HTMLResponse:
+    """The polling pause control. Only rendered when the source is configured at all."""
+    services = services_of(request)
+    if not services.source_enabled("wan"):
+        return HTMLResponse("")
+    until = paused_until(services.queue.get_meta)
+    snap = services.snapshot("wan")
+    return partial(
+        request,
+        "_wan_pause.html",
+        {
+            "paused_until": until,
+            "minutes_left": (
+                max(1, round((until - _dt.datetime.now(_dt.UTC)).total_seconds() / 60))
+                if until
+                else 0
+            ),
+            "unreachable": snap.ok is False,
+            "default_minutes": 15,
+        },
+    )
+
+
+@router.post("/wan/pause")
+def wan_pause(request: Request, minutes: int = Form(15)) -> Response:
+    """Stop polling the router for a while.
+
+    Stored as a deadline rather than a flag so it lifts itself: the router accepts one admin
+    session, so this exists to hand it back while you are in the router's own UI — and a pause
+    left on by accident would quietly stop recording the household's usage.
+    """
+    minutes = max(1, min(int(minutes or 15), 240))
+    until = _dt.datetime.now(_dt.UTC) + _dt.timedelta(minutes=minutes)
+    services_of(request).queue.set_meta(PAUSE_KEY, until.isoformat(timespec="seconds"))
+    return RedirectResponse("/downloads", status_code=303)
+
+
+@router.post("/wan/resume")
+def wan_resume(request: Request) -> Response:
+    services_of(request).queue.set_meta(PAUSE_KEY, None)
     return RedirectResponse("/downloads", status_code=303)
