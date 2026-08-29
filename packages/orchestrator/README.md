@@ -1,18 +1,19 @@
 # orchestrator
 
 The product: a FastAPI webhook service, a durable SQLite job queue + worker, a per-file dispatch
-pipeline, a back-catalogue library index, a bandwidth ledger, host/container/SMART monitoring
-with a debouncing alert engine, ntfy status, and a server-rendered web UI.
+pipeline, a back-catalogue library index, a bandwidth ledger, per-device household WAN usage,
+host/container/SMART monitoring with a debouncing alert engine, ntfy status, and a
+server-rendered web UI.
 
 Composes `mkvprune` (as a subprocess) and `mediacore` (as a library).
 
 ## Layout
 
 ```
-core            queue, ledger, metrics, alerts, services, runner, titles
+core            queue, ledger, wan_usage, metrics, alerts, services, runner, titles
 steps/          the per-file pipeline, one class per step   (see CLAUDE.md)
 library/        index / estimate / scan / queued            — the Library tab's data
-monitor/        disk / docker / system / smart              — one class per monitored source
+monitor/        disk / docker / system / smart / wan        — one class per monitored source
 web/
   deps.py       template env, services accessor, UI auth, page()/partial()
   presenters.py domain objects -> template shapes (tones, human strings, row dicts)

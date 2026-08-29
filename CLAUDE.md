@@ -35,8 +35,9 @@ packages/
                      arr/       ARR client + webhook event parsing + language table
                      policy/    ffprobe-based rules + prune decision (builds mkvprune argv)
                      renumber/  SxxExx planner/executor for seasonal <-> absolute shifts
-                     ntfy, qbit, jellyfin, dashdot, docker_status, scrutiny clients
-  orchestrator/    FastAPI app, job queue+worker, dispatch pipeline, library index, ledger, web UI
+                     ntfy, qbit, jellyfin, dashdot, docker_status, scrutiny, router clients
+  orchestrator/    FastAPI app, job queue+worker, dispatch pipeline, library index, ledger,
+                   per-device WAN usage, web UI
 deploy/            Dockerfile, compose fragment, config.example.yaml, README
 ```
 
@@ -461,6 +462,57 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
       (`re-run Bleach - S01E202.mkv ? failed`). `notify._TRANSLIT` maps the punctuation that
       actually occurs before the never-raise fallback handles CJK/emoji. Prefer ASCII `-` in new
       titles anyway.
+
+23. **Per-device WAN usage comes from the router, and every other source of that number on this
+    host is wrong.** The Bandwidth tab answers "how much internet did the household use, and
+    which device used it". Three candidate sources were measured before anything was built, and
+    two of them lie:
+    - **The host NIC counter is not a WAN proxy.** Over a 3-minute window `enp3s0` moved
+      **7.26 GB while the WAN moved ~2.6 MB — 99.96% of it was LAN** (Samba/Jellyfin serving the
+      house). The `net.up`/`net.down` samples the dashdot source already stores must never be
+      wired to a quota.
+    - **The router's UPnP `WANCommonInterfaceConfig` counters are fabricated.** A 50 MB download
+      moved them 1.59 MB; they tick at a steady ~7 KB/s regardless of real traffic. Its
+      `RECORD_ENTRY` is equally wrong with `RECORD_CFG.allDevices=0` (753 KB during a 60 MB
+      download) and correct with it set to 1 — same box, same API, one field apart.
+    - **`STAT_ENTRY` (gated by `STAT_CFG.enable`) is the one that works.** A 60 MB download was
+      counted as 63,238,079 B against 62,906,209 B on the host NIC — **0.5%**. Reachable from the
+      container over the bridge, so no `CAP_NET_ADMIN`, no privileged sidecar, no host changes.
+    **LAN really is excluded, wired and wireless alike** — this was measured, not assumed, because
+    wired↔wireless traffic crosses the router's bridge and wired↔wired does not:
+    a Jellyfin stream pushed **437,701,354 B** off the server's NIC in 180 s while the router
+    recorded **167 KB** for the receiving TV (0.04%), and a 326.7 MiB episode downloaded to a
+    phone over wifi left that phone's whole-day total at 8.93 MB of its own background internet.
+    Four things bite when extending this:
+    - **The router allows exactly ONE admin session.** `USER_CFG` is unsupported on this firmware
+      and a second login *silently* invalidates the first — the evicted session then answers
+      HTTP 500, which is why `RouterClient.cgi` re-authenticates once on a 500 and no more. It
+      also means polling logs *you* out of the router's own web UI and vice versa. That is what
+      the Bandwidth tab's pause control is for, and why it stores a **deadline, not a flag**: a
+      forgotten pause would quietly stop recording the household's usage with nothing visibly
+      stuck to remind you.
+    - **Counters are cumulative and reset without warning, so the delta engine's rules are
+      load-bearing.** A cold start (empty `wan_cursor`) baselines and counts **nothing** —
+      counting the current values would credit every device's entire accumulated history to day
+      one. A counter going *backwards* is a reset, never a 32-bit wrap: a wrap needs 4.29 GB,
+      which cannot happen inside one poll interval, and `RouterSource` asserts that at startup
+      rather than leaving it as a comment for someone to violate by raising `interval_s`. A delta
+      larger than the link could physically have carried is dropped and re-baselined, because the
+      router emits exactly that after a settings change — **a measured 27 GB in one minute**.
+    - **Settings writes land in the router's flash.** `ensure_stats_enabled` reads first and
+      writes only on a difference, once per process. Never write on a schedule.
+    - **Two datasets with different start dates cannot be divided.** The "Tracked as downloads"
+      tile compares the ledger against household WAN. The ledger holds months; the WAN record
+      begins *partway through* the day the source was switched on. Clamping the ledger to the WAN
+      record's first **day** was not enough — it still read a confident "100% tracked" in
+      production off a twenty-minute-old record, with the hover text admitting "369.49 MB of the
+      household's 47.58 MB". The share is now computed only from the first day WAN data covers
+      end to end, and until such a day exists the tile says when recording began instead of
+      inventing a number. **A `min(x, 1.0)` clamp does not make a ratio meaningful — it hides
+      that the denominator is the wrong shape.**
+    Note the panels on the Bandwidth tab poll at 60s (matching `router.interval_s`), not the
+    `data-interval="0"` the ledger panels beside them use: the By-device table has a live "Now"
+    column, and at 0 it froze at page load — the same stale-as-live trap as pitfall 11.
 
 ## Origin note
 
