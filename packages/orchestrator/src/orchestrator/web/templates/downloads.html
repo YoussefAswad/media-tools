@@ -63,14 +63,15 @@
 
 <div data-src="/ui/ledger-remaining" data-interval="0" data-unit-aware></div>
 
-<div class="summary" data-src="/ui/wan-summary" data-interval="0" data-ranged data-unit-aware></div>
+<div class="summary" data-src="/ui/wan-summary" data-interval="60000" data-ranged data-unit-aware></div>
 
 <section class="card">
   <div class="card-head">
     <h2>By device <span class="muted">— household internet use</span></h2>
-    <span class="muted">every device, LAN traffic excluded</span>
+    <span class="muted">every device, LAN traffic excluded ·
+      <span data-countdown-for="wan-devices-panel">refresh in 60s</span></span>
   </div>
-  <div data-src="/ui/wan-devices" data-interval="0" data-ranged data-unit-aware>Loading…</div>
+  <div id="wan-devices-panel" data-src="/ui/wan-devices" data-interval="60000" data-ranged data-unit-aware>Loading…</div>
 </section>
 
 <section class="card">
