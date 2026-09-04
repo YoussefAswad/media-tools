@@ -60,6 +60,16 @@ def _dirty_probe(path: str):
     )
 
 
+def _clean_probe(path: str):
+    """What _dirty_probe looks like after a prune actually ran on it."""
+    return probe_of(
+        mk(0, "video", codec_name="hevc"),
+        mk(1, "audio", codec_name="ac3", channels=6),
+        mk(3, "subtitle", codec_name="hdmv_pgs_subtitle", language="eng"),
+        path=path,
+    )
+
+
 def test_prune_pipeline_runs_and_rescans(tmp_path, monkeypatch):
     calls: list = []
     monkeypatch.setattr(
@@ -169,17 +179,48 @@ def test_remux_disabled_leaves_clean_mp4(tmp_path, monkeypatch):
     assert prune.result == SKIP and mp4.exists()
 
 
-def test_prune_dedup_second_run(tmp_path, monkeypatch):
+def test_prune_skips_a_second_run_on_the_decision_not_a_cache(tmp_path, monkeypatch):
+    """What makes a re-run a no-op is the *decision*, recomputed from the file as it now is.
+
+    There used to be a second guard — skip if the audit log held a successful prune for this
+    (path, mtime) — and it answered from a cache instead of from the file. It could not see a
+    rename, and it overrode a live decision, so a policy change skipped every file that needed
+    the new rule. The probe below going clean between the two runs is what a real prune does.
+    """
     monkeypatch.setattr(
         "mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, item_id, **kw: None
     )
     services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
     path = _touch(tmp_path)
-    disp = Dispatcher(services, probe_fn=lambda p: _dirty_probe(p), prune_runner=lambda a, **k: PruneResult(0, "", ""))
+    probes = iter([_dirty_probe(path), _clean_probe(path)])
+    disp = Dispatcher(
+        services,
+        probe_fn=lambda p: next(probes),
+        prune_runner=lambda a, **k: PruneResult(0, "", ""),
+    )
+    first = next(s for s in disp.dispatch("j1", _radarr_payload(path)).steps if s.tool == "mkvprune")
+    second = next(s for s in disp.dispatch("j2", _radarr_payload(path)).steps if s.tool == "mkvprune")
+    assert first.result == OK
+    assert second.result == SKIP and "nothing to prune" in second.detail
+
+
+def test_prune_reruns_when_the_file_still_needs_work(tmp_path, monkeypatch):
+    """The other half: an unchanged file the policy still has something to say about is pruned
+    again. This is the case the mtime guard used to swallow — and it is how the duplicate AC-3
+    compat tracks survived a re-run that was supposed to remove them."""
+    monkeypatch.setattr(
+        "mediacore.arr.client.RadarrClient.rescan_and_wait", lambda self, item_id, **kw: None
+    )
+    services = build_test_services(tmp_path, radarr_config(enable_seasonal_shift=False))
+    path = _touch(tmp_path)
+    disp = Dispatcher(
+        services,
+        probe_fn=lambda p: _dirty_probe(p),
+        prune_runner=lambda a, **k: PruneResult(0, "", ""),
+    )
     disp.dispatch("j1", _radarr_payload(path))
-    outcome2 = disp.dispatch("j2", _radarr_payload(path))
-    prune = next(s for s in outcome2.steps if s.tool == "mkvprune")
-    assert prune.result == SKIP and "already pruned" in prune.detail
+    second = next(s for s in disp.dispatch("j2", _radarr_payload(path)).steps if s.tool == "mkvprune")
+    assert second.result == OK
 
 
 def test_prune_failure_raises(tmp_path):

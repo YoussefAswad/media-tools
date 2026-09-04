@@ -65,14 +65,15 @@ class PruneStep:
         decision = decide(
             pr, cfg.policy, original_langs=self._original_langs(ctx, local_path)
         )
+        # `decision` is the whole "has this already been done?" test, and the only trustworthy
+        # one: it is computed from the file's current contents, so work it reports is work that
+        # is genuinely outstanding. There used to be a second guard here — skip if the audit log
+        # held a successful prune for this (path, mtime) — and it was wrong twice over. It could
+        # not see a rename (which is how the duplicate compat tracks got written in the first
+        # place), and it overrode a live decision with a cached one, so the moment the policy
+        # changed it skipped every file that needed the new rule applied.
         if not decision.needs_work:
             return self._settled(ctx, local_path, "mkvprune", SKIP, "nothing to prune/re-encode")
-
-        mtime = os.path.getmtime(local_path) if os.path.exists(local_path) else None
-        if ctx.services.audit.already_done(local_path, "prune", mtime):
-            return self._settled(
-                ctx, local_path, "mkvprune", SKIP, "already pruned (same mtime)"
-            )
 
         # Self-heal: a prune killed mid-mux (e.g. a container restart) leaves a stale
         # {stem}.tmp.mkv that mkvprune refuses to overwrite. Safe to remove — the worker is

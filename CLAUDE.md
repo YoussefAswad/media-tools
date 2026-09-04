@@ -526,15 +526,27 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
     rescan re-flagged S1: 7 episodes ended up with two identical `[5.1 AC-3 compat]` tracks
     (measured: 20 files in the library carry a downmix at all, 7 carried two; the audit log holds
     two `prune` rows for the same episode 2 days apart under different names).
-    - **The `(path, mtime)` audit guard cannot cover this.** `steps.prune` skips a file whose
-      last successful prune matches `already_done(path, "prune", mtime)`, but an arr rename
-      changes the path, a restore changes the mtime, and the row is deleted at
-      `worker.retention_days` (30). A guard that fails open on a rename is not a guard against a
-      renamer. Idempotency has to be derived from the file itself, which is what
-      `classify_audio_plan` does: a `compat` action is dropped when a **kept** AC-3/E-AC-3 track
-      of ≤6 channels in the same language is already there. Scoping it to *kept* matters —
-      dropping that track via `--audio` has to re-enable the encode, or the output carries
-      nothing a limited player can decode.
+    - **The `(path, mtime)` audit guard could not cover this, and it has been deleted.**
+      `steps.prune` used to skip a file whose last successful prune matched
+      `already_done(path, "prune", mtime)`, but an arr rename changes the path, a restore
+      changes the mtime, and the row is deleted at `worker.retention_days` (30). A guard that
+      fails open on a rename is not a guard against a renamer. It failed a second way during
+      the cleanup of this very bug: it sat *after* `decide()` in the step, so it overrode a
+      live decision with a cached one, and all 20 re-runs returned `already pruned (same
+      mtime)` without doing anything — a stale yes/no beats a correct policy every time.
+      **`decide()` is the whole test**: it is computed from the file's current contents, so
+      work it reports is work that is genuinely outstanding. `Audit.last_done_at` survives for
+      *display* (`pruned_at`); `already_done` is gone so it cannot be reintroduced.
+      Idempotency comes from the file itself, which is what `classify_audio_plan` does: a
+      `compat` action is dropped when a **kept** AC-3/E-AC-3 track of ≤6 channels in the same
+      language is already there. Scoping it to *kept* matters — dropping that track via
+      `--audio` has to re-enable the encode, or the output carries nothing a limited player can
+      decode.
+    - **A skipped prune still calls `mark_clean`.** `_sync_library_row` returns early only on
+      `FAIL`, so those 20 no-op skips stamped `needs_work=0` on rows that were not clean — and
+      because `mark_clean` leaves `scan_version` alone, the next *ordinary* scan cache-hits on
+      (path, mtime, size) and keeps the lie. Undoing it needs a `full` scan (or another
+      `SCAN_VERSION` bump). Worth remembering whenever a step is made to skip work it used to do.
     - **Suppression is decided on codec, not on the `[5.1 AC-3 compat]` name.** An authored AC-3
       5.1 serves exactly the same purpose as one mkvprune would add, and `classify.py` is
       explicit that classification never reads a track title. The name *is* trusted in one

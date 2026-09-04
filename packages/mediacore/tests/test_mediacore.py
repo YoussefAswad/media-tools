@@ -108,9 +108,9 @@ def test_audit_record_and_dedup(tmp_path: Path) -> None:
             after={"subs": 2},
         )
     )
-    assert au.already_done("/x/f.mkv", "prune", 123.0) is True
-    assert au.already_done("/x/f.mkv", "prune", 999.0) is False
-    assert au.already_done("/x/f.mkv", "prune", None) is False
+    assert au.last_done_at("/x/f.mkv", "prune", 123.0) is not None
+    assert au.last_done_at("/x/f.mkv", "prune", 999.0) is None  # replaced since: a different file
+    assert au.last_done_at("/x/f.mkv", "prune", None) is None
     assert len(au.recent(limit=10)) == 1
     assert len(au.recent(limit=10, results=[OK])) == 1
     assert (tmp_path / "audit").glob("actions-*.jsonl")

@@ -120,7 +120,12 @@ class Audit:
     def last_done_at(self, path: str, action: str, mtime: float | None) -> str | None:
         """Timestamp of the most recent successful ``action`` on this exact file (by path+mtime),
         or None. Matching on mtime is what makes it file-identity rather than path-identity: a
-        file replaced since is a different question."""
+        file replaced since is a different question.
+
+        This answers "when was it done", for display — the Library tab's ``pruned_at``. It is
+        deliberately *not* used to decide whether to do work: it cannot see a rename, and a
+        cached yes/no overrides a live decision the moment the policy changes. What is
+        outstanding is decided by ``policy.decide`` from the file's current contents."""
         if mtime is None:
             return None
         row = self.db.execute(
@@ -129,10 +134,6 @@ class Audit:
             (path, action, OK, mtime),
         ).fetchone()
         return row["ts"] if row else None
-
-    def already_done(self, path: str, action: str, mtime: float | None) -> bool:
-        """True if this exact file (by path+mtime) already had this action succeed."""
-        return self.last_done_at(path, action, mtime) is not None
 
     def recent(
         self,
