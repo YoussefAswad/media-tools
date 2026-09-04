@@ -17,7 +17,7 @@ from mkvprune.batch import (
     group_files,
     name_only_collisions,
 )
-from mkvprune.classify import AudioAction, classify_audio, parse_bitrate
+from mkvprune.classify import AudioAction, classify_audio_plan, parse_bitrate
 from mkvprune.deps import check_dependencies
 from mkvprune.display import render_table
 from mkvprune.encode import run_encode
@@ -174,8 +174,19 @@ def _build_added_subs(paths: list[str] | None) -> list[AddedSub]:
     return subs
 
 
-def _classify_all(pr: ProbeResult, ac3_override: int | None) -> dict[int, AudioAction]:
-    return {t.mkv_id: classify_audio(t, ac3_bitrate_override=ac3_override) for t in pr.audio}
+def _classify_all(
+    pr: ProbeResult, ac3_override: int | None, kept_audio: list[int] | None = None
+) -> dict[int, AudioAction]:
+    """Classify the file's audio, scoped to ``kept_audio`` when it is known.
+
+    Whether a >6-channel track still needs a downmix depends on what *survives* selection, so
+    the plan built in :func:`_plan_for_file` passes the kept ids. The pre-selection pass that
+    only renders the track table has no selection yet, and ``None`` (assume everything is kept)
+    is the honest preview of the file as it stands.
+    """
+    return classify_audio_plan(
+        pr.audio, kept_ids=kept_audio, ac3_bitrate_override=ac3_override
+    )
 
 
 def _select_ids(
@@ -265,7 +276,7 @@ def _plan_for_file(
     input_path = pr.path
     scratch_dir = _scratch_dir_for(args, input_path)
     stem = os.path.splitext(os.path.basename(input_path))[0]
-    audio_actions = _classify_all(pr, ac3_override)
+    audio_actions = _classify_all(pr, ac3_override, kept_audio)
     plan = build_mux_plan(
         pr,
         kept_audio_ids=set(kept_audio),

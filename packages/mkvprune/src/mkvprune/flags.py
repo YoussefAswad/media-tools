@@ -24,8 +24,10 @@ def source_default_id(tracks: list[Track]) -> int | None:
 def resolve_default(kept: list[Track], src_default_id: int | None) -> int | None:
     """Pick the single output default among kept source tracks of one type.
 
-    ``kept`` are the surviving *source* tracks in output order (added compatibility
-    downmix tracks are never candidates and must be excluded by the caller).
+    ``kept`` are the surviving *source* tracks in output order; added compatibility downmix
+    tracks are never *candidates* here and must be excluded by the caller. The caller may
+    still hand the resolved flag to a downmix afterwards — see ``mux._resolve_defaults``,
+    where a downmix takes the flag on behalf of the source it was made from.
 
     Priority:
       1. keep the source default if it survived,

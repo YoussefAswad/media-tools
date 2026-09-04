@@ -4,7 +4,8 @@ A ``check`` over a reconciled probe returns zero or more :class:`Finding`s. Clas
 by *probed codec identity* (never the track title), matching mkvprune's policy:
 
 * **Rule A** — non-Dolby/DTS multichannel audio: audio with ``channels > audio_min_channels``
-  whose canonical codec is not in ``audio_allow`` (catches Opus/AAC 5.1).
+  whose canonical codec is not in ``audio_allow`` (catches Opus/AAC 5.1). A >6-channel track
+  whose AC-3 compatibility downmix is already in the file is excluded — see below.
 * **Rule B** — foreign subtitles: subtitle whose language is not in ``subtitle_keep_langs``,
   regardless of codec (text SRT/ASS and image PGS/VOBSUB alike — this matches the confirmed
   prune policy in ``mediacore.policy.prune``). Untagged/``und`` tracks count only when
@@ -16,8 +17,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from mkvprune.classify import needs_compat_downmix
+
 from mediacore.models import PolicyConfig
-from mediacore.probe import ProbeResult, Track, is_undetermined, lang_in
+from mediacore.probe import ProbeResult, Track, classify_audio_plan, is_undetermined, lang_in
 
 
 @dataclass
@@ -82,12 +85,22 @@ foreign_image_subs = foreign_subs
 
 
 def non_allowed_multichannel(probe: ProbeResult, policy: PolicyConfig) -> list[Track]:
-    """Audio tracks with >min channels whose codec is not in the passthrough allowlist."""
+    """Audio tracks with >min channels whose codec is not in the passthrough allowlist.
+
+    With one exception: a >6-channel track that already carries its AC-3 compatibility downmix
+    in the same file is not reported. What the finding warns about — audio the player cannot
+    handle — has been dealt with, and the source track stays non-Dolby by design (the downmix is
+    added beside it, never in place of it), so reporting it again is a permanent false alarm.
+    """
+    actions = classify_audio_plan(probe.audio)
     out: list[Track] = []
     for t in probe.audio:
         over_min = t.channels is not None and t.channels > policy.audio_min_channels
-        if over_min and t.audio_codec not in policy.audio_allow:
-            out.append(t)
+        if not over_min or t.audio_codec in policy.audio_allow:
+            continue
+        if needs_compat_downmix(t) and not actions[t.mkv_id].is_encode:
+            continue  # the downmix it needs is already present
+        out.append(t)
     return out
 
 

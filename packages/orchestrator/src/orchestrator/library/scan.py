@@ -25,6 +25,7 @@ from orchestrator.library.estimate import estimate_delta
 from orchestrator.library.index import (
     AUDIO,
     AUDIO_DROP,
+    COMPAT,
     REMUX,
     SCAN_VERSION,
     SUBS,
@@ -119,8 +120,10 @@ def _row_for(
         reasons.append(AUDIO)
     if decision.remux:
         reasons.append(REMUX)
-    if decision.dropped_audio:
+    if decision.dropped_by_language:
         reasons.append(AUDIO_DROP)
+    if decision.surplus_compat or decision.compat_default_fix:
+        reasons.append(COMPAT)
     delta, known = estimate_delta(pr, decision)
     return LibraryRow(
         path=path,

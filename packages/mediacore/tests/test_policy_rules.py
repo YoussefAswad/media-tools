@@ -209,3 +209,87 @@ def test_argv_carries_scratch_dir() -> None:
     argv = build_mkvprune_argv("/x/f.mkv", _dirty_decision(), scratch_dir="/scratch")
     assert argv[argv.index("--scratch-dir") + 1] == "/scratch"
     assert argv[-1] == "/x/f.mkv"  # the input path stays last (positional)
+
+
+# --- the AC-3 compatibility downmix ---------------------------------------------------
+#
+# The >6-channel compat path keeps the source and *adds* a downmix, which makes it the one
+# branch of the classifier that is not idempotent. These pin both halves of the fix: a file
+# that already has its downmix is finished, and one carrying the damage gets cleaned up.
+
+COMPAT = "[5.1 AC-3 compat]"
+
+
+def _twin_peaks(*, compat_tracks: int, default_on_compat: bool = False):
+    """The real shape this was found on: one 7.1 AAC source, N identical AC-3 downmixes."""
+    tracks = [
+        mk(0, "video", codec_name="hevc"),
+        mk(1, "audio", codec_name="aac", channels=8, language="eng",
+           default=not default_on_compat),
+    ]
+    for i in range(compat_tracks):
+        tracks.append(
+            mk(2 + i, "audio", codec_name="ac3", channels=6, language="eng",
+               track_name=COMPAT, default=default_on_compat and i == 0)
+        )
+    tracks.append(mk(2 + compat_tracks, "subtitle", codec_name="hdmv_pgs_subtitle",
+                     language="eng"))
+    return probe_of(*tracks)
+
+
+def test_decide_is_a_no_op_once_the_downmix_is_there() -> None:
+    """The regression that matters: a second run of the pipeline must find nothing to do.
+    Before the fix this re-added the downmix every single time."""
+    d = decide(_twin_peaks(compat_tracks=1, default_on_compat=True), POLICY)
+    assert not d.needs_work
+    assert d.audio_encode_tracks == []
+    assert d.surplus_compat == []
+
+
+def test_decide_drops_a_duplicate_downmix() -> None:
+    d = decide(_twin_peaks(compat_tracks=2, default_on_compat=True), POLICY)
+    assert d.needs_work
+    assert [t.mkv_id for t in d.surplus_compat] == [3]  # the first one stays
+    assert [t.mkv_id for t in d.dropped_audio] == [3]
+    assert d.dropped_by_language == []  # not a language drop, and must not read as one
+    assert d.audio_encode_tracks == []  # and emphatically not a third encode
+    assert d.audio_arg == "1,2"
+    assert "duplicate AC-3 compat" in d.summary()
+
+
+def test_decide_moves_the_default_onto_the_downmix() -> None:
+    """Files pruned before the downmix took the default flag still point players at the 7.1
+    track they cannot decode. A plain remux settles it, so there is nothing to drop."""
+    d = decide(_twin_peaks(compat_tracks=1), POLICY)
+    assert d.needs_work
+    assert d.compat_default_fix
+    assert d.dropped_audio == []
+    assert d.audio_arg == "all"
+    assert d.audio_encode_tracks == []
+
+
+def test_decide_still_adds_a_missing_downmix() -> None:
+    d = decide(_twin_peaks(compat_tracks=0), POLICY)
+    assert d.needs_work
+    assert {t.mkv_id for t in d.audio_encode_tracks} == {1}
+    assert not d.compat_default_fix  # nothing to move it onto yet
+
+
+def test_finding_a_stops_once_the_downmix_is_there() -> None:
+    """Rule A warns about audio the player cannot handle. Once the downmix is in the file that
+    is no longer true, but the source stays non-Dolby by design — so without this the finding
+    fires on every scan, forever."""
+    assert non_allowed_multichannel(_twin_peaks(compat_tracks=0), POLICY)
+    assert not non_allowed_multichannel(_twin_peaks(compat_tracks=1), POLICY)
+
+
+def test_a_five_one_aac_is_still_reported() -> None:
+    """The suppression is scoped to the compat path: a 5.1 AAC is re-encoded in place, so it is
+    still a finding and still work to do."""
+    pr = probe_of(
+        mk(0, "video", codec_name="hevc"),
+        mk(1, "audio", codec_name="aac", channels=6, language="eng", default=True),
+        mk(2, "audio", codec_name="ac3", channels=6, language="eng", track_name=COMPAT),
+    )
+    assert [t.mkv_id for t in non_allowed_multichannel(pr, POLICY)] == [1]
+    assert {t.mkv_id for t in decide(pr, POLICY).audio_encode_tracks} == {1}

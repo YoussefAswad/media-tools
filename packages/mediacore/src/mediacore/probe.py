@@ -7,7 +7,7 @@ instead of re-implementing probing. Kept as a thin, side-effect-free re-export.
 
 from __future__ import annotations
 
-from mkvprune.classify import AudioAction, classify_audio
+from mkvprune.classify import AudioAction, classify_audio, classify_audio_plan
 from mkvprune.flags import is_english
 from mkvprune.probe import ProbeResult, Track, canonical_audio_codec, probe
 
@@ -43,6 +43,7 @@ __all__ = [
     "Track",
     "canonical_audio_codec",
     "classify_audio",
+    "classify_audio_plan",
     "is_arabic",
     "is_english",
     "is_undetermined",

@@ -19,7 +19,10 @@ AUDIO = "audio"
 REMUX = "remux"
 #: audio tracks dropped by the language filter (distinct from AUDIO, a re-encode).
 AUDIO_DROP = "audiolang"
-REASONS = (SUBS, AUDIO, REMUX, AUDIO_DROP)
+#: the AC-3 compatibility downmix needs settling: a duplicate to drop, or the default flag to
+#: move onto it. Neither is a language drop, so it does not belong under AUDIO_DROP.
+COMPAT = "compat"
+REASONS = (SUBS, AUDIO, REMUX, AUDIO_DROP, COMPAT)
 
 #: derived row states the UI filters by.
 NEEDS = "needs"
@@ -41,7 +44,7 @@ DEFAULT_SORT = "impact"
 #: Bump when the stored decision or the size estimate changes shape. A row computed by an older
 #: formula is re-probed by the next ordinary scan instead of being trusted as cache — otherwise a
 #: fixed estimator would only reach files that happened to change on disk.
-SCAN_VERSION = 4
+SCAN_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS library_files (
@@ -211,8 +214,13 @@ class LibraryIndex:
         pruned_at: str | None = None,
     ) -> bool:
         """Record that the pipeline has just finished with this file: nothing left to do, and no
-        longer queued. mkvprune is idempotent for these rules, so a completed prune means the
-        decision is settled — this saves a re-probe and keeps the table honest between scans."""
+        longer queued. A completed prune settles the decision, so this saves a re-probe and keeps
+        the table honest between scans.
+
+        That rests on the prune being idempotent, which it is for subtitle drops, language drops,
+        the remux and the AC-3 *convert* path — and was **not** for the >6-channel *compat* path,
+        which adds a downmix beside an untouched source and so re-fired on every run. See
+        ``mkvprune.classify.classify_audio_plan``; it is why that suppression exists."""
         with self._lock:
             cur = self.db.execute(
                 "UPDATE library_files SET needs_work=0, reasons='', summary=?, drop_subs=0,"

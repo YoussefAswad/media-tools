@@ -198,13 +198,23 @@ wastes bits for no compatibility gain (see Assumptions).
 |--------------------------|--------|
 | ≤ 2 channels (mono/stereo) | **keep as-is** (no re-encode) |
 | 3–6 channels | **→ AC-3** (channel-based bitrate ladder) |
-| > 6 channels (7.1+) | **keep original + add a downmixed 5.1 AC-3 compatibility track** |
+| > 6 channels (7.1+) | **keep original + add a downmixed 5.1 AC-3 compatibility track**, unless the file already carries an AC-3/E-AC-3 track of ≤6 channels in the same language |
 | unknown channel count | keep as-is (don't guess), with a warning |
 
 Channel count and layout are preserved for the ≤6-channel conversions (no up/downmix).
 Sample rates unsupported by AC-3 (e.g. 96/192 kHz on some FLAC/LPCM tracks) are resampled to
 48 kHz with a warning. A converted track **replaces** its original; a compatibility downmix
-is **added** alongside the untouched original and is never marked default.
+is **added** alongside the untouched original, and **takes the default flag** on its behalf
+whenever that original would have been the default — it exists because a limited player cannot
+decode the original, so pointing that player at the original anyway defeats the purpose. It only
+stands in for its own source: a track that wins the default on its own merits (an authored DTS
+5.1, say) is already playable and keeps it.
+
+Because the downmix is *added* rather than substituted, the source stays >6-channel forever, so
+per-track classification alone would add a second downmix on the next run and a third on the one
+after. The compat action is therefore suppressed when a suitable AC-3/E-AC-3 track is already
+among the kept tracks — decided on codec, language and channel count, never on the track name.
+Dropping that track via `--audio` re-enables the encode.
 
 ### Bitrate ladder (default)
 

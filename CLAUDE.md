@@ -116,7 +116,9 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
   `None`/`False` on any failure. A failed notification/refresh/snapshot must not fail a job.
 - **mkvprune stays pure.** Standard library only, no network, no third-party deps. It's invoked as
   a CLI subprocess by the orchestrator, never imported for side effects. Keep it that way.
-- **mkvprune always sets the first track (per type) as default.**
+- **mkvprune always sets the first track (per type) as default** — except that an added
+  AC-3 compatibility downmix takes the flag on behalf of the >6-channel source it was made
+  from (see pitfall 24).
 - **Config is grouped by job**: connections (`arr`, `ntfy`, `qbit`, `jellyfin`), media policy
   (`policy`), operational tuning (`worker`, `pipeline`, `notifications`), plus `library`,
   `monitoring`, `server`, `web`, `audit`, `shows`. Fifteen scalars used to sit loose at the root
@@ -513,6 +515,44 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
     Note the panels on the Bandwidth tab poll at 60s (matching `router.interval_s`), not the
     `data-interval="0"` the ledger panels beside them use: the By-device table has a live "Now"
     column, and at 0 it froze at page load — the same stale-as-live trap as pitfall 11.
+
+24. **The >6-channel AC-3 compat path is the one branch of the classifier that is not
+    idempotent, and nothing outside the file's own track list can tell you it already ran.**
+    `convert` (3-6ch non-Dolby) **replaces** the source, so the output is `ac3` and the next run
+    reads it as passthrough. `compat` (>6ch, where ffmpeg's encoders cap at 6) **keeps** the
+    source and **adds** a 5.1 downmix beside it — so the 7.1 AAC is still a 7.1 AAC, and
+    `classify_audio`, which sees one `Track` and nothing else, says "add a downmix" again. And
+    again. Twin Peaks S1 was processed, Sonarr **renamed** the files, S2 was added, and the
+    rescan re-flagged S1: 7 episodes ended up with two identical `[5.1 AC-3 compat]` tracks
+    (measured: 20 files in the library carry a downmix at all, 7 carried two; the audit log holds
+    two `prune` rows for the same episode 2 days apart under different names).
+    - **The `(path, mtime)` audit guard cannot cover this.** `steps.prune` skips a file whose
+      last successful prune matches `already_done(path, "prune", mtime)`, but an arr rename
+      changes the path, a restore changes the mtime, and the row is deleted at
+      `worker.retention_days` (30). A guard that fails open on a rename is not a guard against a
+      renamer. Idempotency has to be derived from the file itself, which is what
+      `classify_audio_plan` does: a `compat` action is dropped when a **kept** AC-3/E-AC-3 track
+      of ≤6 channels in the same language is already there. Scoping it to *kept* matters —
+      dropping that track via `--audio` has to re-enable the encode, or the output carries
+      nothing a limited player can decode.
+    - **Suppression is decided on codec, not on the `[5.1 AC-3 compat]` name.** An authored AC-3
+      5.1 serves exactly the same purpose as one mkvprune would add, and `classify.py` is
+      explicit that classification never reads a track title. The name *is* trusted in one
+      place — `mux.is_compat_track`, used to spot **duplicates** and to move the default flag —
+      because there it is mkvprune's own provenance stamp, not a claim about a codec.
+    - **The downmix now takes the default flag** from the source it stands in for. The flag on a
+      7.1 AAC points every limited player at the one track it cannot decode. Note the stand-in
+      has two shapes and the second is the one that is easy to miss: the downmix being added by
+      this mux, **and** one the file already carries. On a re-mux of a processed file there is no
+      `compat` action at all (it was suppressed as redundant), so without the second case
+      `resolve_default` keeps the surviving source default and the flag never moves.
+    - **Cleanup runs through the policy, not a script.** `decide()` reports a surplus downmix as
+      a `dropped_audio` and a misplaced default as `compat_default_fix`, both under the new
+      `compat` reason tag, so the Library tab's ordinary scan → select → re-run flow repairs
+      them with an audit row, an ntfy, and the per-item Jellyfin refresh (pitfall 18). Both are
+      pure remuxes — zero encode jobs. `compat_default_misplaced` must mirror
+      `mux._compat_stand_in` exactly: flag a file the remux would not actually change and it
+      stays "needs work" forever.
 
 ## Origin note
 

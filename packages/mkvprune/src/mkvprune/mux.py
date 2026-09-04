@@ -13,7 +13,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from mkvprune.classify import AudioAction
+from mkvprune.classify import AudioAction, lang_key, needs_compat_downmix
 from mkvprune.encode import EncodeJob, build_encode_job
 from mkvprune.errors import MkvPruneError
 from mkvprune.flags import resolve_default, source_default_id
@@ -30,6 +30,16 @@ COMPAT_SUFFIX = "[5.1 AC-3 compat]"
 def compat_track_name(src: Track) -> str:
     base = src.track_name.strip()
     return f"{base} {COMPAT_SUFFIX}" if base else COMPAT_SUFFIX
+
+
+def is_compat_track(track: Track) -> bool:
+    """True for a downmix mkvprune itself added, recognised by the name it wrote.
+
+    The one place a track *name* is trusted, and it does not contradict the codec-only rule
+    classification follows: :data:`COMPAT_SUFFIX` is mkvprune's own provenance stamp, not a
+    claim about the codec that a muxer or a human could have got wrong.
+    """
+    return track.track_name.strip().endswith(COMPAT_SUFFIX)
 
 
 def best_language(src: Track) -> str:
@@ -162,10 +172,66 @@ def _resolve_defaults(probe: ProbeResult, output_tracks: list[OutputTrack], kind
 
     candidate_sources = [ot.source for ot in of_kind if not ot.is_added_compat and ot.source]
     chosen_id = resolve_default(candidate_sources, source_default_id(probe.by_kind(kind)))
+
+    stand_in = _compat_stand_in(of_kind, chosen_id)
+    if stand_in is not None:
+        for ot in of_kind:
+            ot.default = ot is stand_in
+        return
+
     for ot in of_kind:
         ot.default = (
             not ot.is_added_compat and ot.source is not None and ot.source.mkv_id == chosen_id
         )
+
+
+def _compat_stand_in(of_kind: list[OutputTrack], chosen_id: int | None) -> OutputTrack | None:
+    """The downmix that should hold the default flag on behalf of ``chosen_id``, if any.
+
+    A compatibility downmix stands in for the track it was made from: the downmix exists
+    precisely because a limited player cannot decode that track, so leaving the flag on the
+    source defeats the point. It only ever stands in for a source that *needs* one — a track
+    that already wins the default on its own merits (an authored DTS 5.1, say) is playable and
+    keeps the flag.
+
+    Two shapes qualify, and the second is why this is not just a lookup on ``is_added_compat``:
+    the downmix being added by this mux, and one the file already carries from an earlier prune.
+    In that second case there is no ``compat`` action at all — the classifier suppresses it as
+    redundant — so without this a re-mux of an already-processed file would leave the flag
+    sitting on the source forever.
+    """
+    chosen = next(
+        (
+            ot
+            for ot in of_kind
+            if not ot.is_added_compat and ot.source is not None and ot.source.mkv_id == chosen_id
+        ),
+        None,
+    )
+    if chosen is None or chosen.source is None or not needs_compat_downmix(chosen.source):
+        return None
+
+    added = next(
+        (
+            ot
+            for ot in of_kind
+            if ot.is_added_compat and ot.source is not None and ot.source.mkv_id == chosen_id
+        ),
+        None,
+    )
+    if added is not None:
+        return added
+
+    return next(
+        (
+            ot
+            for ot in of_kind
+            if ot.source is not None
+            and is_compat_track(ot.source)
+            and lang_key(ot.source) == lang_key(chosen.source)
+        ),
+        None,
+    )
 
 
 def _added_sub_opts(sub: AddedSub, default: bool) -> list[str]:

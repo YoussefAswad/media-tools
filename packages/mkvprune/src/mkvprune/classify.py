@@ -7,6 +7,7 @@ ffprobe ``codec_name``) — never on the human-readable track title, which can l
 
 from __future__ import annotations
 
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 
 from mkvprune.probe import Track
@@ -28,6 +29,11 @@ MAX_ENCODER_CHANNELS = 6
 STEREO_MAX_CHANNELS = 2
 
 AC3_MAX_BITRATE_BPS = 640_000
+
+# Codecs whose presence already satisfies the goal the 5.1 downmix exists for: something a
+# limited player can decode. Only ever consulted about a *sibling* track — never to classify
+# the track in hand.
+COMPAT_SATISFYING_CODECS: frozenset[str] = frozenset({"ac3", "eac3"})
 
 
 def parse_bitrate(text: str) -> int:
@@ -113,6 +119,10 @@ def classify_audio(
     * Convertible codecs with >6 channels take the compatibility path: the original is
       kept untouched AND a downmixed 5.1 AC-3 track is added (encoders cap at 6ch and
       ffmpeg would otherwise silently downmix a mislabeled track).
+
+    This sees one track, so it cannot tell a file that needs a downmix from one that already
+    has the downmix it added last time. Callers deciding what to actually *do* to a file want
+    :func:`classify_audio_plan`, which has the whole track list.
     """
     codec = track.audio_codec
     if codec in PASSTHROUGH_CODECS:
@@ -171,3 +181,94 @@ def classify_audio(
         resample_to=_resample_target(track, warnings),
         warnings=warnings,
     )
+
+
+def lang_key(track: Track) -> str:
+    """The track's language as a comparable token.
+
+    ``language`` is ISO-639-2 and is what mkvmerge normalizes onto every track it writes, so it
+    is the reliable field; the IETF primary subtag is only a fallback for a track carrying no
+    legacy code at all.
+    """
+    code = (track.language or "").lower()
+    if code and code not in {"und", "unknown"}:
+        return code
+    ietf = (track.language_ietf or "").lower()
+    return ietf.split("-", 1)[0] if ietf else "und"
+
+
+def needs_compat_downmix(track: Track) -> bool:
+    """True for a track the compatibility path exists for.
+
+    That is: more channels than the AC-3/E-AC-3 encoders can take, in a codec a limited player
+    may not decode. Such a track is kept as-is and a 5.1 downmix is added beside it — which is
+    also why the *downmix*, not this track, should carry the default flag.
+    """
+    return (
+        track.audio_codec not in PASSTHROUGH_CODECS
+        and track.channels is not None
+        and track.channels > MAX_ENCODER_CHANNELS
+    )
+
+
+def _satisfies_compat(track: Track) -> bool:
+    """True if ``track`` already gives a limited player something it can decode."""
+    return (
+        track.audio_codec in COMPAT_SATISFYING_CODECS
+        and track.channels is not None
+        and track.channels <= MAX_ENCODER_CHANNELS
+    )
+
+
+def classify_audio_plan(
+    audio: Sequence[Track],
+    *,
+    kept_ids: Collection[int] | None = None,
+    ac3_bitrate_override: int | None = None,
+) -> dict[int, AudioAction]:
+    """Classify every audio track, with the cross-track view :func:`classify_audio` lacks.
+
+    ``compat`` is the one *additive* branch: it keeps the >6-channel source and adds a 5.1 AC-3
+    downmix beside it. That also makes it the one branch that is not idempotent — the source is
+    left untouched, so a second run adds a second downmix and a third a third, and nothing about
+    a single track in isolation can tell you that already happened.
+
+    So a ``compat`` action is demoted to ``passthrough`` when some other **kept** track already
+    satisfies the compatibility goal: an AC-3/E-AC-3 track of at most :data:`MAX_ENCODER_CHANNELS`
+    channels in the same language. That is deliberately broader than "a downmix we added
+    earlier" — a genuinely authored AC-3 5.1 serves the very same purpose — and deciding it on
+    codec keeps this consistent with the module's rule of never reading a track's human-readable
+    name.
+
+    ``kept_ids`` scopes the sibling search to the tracks that survive selection: dropping the
+    existing AC-3 via ``--audio`` must re-enable the encode, or the output would carry nothing a
+    limited player could play.
+    """
+    actions = {
+        t.mkv_id: classify_audio(t, ac3_bitrate_override=ac3_bitrate_override) for t in audio
+    }
+    kept = [t for t in audio if kept_ids is None or t.mkv_id in kept_ids]
+    for track in kept:
+        if actions[track.mkv_id].kind != "compat":
+            continue
+        sibling = next(
+            (
+                t
+                for t in kept
+                if t.mkv_id != track.mkv_id
+                and _satisfies_compat(t)
+                and lang_key(t) == lang_key(track)
+            ),
+            None,
+        )
+        if sibling is None:
+            continue
+        actions[track.mkv_id] = AudioAction(
+            kind="passthrough",
+            warnings=[
+                f"track {track.mkv_id}: keeping as-is; track {sibling.mkv_id} "
+                f"({sibling.codec_human}, {sibling.channels}ch) already provides a compatible "
+                "downmix in the same language"
+            ],
+        )
+    return actions
