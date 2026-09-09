@@ -24,7 +24,7 @@ from orchestrator.alerts import Evaluation
 from orchestrator.config import MonitoringConfig
 from orchestrator.metrics import Sample
 from orchestrator.monitor.base import Collected
-from orchestrator.wan_usage import PollResult, WanUsage
+from orchestrator.wan_usage import PollResult, WanUsage, display_name
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +97,15 @@ class WanMonitor:
             else None
         )
         self._settings_checked = False
+        if self.enabled:
+            # Logged because a bound set too generously is invisible otherwise — it produces no
+            # rejections, no warnings, and no symptom until a bogus counter slips under it.
+            log.info(
+                "wan: plausibility bound %d B/s -> %.0f MB per %ds poll",
+                cfg.link_max_bytes_s,
+                cfg.interval_s * cfg.link_max_bytes_s * 1.5 / 1e6,
+                cfg.interval_s,
+            )
 
     @property
     def enabled(self) -> bool:
@@ -126,9 +135,12 @@ class WanMonitor:
         )
         aliases = self.mon.router.device_aliases
         if aliases:
+            # display_name, not a lookup written out again here: the Bandwidth tab groups its
+            # stored rows by the same function, and the live "Now" column is joined to those groups
+            # by name. Two spellings of "what is this device called" would silently stop matching.
             devices = [
                 DeviceStats(
-                    mac=d.mac, host=aliases.get(d.mac, aliases.get(d.mac.lower(), d.host)),
+                    mac=d.mac, host=display_name(aliases, d.mac, d.host),
                     kind=d.kind, rx=d.rx, tx=d.tx, curr_rx=d.curr_rx, curr_tx=d.curr_tx,
                 )
                 for d in devices

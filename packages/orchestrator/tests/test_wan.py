@@ -11,9 +11,12 @@ import datetime as _dt
 import pytest
 from mediacore.db import open_db
 from mediacore.router import DeviceStats
-from orchestrator.wan_usage import WanUsage
+from orchestrator.wan_usage import WanUsage, display_name, fold_identities
 
-LINK = 25_000_000  # bytes/sec ceiling used for the plausibility bound
+# The real line rate of the host this was built for (~30 Mbit VDSL, measured 3.78 MB/s). The
+# suite runs at the true bound on purpose: a generously-set one is exactly what let a bogus
+# counter through in production, so tests written against a loose bound test nothing.
+LINK = 4_000_000  # bytes/sec ceiling used for the plausibility bound
 
 _T0 = _dt.datetime(2026, 8, 29, 12, 0, tzinfo=_dt.UTC)
 
@@ -45,29 +48,48 @@ def test_the_second_poll_counts_the_difference(usage: WanUsage) -> None:
     assert totals["uploaded"] == 1_000
 
 
-def test_a_new_device_mid_run_counts_its_current_value(usage: WanUsage) -> None:
-    """Once a cursor exists, a device appearing is new to the router too, so its counter is
-    genuinely new traffic — unlike at cold start."""
+def test_a_never_seen_mac_baselines_and_counts_nothing(usage: WanUsage) -> None:
+    """This rule used to read the other way — "a device appearing is new to the router too, so its
+    counter is genuinely new traffic". It is false. The router keeps a device's counter while the
+    device is missing from its host table, so a first sighting can carry an arbitrary amount of
+    history, and crediting it re-counts that history on every reappearance."""
     usage.apply([_dev(mac="AA:BB", rx=100)], link_max_bytes_s=LINK, now=_T0)
     later = _T0 + _dt.timedelta(seconds=60)
-    usage.apply(
+    result = usage.apply(
         [_dev(mac="AA:BB", rx=100), _dev(mac="CC:DD", host="phone", rx=5_000)],
         link_max_bytes_s=LINK,
         now=later,
     )
-    by_mac = {d.mac: d for d in usage.by_device()}
-    assert by_mac["CC:DD"].rx == 5_000
+    assert result.baselined == 1
+    assert usage.by_device() == []  # nothing counted at all, so no row exists yet
+
+    # And the poll after it is measured from that baseline, so nothing is lost but the first gap.
+    usage.apply(
+        [_dev(mac="CC:DD", host="phone", rx=5_400)],
+        link_max_bytes_s=LINK,
+        now=later + _dt.timedelta(seconds=60),
+    )
+    assert usage.by_device()[0].rx == 400
 
 
 def test_a_counter_going_backwards_is_a_reset_not_a_wrap(usage: WanUsage) -> None:
     """A 32-bit wrap needs 4.29 GB; at any plausible link speed that cannot happen inside one
-    interval, so backwards means the router rebooted and the current value is the new traffic."""
+    interval, so backwards means the router restarted the counter.
+
+    It re-bases and counts *nothing*. The post-reset value is not a measurement of anything this
+    engine observed — and leaning on the plausibility bound to cap it does not work, because that
+    bound scales with the gap since the device was last seen and so evaporates in exactly the case
+    where the value is least trustworthy.
+    """
     usage.apply([_dev(rx=5_000_000)], link_max_bytes_s=LINK, now=_T0)
-    result = usage.apply(
-        [_dev(rx=42_000)], link_max_bytes_s=LINK, now=_T0 + _dt.timedelta(seconds=60)
-    )
+    t1 = _T0 + _dt.timedelta(seconds=60)
+    result = usage.apply([_dev(rx=42_000)], link_max_bytes_s=LINK, now=t1)
     assert result.resets == 1
-    assert usage.totals()["downloaded"] == 42_000  # not a negative, and not 4 GiB + delta
+    assert usage.totals()["downloaded"] == 0  # not a negative, not 4 GiB + delta, not 42_000
+
+    # Re-based, so the next poll is differenced against the restarted counter.
+    usage.apply([_dev(rx=52_000)], link_max_bytes_s=LINK, now=t1 + _dt.timedelta(seconds=60))
+    assert usage.totals()["downloaded"] == 10_000
 
 
 def test_an_implausible_delta_is_dropped_and_rebaselined(usage: WanUsage) -> None:
@@ -95,18 +117,92 @@ def test_the_allowance_scales_with_real_elapsed_time(usage: WanUsage) -> None:
     assert usage.totals()["downloaded"] == 50_000_000_000
 
 
-def test_a_departed_device_drops_its_cursor(usage: WanUsage) -> None:
-    """Its counter restarts when it returns; a stale cursor would read as one huge delta."""
+def test_a_departed_device_keeps_its_cursor(usage: WanUsage) -> None:
+    """The router keeps the device's counter while it is off the host table, so the cursor has to
+    survive the absence or the return is differenced against nothing.
+
+    Measured directly: the same ``rx=3618567324`` was offered once a minute for 23 hours by a
+    device that flapped in and out. The counter never moved — it was our cursor that kept being
+    thrown away.
+    """
     usage.apply([_dev(mac="AA:BB", rx=1_000), _dev(mac="CC:DD", rx=8_000)],
                 link_max_bytes_s=LINK, now=_T0)
     t1 = _T0 + _dt.timedelta(seconds=60)
     usage.apply([_dev(mac="AA:BB", rx=1_000)], link_max_bytes_s=LINK, now=t1)  # CC:DD left
     t2 = t1 + _dt.timedelta(seconds=60)
     usage.apply(
-        [_dev(mac="AA:BB", rx=1_000), _dev(mac="CC:DD", rx=300)], link_max_bytes_s=LINK, now=t2
+        [_dev(mac="AA:BB", rx=1_000), _dev(mac="CC:DD", rx=8_300)], link_max_bytes_s=LINK, now=t2
     )
-    by_mac = {d.mac: d for d in usage.by_device()}
-    assert by_mac["CC:DD"].rx == 300  # counted fresh, not 300 - 8000
+    by_mac = {d.macs[0]: d for d in usage.by_device()}
+    assert by_mac["CC:DD"].rx == 300  # differenced against the retained cursor, not re-counted
+
+
+def test_a_device_that_flaps_out_of_the_host_table_is_not_re_counted(usage: WanUsage) -> None:
+    """The production bug, in miniature.
+
+    A device present on one poll and absent on the next had its cursor deleted, so every
+    reappearance offered its whole cumulative counter as fresh traffic. Recorded: 1,249 GB in a
+    single day for one device on a link whose physical ceiling is ~326 GB/day, while its cursor
+    sat at 0.29 GB — the signature of re-baselining, not of traffic.
+    """
+    counter = 1_000_000_000  # a device that has already moved a GB before we ever look
+    now = _T0
+    usage.apply([_dev(mac="CC:DD", rx=counter)], link_max_bytes_s=LINK, now=now)
+    usage.apply([_dev(mac="AA:BB", rx=0)], link_max_bytes_s=LINK, now=now)  # cursor now exists
+
+    for _ in range(10):
+        counter += 100_000
+        now += _dt.timedelta(seconds=60)
+        usage.apply([_dev(mac="CC:DD", rx=counter)], link_max_bytes_s=LINK, now=now)
+        now += _dt.timedelta(seconds=60)
+        usage.apply([], link_max_bytes_s=LINK, now=now)  # gone from the host table
+
+    by_mac = {d.macs[0]: d for d in usage.by_device()}
+    assert by_mac["CC:DD"].rx == 1_000_000  # ten honest increments, not ten whole counters
+
+
+def test_a_cursor_survives_a_missed_poll(usage: WanUsage) -> None:
+    """The mechanism the flapping case depends on, asserted where it lives."""
+    usage.apply([_dev(mac="CC:DD", rx=8_000)], link_max_bytes_s=LINK, now=_T0)
+    usage.apply([], link_max_bytes_s=LINK, now=_T0 + _dt.timedelta(seconds=60))
+    rows = usage.db.execute("SELECT mac, rx FROM wan_cursor").fetchall()
+    assert [(r["mac"], r["rx"]) for r in rows] == [("CC:DD", 8_000)]
+
+
+def test_a_cursor_is_expired_once_the_device_has_been_gone_too_long(usage: WanUsage) -> None:
+    """Retention is not forever: past the horizon the old value is too stale to difference
+    against (the counter may have wrapped), so the return is baselined instead."""
+    usage.apply([_dev(mac="AA:BB", rx=0), _dev(mac="CC:DD", rx=8_000)],
+                link_max_bytes_s=LINK, now=_T0)
+    gone = _T0 + _dt.timedelta(days=8)
+    result = usage.apply([_dev(mac="AA:BB", rx=0)], link_max_bytes_s=LINK, now=gone)
+    assert result.expired == 1
+
+    back = gone + _dt.timedelta(seconds=60)
+    result = usage.apply([_dev(mac="CC:DD", rx=9_000)], link_max_bytes_s=LINK, now=back)
+    assert result.baselined == 1
+    assert usage.totals()["downloaded"] == 0  # baselined, not counted as 9_000 and not as 1_000
+
+
+def test_expiry_never_touches_the_daily_record(usage: WanUsage) -> None:
+    """wan_usage is the durable history and is never pruned; only the cursor ages out."""
+    usage.apply([_dev(mac="CC:DD", rx=0)], link_max_bytes_s=LINK, now=_T0)
+    usage.apply([_dev(mac="CC:DD", rx=5_000)], link_max_bytes_s=LINK, now=_T0)
+    usage.apply([_dev(mac="AA:BB", rx=0)], link_max_bytes_s=LINK, now=_T0 + _dt.timedelta(days=8))
+    assert usage.totals()["downloaded"] == 5_000
+
+
+def test_two_rows_for_one_mac_in_a_poll_are_not_double_counted(usage: WanUsage) -> None:
+    """The cursor read at the top of a poll is not the whole story — it has to track what the
+    loop itself writes, or a duplicated row is differenced against the same stale value twice
+    and both halves added to the day."""
+    usage.apply([_dev(mac="CC:DD", rx=1_000)], link_max_bytes_s=LINK, now=_T0)
+    usage.apply(
+        [_dev(mac="CC:DD", rx=3_000), _dev(mac="CC:DD", rx=3_000)],
+        link_max_bytes_s=LINK,
+        now=_T0 + _dt.timedelta(seconds=60),
+    )
+    assert usage.totals()["downloaded"] == 2_000
 
 
 def test_daily_totals_accumulate_rather_than_overwrite(usage: WanUsage) -> None:
@@ -138,7 +234,75 @@ def test_by_device_uses_the_most_recent_name(usage: WanUsage) -> None:
     rows = usage.by_device()
     assert len(rows) == 1
     assert rows[0].host == "new"
+    assert rows[0].macs == ("AA:BB",)
     assert rows[0].rx == 2_000
+
+
+def test_a_mac_that_reported_no_hostname_keeps_its_named_row(usage: WanUsage) -> None:
+    """The router stores the raw MAC as the hostname while it is re-creating a host-table entry.
+    If that day wins the name, one device splits into two identities — one named, one a bare MAC —
+    and the table shows the same phone twice."""
+    usage.apply([_dev(mac="CC:DD", host="logy", rx=0)], link_max_bytes_s=LINK, now=_T0)
+    usage.apply([_dev(mac="CC:DD", host="logy", rx=1_000)], link_max_bytes_s=LINK, now=_T0)
+    later = _T0 + _dt.timedelta(days=1)
+    usage.apply([_dev(mac="CC:DD", host="CC:DD", rx=1_000)], link_max_bytes_s=LINK, now=later)
+    usage.apply([_dev(mac="CC:DD", host="CC:DD", rx=2_000)], link_max_bytes_s=LINK, now=later)
+    rows = usage.by_device()
+    assert len(rows) == 1
+    assert rows[0].host == "logy"  # the named day wins even though it is older
+    assert rows[0].rx == 2_000
+
+
+def test_by_device_groups_a_randomised_mac_under_one_name(usage: WanUsage) -> None:
+    """Measured: one Xiaomi TV box reached the router under three locally-administered MACs and
+    filled three rows of the table. Storage stays per-MAC — that is the raw fact — and identity is
+    resolved on the way out."""
+    macs = ["0A:39", "B6:A2", "A2:1E"]
+    usage.apply([_dev(mac=m, host="Xiaomi-TV-Box", rx=0) for m in macs],
+                link_max_bytes_s=LINK, now=_T0)
+    usage.apply([_dev(mac=m, host="Xiaomi-TV-Box", rx=1_000) for m in macs],
+                link_max_bytes_s=LINK, now=_T0 + _dt.timedelta(seconds=60))
+    assert len(usage.by_device()) == 3
+    folded = fold_identities(usage.by_device())
+    assert len(folded) == 1
+    assert folded[0].host == "Xiaomi-TV-Box"
+    assert folded[0].rx == 3_000
+    assert sorted(folded[0].macs) == sorted(macs)
+
+
+def test_an_alias_groups_macs_the_router_names_differently(usage: WanUsage) -> None:
+    """An alias is for the case the hostname cannot fix: one handset the router sees under two
+    names. Resolved at read time, so adding it re-groups the history that is already stored."""
+    usage.apply([_dev(mac="AA:BB", host="android-1234", rx=0),
+                 _dev(mac="CC:DD", host="android-9999", rx=0)], link_max_bytes_s=LINK, now=_T0)
+    usage.apply([_dev(mac="AA:BB", host="android-1234", rx=1_000),
+                 _dev(mac="CC:DD", host="android-9999", rx=500)],
+                link_max_bytes_s=LINK, now=_T0 + _dt.timedelta(seconds=60))
+    folded = fold_identities(usage.by_device(), {"aa:bb": "phone", "CC:DD": "phone"})
+    assert len(folded) == 1
+    assert folded[0].host == "phone" and folded[0].rx == 1_500
+
+
+def test_the_device_count_counts_identities_not_macs(usage: WanUsage) -> None:
+    """The tile and the table are answers to the same question and must not disagree."""
+    usage.apply([_dev(mac="AA:BB", host="laptop", rx=0),
+                 _dev(mac="CC:DD", host="Xiaomi-TV-Box", rx=0),
+                 _dev(mac="EE:FF", host="Xiaomi-TV-Box", rx=0)], link_max_bytes_s=LINK, now=_T0)
+    t1 = _T0 + _dt.timedelta(seconds=60)
+    usage.apply([_dev(mac="AA:BB", host="laptop", rx=10),
+                 _dev(mac="CC:DD", host="Xiaomi-TV-Box", rx=20),
+                 _dev(mac="EE:FF", host="Xiaomi-TV-Box", rx=30)], link_max_bytes_s=LINK, now=t1)
+    assert len(usage.by_device()) == 3
+    assert len(fold_identities(usage.by_device())) == 2
+
+
+def test_display_name_prefers_an_alias_then_the_reported_name(usage: WanUsage) -> None:
+    """Aliases are hand-written YAML while DeviceStats.mac is upper-cased, so the lookup has to
+    tolerate either casing."""
+    assert display_name({"AA:BB": "phone"}, "AA:BB", "android-1") == "phone"
+    assert display_name({"aa:bb": "phone"}, "AA:BB", "android-1") == "phone"
+    assert display_name({}, "AA:BB", "android-1") == "android-1"
+    assert display_name(None, "AA:BB", "") == "AA:BB"
 
 
 def test_range_bounds_accept_iso_timestamps(usage: WanUsage) -> None:
@@ -151,15 +315,6 @@ def test_range_bounds_accept_iso_timestamps(usage: WanUsage) -> None:
 
 def test_an_empty_poll_is_harmless(usage: WanUsage) -> None:
     assert usage.apply([], link_max_bytes_s=LINK, now=_T0).counted == 0
-
-
-def test_devices_count_is_distinct_macs(usage: WanUsage) -> None:
-    usage.apply([_dev(mac="AA:BB", rx=0), _dev(mac="CC:DD", rx=0)],
-                link_max_bytes_s=LINK, now=_T0)
-    t1 = _T0 + _dt.timedelta(seconds=60)
-    usage.apply([_dev(mac="AA:BB", rx=10), _dev(mac="CC:DD", rx=20)],
-                link_max_bytes_s=LINK, now=t1)
-    assert usage.totals()["devices"] == 2
 
 
 # --- the source ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from orchestrator.ledger import MANUAL, QBITTORRENT
 from orchestrator.monitor.wan import PAUSE_KEY, paused_until
 from orchestrator.services import Services
 from orchestrator.util import _DATE_RE, RANGES, human_bytes, parse_bytes, parse_range, range_bounds
+from orchestrator.wan_usage import display_name, fold_identities
 from orchestrator.web.deps import KINDS, page, partial, require_ui_auth, services_of, use_iec
 
 router = APIRouter(dependencies=[Depends(require_ui_auth)])
@@ -253,11 +254,25 @@ def ui_wan_summary(
     lo, hi = _wan_bounds(services, range, start, end)
     wan = services.wan.totals(start=lo, end=hi)
     iec = use_iec(units)
+    # Counted the same way the table below counts its rows, from the same fold. A count of MACs
+    # would be a second, contradicting answer to the question the table is already answering.
+    devices = fold_identities(
+        services.wan.by_device(start=lo, end=hi),
+        services.config.monitoring.router.device_aliases,
+    )
     tiles: list[dict] = [
         {"value": human_bytes(wan["total"], iec=iec), "label": "Household WAN", "tone": "ok"},
         {"value": human_bytes(wan["downloaded"], iec=iec), "label": "Downloaded", "tone": "queued"},
         {"value": human_bytes(wan["uploaded"], iec=iec), "label": "Uploaded", "tone": "skip"},
-        {"value": str(wan["devices"]), "label": "Devices seen", "tone": ""},
+        {
+            "value": str(len(devices)),
+            "label": "Devices seen",
+            "tone": "",
+            "title": (
+                "Distinct devices. Several MAC addresses reporting the same name are one device — "
+                "phones and the TV box randomise theirs."
+            ),
+        },
     ]
     # How much of the household's usage the ledger explains. Only computed over days the WAN
     # record *fully* covers: it begins partway through whatever day the router source was first
@@ -307,9 +322,17 @@ def ui_wan_devices(
 ) -> HTMLResponse:
     services = services_of(request)
     lo, hi = _wan_bounds(services, range, start, end)
-    rows = services.wan.by_device(start=lo, end=hi)
+    aliases = services.config.monitoring.router.device_aliases
+    rows = fold_identities(services.wan.by_device(start=lo, end=hi), aliases)
     total = sum(r.total for r in rows)
-    live = {d.mac: d for d in services.snapshot("wan").data.devices} if _wan_live(services) else {}
+    # Keyed by identity, not by MAC: a phone that has rotated its address since the window began
+    # is one row here but a different MAC in the live snapshot, and joining on MAC showed it "—"
+    # while it was actively downloading. Summed, because a group can be live under several at once.
+    live: dict[str, int] = {}
+    if _wan_live(services):
+        for d in services.snapshot("wan").data.devices:
+            name = display_name(aliases, d.mac, d.host)
+            live[name] = live.get(name, 0) + d.curr_rx + d.curr_tx
     return partial(
         request,
         "_wan_devices.html",
@@ -317,13 +340,13 @@ def ui_wan_devices(
             "rows": [
                 {
                     "host": r.host,
-                    "mac": r.mac,
+                    "macs": r.macs,
                     "kind": r.kind,
                     "rx": r.rx,
                     "tx": r.tx,
                     "total": r.total,
                     "share": (r.total / total * 100) if total else 0,
-                    "rate": (live[r.mac].curr_rx + live[r.mac].curr_tx) if r.mac in live else None,
+                    "rate": live.get(r.host),
                 }
                 for r in rows
             ],

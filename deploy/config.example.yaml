@@ -209,12 +209,19 @@ monitoring:
     interval_s: 60             # one small HTTP round trip per poll
     # The fastest the WAN link could conceivably run, used to reject impossible counter jumps
     # (the router emits a garbage record right after a settings change — a measured 27 GB in one
-    # minute). Generous is fine; this is a sanity bound, not a rate limit. Startup refuses a
-    # combination where a 32-bit counter could wrap between two polls.
-    link_max_bytes_s: 25000000
+    # minute). Startup refuses a combination where a 32-bit counter could wrap between two polls.
+    #
+    # SET THIS TO THE REAL LINE RATE. It is the only bound on a counter value the engine cannot
+    # otherwise sanity-check, and a generous one silently disarms it — no rejections, no warnings,
+    # no symptom until a bogus counter slips under it. Leaving 200 Mbit configured on a 30 Mbit
+    # line once let 1,249 GB of fabricated traffic be recorded against one device in one day.
+    # Too low is visible (every rejection is logged); too high is not. The value below is a
+    # ~30 Mbit line measured from the router's own per-second samples (3.78 MB/s ceiling).
+    link_max_bytes_s: 4000000
     manage_settings: true      # re-enable the router's statistics feature if it gets turned off
     # MAC -> friendly name. Modern phones randomise their MAC, so one handset can show up as
-    # several short-lived devices; naming the ones you care about keeps the table readable.
+    # several short-lived devices. The Bandwidth tab already folds MACs that report the same
+    # hostname into one row; an alias is for the ones the router names differently or unhelpfully.
     device_aliases: {}
     # device_aliases:
     #   "AA:BB:CC:DD:EE:FF": Youssef's phone

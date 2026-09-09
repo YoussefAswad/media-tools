@@ -113,7 +113,17 @@ class RouterSource(BaseModel):
     interval_s: int = 60
     #: the fastest the WAN link could conceivably run, used to reject impossible counter jumps
     #: (the router emits a garbage record right after a settings change — a measured 27 GB in one
-    #: minute). Generous is fine; this is a sanity bound, not a rate limit.
+    #: minute).
+    #:
+    #: **Set this to the real line rate.** It is the only bound on a counter value the engine
+    #: cannot otherwise sanity-check, and a generous setting silently disarms it: 200 Mbit left
+    #: configured on a 30 Mbit line permits 2.25 GB per 60s poll, which is how 1,249 GB of
+    #: fabricated traffic was once recorded against a single device in a single day — while an
+    #: identically misbehaving device whose counter happened to sit above the bar was rejected 963
+    #: times. Too low is visible (every rejection is logged); too high is not.
+    #:
+    #: The default stays high because a too-low default would silently drop legitimate traffic on
+    #: an unknown fast line, which is the worse failure for someone who has not tuned it yet.
     link_max_bytes_s: int = 25_000_000
     #: re-enable the router's statistics feature at startup if a firmware update or factory reset
     #: turned it off. Reads first and writes only on a difference — these settings live in the
@@ -130,6 +140,12 @@ class RouterSource(BaseModel):
         That is only safe while a wrap (4 GiB) cannot happen inside one poll interval, so the
         assumption is asserted here rather than left as a comment for someone to violate later by
         raising ``interval_s``.
+
+        Note a *retained* cursor (``wan_usage._CURSOR_TTL``) spans gaps far longer than one poll,
+        where this bound says nothing. That is fine: a wrap across such a gap presents either as a
+        counter going backwards (baselined, counts nothing) or as one that wrapped past the cursor
+        (an under-count of 4.29 GB). Both err downwards, which is the safe direction; only the
+        per-poll case could err upwards, and that is what this asserts against.
         """
         if self.enabled and self.interval_s * self.link_max_bytes_s >= 4 * 1024**3:
             raise ValueError(

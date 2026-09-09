@@ -682,6 +682,59 @@ def test_a_paused_panel_never_renders_stale_rates_as_live(client) -> None:
     assert "Down now" not in body  # the stale rate must be gone, not merely relabelled
 
 
+def test_the_now_column_sums_the_live_rate_over_a_groups_macs(client) -> None:
+    """The by-device table is grouped by identity, so the live rate has to be joined by identity
+    too. Joining on MAC showed "—" for a phone that had rotated its address since the window
+    began — stale-as-absent, the mirror of the stale-as-live trap next door."""
+    from mediacore.router import DeviceStats
+    from orchestrator.monitor import SourceSnapshot
+
+    services, src = _enable_wan(client)
+    three = [
+        DeviceStats("0A:39", "Xiaomi-TV-Box", "5g", 0, 0, curr_rx=1000, curr_tx=0),
+        DeviceStats("B6:A2", "Xiaomi-TV-Box", "5g", 0, 0, curr_rx=500, curr_tx=0),
+        DeviceStats("A2:1E", "Xiaomi-TV-Box", "5g", 0, 0, curr_rx=0, curr_tx=200),
+    ]
+    src.client.devices = lambda: three  # type: ignore[union-attr]
+    src.collect()  # cold start baselines all three
+    src.client.devices = lambda: [  # type: ignore[union-attr]
+        DeviceStats(d.mac, d.host, d.kind, 5_000, 0, curr_rx=d.curr_rx, curr_tx=d.curr_tx)
+        for d in three
+    ]
+    _s, _e, data = src.collect()
+    services.snapshots["wan"] = SourceSnapshot(data=data, ok=True)
+
+    body = client.get("/ui/wan-devices?range=all").text
+    assert body.count("Xiaomi-TV-Box") == 1  # three MACs, one device
+    assert "(3 MACs)" in body
+    assert "1.70 KB/s" in body  # 1000 + 500 + 200, summed across the group
+
+
+def test_the_devices_tile_agrees_with_the_table_row_count(client) -> None:
+    """Two answers to "how many devices" is worse than either one alone."""
+    from mediacore.router import DeviceStats
+
+    _services, src = _enable_wan(client)
+    devices = [
+        DeviceStats("0A:39", "Xiaomi-TV-Box", "5g", 0, 0, curr_rx=0, curr_tx=0),
+        DeviceStats("B6:A2", "Xiaomi-TV-Box", "5g", 0, 0, curr_rx=0, curr_tx=0),
+        DeviceStats("60:18", "Linux-G15", "wired", 0, 0, curr_rx=0, curr_tx=0),
+    ]
+    src.client.devices = lambda: devices  # type: ignore[union-attr]
+    src.collect()
+    src.client.devices = lambda: [  # type: ignore[union-attr]
+        DeviceStats(d.mac, d.host, d.kind, 5_000, 0, curr_rx=0, curr_tx=0) for d in devices
+    ]
+    src.collect()
+
+    rows = client.get("/ui/wan-devices?range=all").text
+    assert rows.count("<tr>") - 1 == 2  # minus the header row
+    summary = client.get("/ui/wan-summary?range=all").text
+    import re as _re
+    seen = _re.search(r'>(\d+)</div>\s*<div class="tile-label">Devices seen', summary)
+    assert seen is not None and seen.group(1) == "2"
+
+
 def test_pause_minutes_are_clamped(client) -> None:
     """A typo must not blind the household's usage for a week."""
     from orchestrator.monitor.wan import PAUSE_KEY, paused_until
@@ -757,8 +810,10 @@ def test_the_ledger_share_is_clamped_to_the_wan_records_own_window(client) -> No
     src.collect()
     from mediacore.router import DeviceStats
 
+    # tx must not go backwards from the first poll's 100: the engine reads a counter that dropped
+    # as the router having restarted it, and re-bases instead of counting.
     src.client.devices = lambda: [  # type: ignore[union-attr]
-        DeviceStats("AA:BB", "TV", "wired", 1_000_000, 0, curr_rx=0, curr_tx=0)
+        DeviceStats("AA:BB", "TV", "wired", 1_000_000, 100, curr_rx=0, curr_tx=0)
     ]
     src.collect()
 

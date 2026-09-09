@@ -485,7 +485,7 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
     a Jellyfin stream pushed **437,701,354 B** off the server's NIC in 180 s while the router
     recorded **167 KB** for the receiving TV (0.04%), and a 326.7 MiB episode downloaded to a
     phone over wifi left that phone's whole-day total at 8.93 MB of its own background internet.
-    Four things bite when extending this:
+    Six things bite when extending this:
     - **The router allows exactly ONE admin session.** `USER_CFG` is unsupported on this firmware
       and a second login *silently* invalidates the first — the evicted session then answers
       HTTP 500, which is why `RouterClient.cgi` re-authenticates once on a 500 and no more. It
@@ -493,16 +493,57 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
       the Bandwidth tab's pause control is for, and why it stores a **deadline, not a flag**: a
       forgotten pause would quietly stop recording the household's usage with nothing visibly
       stuck to remind you.
-    - **Counters are cumulative and reset without warning, so the delta engine's rules are
-      load-bearing.** A cold start (empty `wan_cursor`) baselines and counts **nothing** —
-      counting the current values would credit every device's entire accumulated history to day
-      one. A counter going *backwards* is a reset, never a 32-bit wrap: a wrap needs 4.29 GB,
-      which cannot happen inside one poll interval, and `RouterSource` asserts that at startup
-      rather than leaving it as a comment for someone to violate by raising `interval_s`. A delta
-      larger than the link could physically have carried is dropped and re-baselined, because the
-      router emits exactly that after a settings change — **a measured 27 GB in one minute**.
+    - **The delta engine counts only the difference between two values it has itself observed.**
+      Everything else is a baseline. That single rule replaced three that read plausibly and were
+      wrong: a cold start counts nothing (right, and always was), but "a new MAC counts its
+      current value — the router's counter for a device starts when it first sees it" and "a
+      counter going backwards is a reset, so the current value is the new traffic" are both
+      **false**, because the router *keeps* a device's counter while the device is missing from
+      `STAT_ENTRY`. Combined with a cursor that was `DELETE`d the moment a device missed one poll,
+      a flapping device had its whole accumulated counter re-counted every minute: **1,249 GB
+      recorded for one device in one day on a link whose physical ceiling is ~326 GB/day**, while
+      its cursor read 0.29 GB. So **cursors are retained across an absence and expire by age**
+      (`wan_usage._CURSOR_TTL`, 7 days) — retention is what tells "the counter kept running"
+      (subtract) from "the counter restarted" (baseline), and deleting it destroyed exactly that.
+      The proof is unambiguous in the log: the identical `rx=3618567324` was offered and rejected
+      **963 times in a row over 23 hours**. The counter never moved.
+      A counter going backwards is still a reset and never a 32-bit wrap (a wrap needs 4.29 GB,
+      which cannot happen inside one poll interval; `RouterSource` asserts that at startup rather
+      than leaving it as a comment for someone to violate by raising `interval_s`) — it just
+      re-bases and counts nothing now. Note a retained cursor spans gaps far longer than one poll,
+      where that assertion says nothing; that is safe because a wrap across such a gap either
+      reads as backwards (baseline) or under-counts by 4.29 GB, and both err downwards. **An
+      under-count is a gap; an over-count is a fiction that looks like data.**
+    - **A plausibility bound set generously is not set at all.** A delta larger than the link
+      could physically have carried is dropped and re-baselined — the router emits exactly that
+      after a settings change (**a measured 27 GB in one minute**). But `link_max_bytes_s` was
+      left at 25 MB/s (200 Mbit) on a ~30 Mbit line, so the bar sat at 2.25 GB per 60s poll. That
+      is the *only* reason the bug above was invisible: `logy`'s counter happened to sit at 3.6 GB
+      and was caught 963 times, while the TV box's sat at ~1 GB and injected 1.2 TB in silence —
+      same failure, same minute, one above the bar and one below. **Set it to the real line rate**
+      (here 4 MB/s against a measured 3.78 MB/s ceiling). Too low is visible, because every
+      rejection is logged; too high produces no rejection, no warning and no symptom.
+    - **`metrics`' `wan.rx`/`wan.tx` are an independent check on the engine, and this is how to
+      run it.** They are sampled from `currBytes`, a different field of the same `STAT_ENTRY` row,
+      so they do not share the delta engine's failure modes. Sum them per day, calibrate the
+      scale factor against days you have reason to trust (60.36 here — `currBytes` is a per-second
+      rate over the router's own 60s window), and the ratio against `wan_usage` localises a bad
+      row to a **single device-day**: it read 1.00 on every clean day and 2.13/1.38/1.54/6.03/40.2
+      on the five days that carried a bad row. That is what identified all six poisoned rows, and
+      it is the acceptance test for any repair — "the number looks smaller" is not.
+      **`metrics` has 30-day retention and `wan_usage` has none**, so this instrument expires
+      while the data it audits does not: run the check within a month of a suspect day.
     - **Settings writes land in the router's flash.** `ensure_stats_enabled` reads first and
       writes only on a difference, once per process. Never write on a schedule.
+    - **Storage is keyed by MAC; identity is resolved at read time.** One device is not one MAC —
+      the Xiaomi TV box reached the router under **three** locally-administered addresses and
+      filled three rows, and `Redmi-Note-11` two. `fold_identities` groups on alias-or-hostname on
+      the way out, so a rename or a new `device_aliases` entry re-groups history that is already
+      stored instead of freezing whatever the device was called when the bytes were counted. Two
+      traps: the router stores the **raw MAC as the hostname** while it is re-creating a host-table
+      entry, so `by_device` must prefer a day that reported a real name or one device splits into a
+      named row and a bare-MAC row; and the live "Now" column must join on identity too, or a
+      phone that rotated its address mid-window reads `—` while it is actively downloading.
     - **Two datasets with different start dates cannot be divided.** The "Tracked as downloads"
       tile compares the ledger against household WAN. The ledger holds months; the WAN record
       begins *partway through* the day the source was switched on. Clamping the ledger to the WAN
@@ -515,6 +556,9 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
     Note the panels on the Bandwidth tab poll at 60s (matching `router.interval_s`), not the
     `data-interval="0"` the ledger panels beside them use: the By-device table has a live "Now"
     column, and at 0 it froze at page load — the same stale-as-live trap as pitfall 11.
+    And note `SCAN_VERSION`-style versioning (pitfall 16) does **not** apply here: `wan_usage`
+    holds observations, not a cached derivation of a formula, so there is nothing to re-derive —
+    which is exactly why repairing a bad row is a `DELETE` and not a version bump.
 
 24. **The >6-channel AC-3 compat path is the one branch of the classifier that is not
     idempotent, and nothing outside the file's own track list can tell you it already ran.**

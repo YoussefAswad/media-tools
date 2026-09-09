@@ -12,7 +12,11 @@
   <tbody>
   {% for r in rows %}
     <tr>
-      <td class="path" title="{{ r.mac }}">{{ r.host }}</td>
+      <td class="path" title="{{ r.macs|join(', ') }}">
+        {{ r.host }}
+        {# Randomised MACs are folded into one device; say so rather than hiding the join. #}
+        {% if r.macs|length > 1 %}<span class="muted">({{ r.macs|length }} MACs)</span>{% endif %}
+      </td>
       <td class="nowrap">
         {% if r.kind == "wired" %}<span class="badge type">🔌 Wired</span>
         {% elif r.kind %}<span class="badge type">📶 {{ r.kind }}</span>
