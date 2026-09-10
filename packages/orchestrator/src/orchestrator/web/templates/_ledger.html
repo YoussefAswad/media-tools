@@ -1,6 +1,7 @@
 {% if not rows %}
   <p class="muted empty">No downloads in this range.</p>
 {% else %}
+<div class="scroll">
 <table class="actions ledger">
   <thead><tr>
     <th>Name</th><th>Type</th><th>Source</th>
@@ -48,7 +49,12 @@
       <td class="nowrap">{{ r.downloaded_bytes|bytes }}</td>
       <td class="nowrap">{{ r.uploaded_bytes|bytes }}</td>
       <td class="nowrap"><strong>{{ r.total_bytes|bytes }}</strong></td>
-      <td class="muted nowrap">{{ (r.completed_at or r.recorded_at)[:10] }}</td>
+      {# the time is shown only when it is not midnight: every row predating the datetime field
+         stored a bare date, and rendering "00:00" against all of them would imply a precision
+         those rows never had. #}
+      <td class="muted nowrap" title="{{ r.completed_at or r.recorded_at }}">
+        {% set ts = r.completed_at or r.recorded_at %}{{ ts[:10] }}{% if ts[11:16] not in ('', '00:00') %}
+        <span class="muted">{{ ts[11:16] }}</span>{% endif %}</td>
       <td class="row-actions nowrap">
         <details class="edit">
           <summary class="mini ghost" title="Edit">✎</summary>
@@ -62,7 +68,7 @@
             </label>
             <label>Downloaded<input name="downloaded" value="{{ r.downloaded_bytes|bytes }}"></label>
             <label>Uploaded<input name="uploaded" value="{{ r.uploaded_bytes|bytes }}"></label>
-            <label>Completed<input name="completed_at" type="date" value="{{ (r.completed_at or '')[:10] }}"></label>
+            <label>Completed (UTC)<input name="completed_at" type="datetime-local" value="{{ (r.completed_at or '')[:16] }}"></label>
             <label class="wide">Notes<input name="notes" value="{{ r.notes or '' }}"></label>
             <div class="row-actions"><button type="submit" class="mini">save</button></div>
           </form>
@@ -76,4 +82,5 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}

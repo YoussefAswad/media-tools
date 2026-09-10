@@ -12,9 +12,10 @@
     <div class="quota-who">
       <span class="quota-name"><i class="swatch s{{ r.swatch }}"></i>{{ r.label }}</span>
       <span class="quota-sub">
-        {# "active", because a device that used nothing this period has no row to show — the
-           count is of devices that consumed bandwidth, not of devices assigned here. #}
-        {{ r.devices|length }} active device{{ '' if r.devices|length == 1 else 's' }}{% if r.shared %} · shared{% endif %}
+        {# "active", because a device (or person) that used nothing this period has no row to
+           show — these count what consumed bandwidth, not what is assigned here. #}
+        {% if r.person_count %}{{ r.person_count }} {{ 'person' if r.person_count == 1 else 'people' }} ·
+        {% endif %}{{ r.device_count }} active device{{ '' if r.device_count == 1 else 's' }}{% if r.shared %} · shared{% endif %}
       </span>
     </div>
     <div class="quota-bar">
@@ -36,23 +37,41 @@
         </div>
       {% endif %}
       <details class="quota-detail">
-        <summary>Devices{% if r.moves %} &amp; moves{% endif %}</summary>
-        <ul class="devlist">
-          {% for d in r.devices %}
-          <li>
-            <span>{{ d.host }}{% if d.macs > 1 %} <span class="muted">({{ d.macs }} MACs)</span>{% endif %}
-              {% if d.kind %}<span class="muted">· {{ d.kind }}</span>{% endif %}</span>
-            <span class="nowrap">{{ d.total|bytes }}</span>
+        {# People, not devices, are the top level here. Someone who counts to the shared pot
+           still has a usage worth reading — "how much did Logain use" is a question about a
+           person, not about a limit — so this breakdown does not depend on an allocation. #}
+        <summary>Who used it{% if r.moves %} &amp; what moved{% endif %}</summary>
+        <ul class="devlist people">
+          {% for p in r.people %}
+          <li class="person{{ ' unowned' if p.unowned }}">
+            <span>{{ p.label }}
+              <span class="muted">· {{ p.devices|length }} device{{ '' if p.devices|length == 1 else 's' }}</span>
+            </span>
+            <span class="nowrap">
+              <strong>{{ p.used|bytes }}</strong>
+              <span class="muted">{{ p.share|round|int }}%</span>
+            </span>
           </li>
+            {% for d in p.devices %}
+            <li class="under">
+              <span>{{ d.host }}{% if d.macs > 1 %} <span class="muted">({{ d.macs }} MACs)</span>{% endif %}
+                {% if d.kind %}<span class="muted">· {{ d.kind }}</span>{% endif %}</span>
+              <span class="nowrap">{{ d.total|bytes }}</span>
+            </li>
+            {% endfor %}
+            {% if p.moved_out %}
+            <li class="under">
+              <span class="muted">moved to another quota</span>
+              <span class="nowrap loss">−{{ p.moved_out|bytes }}</span>
+            </li>
+            {% endif %}
           {% else %}
-          <li><span class="muted">No devices assigned here.</span><span></span></li>
+          <li><span class="muted">Nothing used this quota in this period.</span><span></span></li>
           {% endfor %}
-          {% for m in r.moves %}
+          {% for m in r.moves if m.into %}
           <li class="move">
-            <span class="muted">{{ '+' if m.into else '−' }} {{ m.name }}
-              {{ '←' if m.into else '→' }} {{ m.other }}</span>
-            <span class="nowrap {{ 'gain' if m.into else 'loss' }}">
-              {{ '+' if m.into else '−' }}{{ m.bytes|bytes }}</span>
+            <span class="muted">+ {{ m.name }} ← {{ m.other }}</span>
+            <span class="nowrap gain">+{{ m.bytes|bytes }}</span>
           </li>
           {% endfor %}
         </ul>
@@ -83,6 +102,14 @@
     {{ dropped|bytes }} could not be reassigned: a download was booked against more bandwidth than
     the device that pulled it used this period. Reported rather than absorbed — the shortfall is
     real, not a rounding error.
+  </p>
+{% endif %}
+{% if split_day %}
+  <p class="muted note-line">
+    This period began at {{ split_day_time }} UTC on {{ split_day }}, and the router stores usage
+    one row per device per <em>day</em> — so that day's {{ split_day_total|bytes }} is counted here
+    in full, though part of it belongs to the previous period. Ledger entries are filtered to the
+    minute and are exact; set an entry's time to place it either side of the renewal.
   </p>
 {% endif %}
 {% if before_record %}

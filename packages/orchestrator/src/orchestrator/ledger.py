@@ -335,7 +335,11 @@ CREATE TABLE IF NOT EXISTS quota_alerts (
 """
 
 #: columns added after each table's first release — see :func:`mediacore.db.add_columns`.
-_QUOTA_PERIODS_ADDED: dict[str, str] = {}
+#:
+#: NOT NULL carries a DEFAULT, which is not optional: SQLite accepts a bare NOT NULL on an empty
+#: table and rejects it on a populated one, so the mistake passes in dev and fails at startup in
+#: production. '00:00' also means an existing period keeps behaving exactly as it did.
+_QUOTA_PERIODS_ADDED: dict[str, str] = {"start_time": "TEXT NOT NULL DEFAULT '00:00'"}
 _QUOTA_ALERTS_ADDED: dict[str, str] = {}
 
 
@@ -369,6 +373,25 @@ class QuotaPeriod:
     note: str | None
     created_at: str
     alerted_pct: int = 0
+    #: HH:MM (UTC) the period begins. A quota renewed at midday leaves that day split between
+    #: two periods, and the downloads either side of it belong to different ones.
+    start_time: str = "00:00"
+
+    @property
+    def starts_at(self) -> str:
+        """The period's exact start as a UTC ISO timestamp — what the ledger is filtered on."""
+        return f"{self.start_date}T{self.start_time or '00:00'}:00+00:00"
+
+    @property
+    def mid_day(self) -> bool:
+        """True when the period starts partway through a day.
+
+        Worth knowing because ``wan_usage`` is stored per **day**: the ledger can be filtered to
+        the minute but the router's counters cannot be split, so the start day's WAN total spans
+        both periods and no honest arithmetic divides it. The UI says so rather than implying a
+        precision the store does not have.
+        """
+        return (self.start_time or "00:00") != "00:00"
 
 
 class QuotaPeriods:
@@ -414,23 +437,37 @@ class QuotaPeriods:
             )
             self.db.commit()
 
-    def add(self, *, start_date: str, limit_bytes: int = 0, note: str | None = None) -> int:
+    def add(
+        self,
+        *,
+        start_date: str,
+        limit_bytes: int = 0,
+        note: str | None = None,
+        start_time: str = "00:00",
+    ) -> int:
         with self._lock:
             cur = self.db.execute(
-                "INSERT INTO quota_periods (start_date, limit_bytes, note, created_at) "
-                "VALUES (?,?,?,?)",
-                (start_date, limit_bytes, note, _now()),
+                "INSERT INTO quota_periods (start_date, start_time, limit_bytes, note, created_at)"
+                " VALUES (?,?,?,?,?)",
+                (start_date, start_time or "00:00", limit_bytes, note, _now()),
             )
             self.db.commit()
             return int(cur.lastrowid or 0)
 
     def update(
-        self, period_id: int, *, start_date: str, limit_bytes: int = 0, note: str | None = None
+        self,
+        period_id: int,
+        *,
+        start_date: str,
+        limit_bytes: int = 0,
+        note: str | None = None,
+        start_time: str = "00:00",
     ) -> bool:
         with self._lock:
             cur = self.db.execute(
-                "UPDATE quota_periods SET start_date=?, limit_bytes=?, note=? WHERE id=?",
-                (start_date, limit_bytes, note, period_id),
+                "UPDATE quota_periods SET start_date=?, start_time=?, limit_bytes=?, note=? "
+                "WHERE id=?",
+                (start_date, start_time or "00:00", limit_bytes, note, period_id),
             )
             self.db.commit()
             return cur.rowcount > 0
@@ -457,6 +494,12 @@ class QuotaPeriods:
     def latest_date(self) -> str | None:
         p = self.latest()
         return p.start_date if p else None
+
+    def latest_start(self) -> str | None:
+        """The current period's exact start timestamp — use this, not :meth:`latest_date`, for
+        anything filtering the ledger, which records a real time of day."""
+        p = self.latest()
+        return p.starts_at if p else None
 
     def previous(self) -> QuotaPeriod | None:
         """The period before the current one — what the tab's 'Previous' range covers."""

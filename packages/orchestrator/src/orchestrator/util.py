@@ -150,6 +150,30 @@ def parse_range(key: str | None) -> tuple[str | None, str]:
 
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: HH:MM, 24-hour. Times here are UTC, like every other timestamp this service stores.
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+#: an <input type="datetime-local"> value: YYYY-MM-DDTHH:MM (seconds optional).
+_DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$")
+
+
+def parse_time(text: str | None, default: str = "00:00") -> str:
+    """An HH:MM from a form field, or ``default``. Never raises — a bad value is not worth a 500."""
+    t = (text or "").strip()
+    return t[:5] if _TIME_RE.match(t[:5]) else default
+
+
+def parse_moment(text: str | None) -> str | None:
+    """A form's date or datetime-local value as a UTC ISO timestamp, or None.
+
+    Accepts both because the same field used to be a plain date, and every ledger row already
+    stored that way must keep parsing. A bare date means midnight, exactly as it always did.
+    """
+    v = (text or "").strip()
+    if _DATETIME_RE.match(v):
+        return f"{v}:00+00:00" if len(v) == 16 else f"{v}+00:00"
+    if _DATE_RE.match(v):
+        return f"{v}T00:00:00+00:00"
+    return None
 
 
 def range_bounds(

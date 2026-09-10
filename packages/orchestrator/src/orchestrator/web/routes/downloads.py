@@ -15,7 +15,16 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from orchestrator.ledger import MANUAL, QBITTORRENT
 from orchestrator.monitor.wan import PAUSE_KEY, paused_until
 from orchestrator.services import Services
-from orchestrator.util import _DATE_RE, RANGES, human_bytes, parse_bytes, parse_range, range_bounds
+from orchestrator.util import (
+    _DATE_RE,
+    RANGES,
+    human_bytes,
+    parse_bytes,
+    parse_moment,
+    parse_range,
+    parse_time,
+    range_bounds,
+)
 from orchestrator.wan_usage import display_name, fold_identities
 from orchestrator.web.deps import KINDS, page, partial, require_ui_auth, services_of, use_iec
 
@@ -28,9 +37,11 @@ def _ledger_bounds(
     (the default when one exists, or range=='period'); else the preset range key (30d)."""
     if start or end:
         return range_bounds(range, start, end)
-    latest = services.quota_periods.latest_date()
+    # The period's exact start, not midnight of its start date: a quota renewed at midday leaves
+    # the downloads either side of it in different periods, and the ledger records a real time.
+    latest = services.quota_periods.latest_start()
     if range in (None, "", "period") and latest:
-        return f"{latest}T00:00:00+00:00", None
+        return latest, None
     return parse_range(range or "30d")
 
 
@@ -140,7 +151,7 @@ def ui_ledger_remaining(request: Request, units: str | None = None) -> HTMLRespo
     c = services.quota_periods.latest()
     if c is None or c.limit_bytes <= 0:
         return HTMLResponse("")  # no card
-    used = services.ledger.totals(start=f"{c.start_date}T00:00:00+00:00", end=None)["total"]
+    used = services.ledger.totals(start=c.starts_at, end=None)["total"]
     remaining = c.limit_bytes - used
     pct = (used / c.limit_bytes * 100) if c.limit_bytes else 0
     tone = "over" if remaining < 0 else ("warn" if pct >= 85 else "ok")
@@ -154,6 +165,8 @@ def ui_ledger_remaining(request: Request, units: str | None = None) -> HTMLRespo
         "pct_label": round(pct),
         "tone": tone,
         "start_date": c.start_date,
+        "start_time": c.start_time,
+        "mid_day": c.mid_day,
     }
     return partial(request, "_remaining.html", ctx)
 
@@ -168,12 +181,14 @@ def ui_quota_periods(request: Request) -> HTMLResponse:
 def quota_periods_add(
     request: Request,
     start_date: str = Form(...),
+    start_time: str = Form("00:00"),
     limit: str = Form("0"),
     note: str = Form(""),
 ) -> Response:
     if _DATE_RE.match(start_date):
         services_of(request).quota_periods.add(
-            start_date=start_date, limit_bytes=parse_bytes(limit), note=(note.strip() or None)
+            start_date=start_date, start_time=parse_time(start_time),
+            limit_bytes=parse_bytes(limit), note=(note.strip() or None),
         )
     return RedirectResponse("/downloads", status_code=303)
 
@@ -183,13 +198,14 @@ def quota_periods_edit(
     request: Request,
     period_id: int,
     start_date: str = Form(...),
+    start_time: str = Form("00:00"),
     limit: str = Form("0"),
     note: str = Form(""),
 ) -> Response:
     if _DATE_RE.match(start_date):
         services_of(request).quota_periods.update(
-            period_id, start_date=start_date, limit_bytes=parse_bytes(limit),
-            note=(note.strip() or None),
+            period_id, start_date=start_date, start_time=parse_time(start_time),
+            limit_bytes=parse_bytes(limit), note=(note.strip() or None),
         )
     return RedirectResponse("/downloads", status_code=303)
 
@@ -217,7 +233,7 @@ def downloads_add(
         downloaded_bytes=parse_bytes(downloaded),
         uploaded_bytes=parse_bytes(uploaded),
         size_bytes=parse_bytes(size),
-        completed_at=(completed_at or None),
+        completed_at=parse_moment(completed_at),
         notes=(notes.strip() or None),
     )
     return RedirectResponse("/downloads", status_code=303)
@@ -242,7 +258,7 @@ def downloads_edit(
         downloaded_bytes=parse_bytes(downloaded),
         uploaded_bytes=parse_bytes(uploaded),
         size_bytes=parse_bytes(size),
-        completed_at=(completed_at or None),
+        completed_at=parse_moment(completed_at),
         notes=(notes.strip() or None),
     )
     return RedirectResponse("/downloads", status_code=303)

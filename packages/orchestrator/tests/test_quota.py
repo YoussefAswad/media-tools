@@ -222,6 +222,56 @@ def test_an_empty_household_reconciles(cfg: QuotasConfig) -> None:
     assert result.household == 0
 
 
+# --- people ------------------------------------------------------------------------------
+
+
+def test_a_quota_breaks_down_by_person_without_needing_an_allocation(cfg: QuotasConfig) -> None:
+    """The whole point of the person layer.
+
+    "How much did Logain use" is a question about a person, not about a limit. Requiring an
+    allocation to see it made everyone who counts to the shared pot invisible.
+    """
+    cfg.people = {**cfg.people, "joury": {"quota": "household"}}   # type: ignore[dict-item]
+    cfg.devices = {**cfg.devices, "JourysLaptop": "joury"}
+    devices = [_dev("JourysLaptop", 12 * GB), _dev("Xiaomi-TV-Box", 3 * GB)]
+    household = attribute(devices, [], cfg).get("household")
+
+    assert household.allocation == 0 and household.pct is None
+    assert [(p.label, p.used) for p in household.people] == [
+        ("Joury", 12 * GB), ("Unassigned devices", 3 * GB)
+    ]
+
+
+def test_unowned_devices_are_a_group_not_a_hole(cfg: QuotasConfig) -> None:
+    """The parts have to add back up to the whole, so nobody's devices are dropped."""
+    result = attribute([_dev("Xiaomi-TV-Box", 3 * GB), _dev("iPhone", 2 * GB)], [], cfg)
+    household = result.get("household")
+    assert [p.key for p in household.people] == [""]
+    assert household.people[0].used == 5 * GB
+
+
+def test_a_persons_share_carries_the_bytes_their_device_gave_away(cfg: QuotasConfig) -> None:
+    """Bytes moved OUT belong to the person whose device gave them away; bytes moved IN belong
+    to no person here, so they stay at the quota level rather than being credited arbitrarily."""
+    devices = [_dev("Linux-G15", 100 * GB), _dev("Xiaomi-TV-Box", 5 * GB)]
+    rows = [_row(total=10 * GB, quota="household")]
+    result = attribute(devices, rows, cfg)
+
+    youssef = result.get("youssef")
+    assert youssef.people[0].moved_out == 10 * GB
+    assert youssef.people[0].used == 90 * GB
+    household = result.get("household")
+    assert sum(p.used for p in household.people) + household.moved_in == household.used
+
+
+def test_person_totals_always_reconcile_with_their_quota(cfg: QuotasConfig) -> None:
+    devices = [_dev("Linux-G15", 50 * GB), _dev("PC-114", 30 * GB),
+               _dev("Logains-iPhone", 20 * GB), _dev("iPhone", 5 * GB)]
+    rows = [_row(device="PC-114", total=4 * GB, quota="household")]
+    for q in attribute(devices, rows, cfg).quotas:
+        assert sum(p.used for p in q.people) + q.moved_in == q.used
+
+
 # --- presentation rules the UI depends on -------------------------------------------------
 
 

@@ -218,8 +218,8 @@ class Worker(threading.Thread):
         pcts = sorted(cfg.worker.quota_alert_pcts)
         if period is None or not pcts:
             return
-        start = f"{period.start_date}T00:00:00+00:00"
-        result = self.services.attribution(start, None)
+        # the period's exact start, so a quota renewed midday does not count the whole day
+        result = self.services.attribution(period.starts_at, None)
 
         if period.limit_bytes > 0:
             level = self._crossed(result.household, period.limit_bytes, pcts, period.alerted_pct)
@@ -228,7 +228,7 @@ class Worker(threading.Thread):
                     name="Household",
                     used=result.household,
                     limit=period.limit_bytes,
-                    since=period.start_date,
+                    since=_since(period),
                     event="quota",
                 )
                 periods.set_alerted(period.id, level)
@@ -246,7 +246,7 @@ class Worker(threading.Thread):
                 name=quota.label,
                 used=quota.used,
                 limit=quota.allocation,
-                since=period.start_date,
+                since=_since(period),
                 event="quota-person",
             )
             periods.set_quota_alerted(period.id, quota.key, level)
@@ -278,3 +278,8 @@ class Worker(threading.Thread):
             tags=["chart_with_upwards_trend", "rotating_light" if over else "warning"],
             priority=PRIORITY_FAILURE if over else PRIORITY_STATUS,
         )
+
+
+def _since(period) -> str:
+    """How a period's start reads in an alert. ASCII only — ntfy header text is latin-1."""
+    return period.start_date if not period.mid_day else f"{period.start_date} {period.start_time}"

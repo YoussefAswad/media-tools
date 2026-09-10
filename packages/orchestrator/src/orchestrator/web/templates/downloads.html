@@ -44,7 +44,9 @@
     <label>Downloaded<input name="downloaded" placeholder="e.g. 12.3 GB" value="0"></label>
     <label>Uploaded<input name="uploaded" placeholder="e.g. 500 MB" value="0"></label>
     <label>Size (optional)<input name="size" placeholder="e.g. 12 GB"></label>
-    <label>Completed<input name="completed_at" type="date"></label>
+    {# datetime-local, not date: a quota renewed midday splits a day, and a download either side
+       of that belongs to a different period. A bare date still parses as midnight. #}
+    <label>Completed (UTC)<input name="completed_at" type="datetime-local"></label>
     <label class="wide">Notes<input name="notes"></label>
     <div class="row-actions"><button type="submit">Add</button></div>
   </form>
@@ -54,6 +56,7 @@
   <h2>Manage quota periods <span class="muted">— when each period starts, and the plan's cap</span></h2>
   <form method="post" action="/quota-periods/add" class="entry-form">
     <label>Starts<input name="start_date" type="date" required></label>
+    <label>at (UTC)<input name="start_time" type="time" value="00:00"></label>
     <label>Bandwidth limit<input name="limit" placeholder="e.g. 1 TB (blank = none)"></label>
     <label>Note<input name="note" placeholder="e.g. August quota"></label>
     <div class="row-actions"><button type="submit">Add period</button></div>

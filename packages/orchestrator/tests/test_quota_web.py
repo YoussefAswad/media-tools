@@ -253,3 +253,92 @@ def test_historical_game_rows_are_attributed_once(tmp_path, cfg_path, monkeypatc
     )
     build_services(cfg_path)  # a restart must not undo that
     assert {r.name: r.device for r in services.ledger.list()}["PEAK"] is None
+
+
+# --- quota periods start at a time, not just a date ---------------------------------------
+
+
+def test_a_period_can_start_partway_through_a_day(client) -> None:
+    """A quota renewed at midday leaves that day's downloads split between two periods."""
+    services = _services(client)
+    pid = services.quota_periods.add(
+        start_date="2026-09-10", start_time="14:30", limit_bytes=500 * GB
+    )
+    period = services.quota_periods.latest()
+    assert period.id == pid and period.mid_day is True
+    assert period.starts_at == "2026-09-10T14:30:00+00:00"
+
+
+def test_an_existing_period_keeps_starting_at_midnight(client) -> None:
+    """The column's DEFAULT is what stops a migration changing every period's meaning."""
+    services = _services(client)
+    services.quota_periods.add(start_date="2026-09-10")
+    period = services.quota_periods.latest()
+    assert period.start_time == "00:00" and period.mid_day is False
+    assert period.starts_at == "2026-09-10T00:00:00+00:00"
+
+
+def test_the_ledger_window_honours_the_period_time(client) -> None:
+    """A download before the renewal belongs to the previous period, not this one."""
+    ledger = _services(client).ledger
+    ledger.add_manual(name="before", kind="movie", downloaded_bytes=GB, uploaded_bytes=0,
+                      completed_at="2026-09-10T09:00:00+00:00")
+    ledger.add_manual(name="after", kind="movie", downloaded_bytes=2 * GB, uploaded_bytes=0,
+                      completed_at="2026-09-10T18:00:00+00:00")
+    _services(client).quota_periods.add(start_date="2026-09-10", start_time="14:30")
+
+    html = client.get("/ui/ledger").text
+    assert "after" in html and "before" not in html
+
+
+def test_a_mid_day_period_says_the_wan_day_cannot_be_split(client) -> None:
+    """wan_usage stores one row per device per DAY, so the start day sits in both periods.
+
+    Saying so beats implying a precision the store does not have — the same rail as the
+    Bandwidth tab's "tracked as downloads" tile.
+    """
+    _record_wan(client, **{"Linux-G15": 10 * GB})
+    _services(client).quota_periods.add(start_date="2026-09-10", start_time="14:30")
+    html = client.get("/ui/quota-buckets").text
+    assert "one row per device per" in html and "14:30" in html
+
+
+def test_a_midnight_period_says_nothing_about_split_days(client) -> None:
+    _record_wan(client, **{"Linux-G15": 10 * GB})
+    _services(client).quota_periods.add(start_date="2026-09-10")
+    assert "one row per device per" not in client.get("/ui/quota-buckets").text
+
+
+def test_the_period_form_round_trips_a_time(client) -> None:
+    client.post("/quota-periods/add",
+                data={"start_date": "2026-09-10", "start_time": "14:30", "limit": "500 GB"},
+                follow_redirects=False)
+    period = _services(client).quota_periods.latest()
+    assert (period.start_date, period.start_time) == ("2026-09-10", "14:30")
+    assert "14:30" in client.get("/ui/quota-periods").text
+
+
+def test_a_nonsense_time_falls_back_to_midnight_rather_than_500ing(client) -> None:
+    client.post("/quota-periods/add",
+                data={"start_date": "2026-09-10", "start_time": "99:99"},
+                follow_redirects=False)
+    assert _services(client).quota_periods.latest().start_time == "00:00"
+
+
+def test_a_ledger_entry_takes_a_time_of_day(client) -> None:
+    client.post("/downloads/add",
+                data={"name": "midday", "kind": "movie", "downloaded": "1 GB",
+                      "completed_at": "2026-09-10T14:30"},
+                follow_redirects=False)
+    row = next(r for r in _services(client).ledger.list() if r.name == "midday")
+    assert row.completed_at == "2026-09-10T14:30:00+00:00"
+
+
+def test_a_bare_date_still_parses_as_midnight(client) -> None:
+    """Every row stored before the field became a datetime must keep working."""
+    client.post("/downloads/add",
+                data={"name": "dateonly", "kind": "movie", "downloaded": "1 GB",
+                      "completed_at": "2026-09-10"},
+                follow_redirects=False)
+    row = next(r for r in _services(client).ledger.list() if r.name == "dateonly")
+    assert row.completed_at == "2026-09-10T00:00:00+00:00"

@@ -6,7 +6,8 @@
   <tbody>
   {% for c in rows %}
     <tr>
-      <td class="nowrap"><strong>{{ c.start_date }}</strong></td>
+      <td class="nowrap"><strong>{{ c.start_date }}</strong>{% if c.mid_day %}
+        <span class="muted">{{ c.start_time }} UTC</span>{% endif %}</td>
       <td class="nowrap">{{ c.limit_bytes|bytes if c.limit_bytes else "—" }}</td>
       <td>{{ c.note or "" }}</td>
       <td class="muted nowrap">{{ (c.created_at or "")[:10] }}</td>
@@ -15,6 +16,7 @@
           <summary class="mini ghost">edit</summary>
           <form method="post" action="/quota-periods/{{ c.id }}/edit" class="entry-form inline">
             <label>Starts<input name="start_date" type="date" value="{{ c.start_date }}" required></label>
+            <label>at (UTC)<input name="start_time" type="time" value="{{ c.start_time }}"></label>
             <label>Limit<input name="limit" value="{{ c.limit_bytes|bytes if c.limit_bytes else '' }}" placeholder="blank = none"></label>
             <label class="wide">Note<input name="note" value="{{ c.note or '' }}"></label>
             <div class="row-actions"><button type="submit" class="mini">save</button></div>

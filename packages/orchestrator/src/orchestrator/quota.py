@@ -48,7 +48,7 @@ tile: a number whose inputs do not cover the same window is not a number.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from orchestrator.config import QuotasConfig
@@ -85,6 +85,34 @@ class Reassignment:
 
 
 @dataclass(frozen=True)
+class PersonUsage:
+    """One person's usage *within* a quota.
+
+    People exist independently of allocations. Someone who counts to the shared pot still has a
+    usage worth seeing — "how much did Logain use" is a question about a person, not about a
+    limit — so this layer is always populated, and a quota with no allocation still breaks down
+    by who used it.
+
+    ``key`` is empty for the devices nobody owns; they are a group like any other rather than
+    being hidden, because "12 GB from hardware nobody has claimed" is itself worth reading.
+    """
+
+    key: str
+    label: str
+    devices: tuple[DeviceUsage, ...] = ()
+    #: bytes this person's devices gave away to another quota (see :class:`Reassignment`).
+    moved_out: int = 0
+
+    @property
+    def raw(self) -> int:
+        return sum(d.total for d in self.devices)
+
+    @property
+    def used(self) -> int:
+        return self.raw - self.moved_out
+
+
+@dataclass(frozen=True)
 class QuotaUsage:
     """One quota's usage over a period."""
 
@@ -97,6 +125,13 @@ class QuotaUsage:
     moved_in: int
     moved_out: int
     devices: tuple[DeviceUsage, ...] = ()
+    #: the same devices grouped by who owns them, heaviest person first.
+    #:
+    #: ``sum(p.used for p in people) + moved_in == used``. Bytes moved *out* belong to the person
+    #: whose device gave them away, so they are subtracted there; bytes moved *in* arrive from
+    #: another quota and belong to no person here, which is why they sit at the quota level and
+    #: are listed as reassignments rather than being credited to somebody arbitrarily.
+    people: tuple[PersonUsage, ...] = ()
 
     @property
     def used(self) -> int:
@@ -176,6 +211,8 @@ def attribute(
     raw: dict[str, int] = dict.fromkeys(buckets, 0)
     members: dict[str, list[DeviceUsage]] = {key: [] for key in buckets}
     by_device: dict[str, int] = {}
+    #: device identity -> owning person key ("" = nobody), for the per-person grouping.
+    owner_of: dict[str, str] = {}
     unassigned: list[DeviceUsage] = []
     household = 0
 
@@ -191,6 +228,7 @@ def attribute(
         raw[key] += dev.total
         members[key].append(dev)
         by_device[dev.host] = by_device.get(dev.host, 0) + dev.total
+        owner_of[dev.host] = cfg.devices.get(dev.host, "")
         household += dev.total
         if dev.host not in cfg.devices:
             unassigned.append(dev)
@@ -242,19 +280,22 @@ def attribute(
             )
         )
 
-    usages = [
-        QuotaUsage(
-            key=key,
-            label=cfg.label_of(key),
-            allocation=bucket.allocation_bytes,
-            shared=bucket.shared,
-            raw=raw.get(key, 0),
-            moved_in=moved_in.get(key, 0),
-            moved_out=moved_out.get(key, 0),
-            devices=tuple(sorted(members.get(key, []), key=lambda d: d.total, reverse=True)),
+    usages = []
+    for key, bucket in buckets.items():
+        devices = tuple(sorted(members.get(key, []), key=lambda d: d.total, reverse=True))
+        usages.append(
+            QuotaUsage(
+                key=key,
+                label=cfg.label_of(key),
+                allocation=bucket.allocation_bytes,
+                shared=bucket.shared,
+                raw=raw.get(key, 0),
+                moved_in=moved_in.get(key, 0),
+                moved_out=moved_out.get(key, 0),
+                devices=devices,
+                people=_group_by_person(devices, cfg, owner_of, given),
+            )
         )
-        for key, bucket in buckets.items()
-    ]
     # Heaviest first, matching the By-device table; an empty quota still shows, because "Logain
     # used nothing this period" is an answer and a missing row is not.
     usages.sort(key=lambda q: (q.used, q.raw), reverse=True)
@@ -268,6 +309,41 @@ def attribute(
         before_record=before_record,
         unknown_targets=tuple(dict.fromkeys(unknown)),
     )
+
+
+def _group_by_person(
+    devices: Sequence[DeviceUsage],
+    cfg: QuotasConfig,
+    owner_of: Mapping[str, str],
+    given: Mapping[str, int],
+) -> tuple[PersonUsage, ...]:
+    """Group a quota's devices by who owns them, heaviest person first.
+
+    Unowned devices become one group with an empty key rather than being dropped, so the parts
+    always add back up to the whole.
+    """
+    groups: dict[str, list[DeviceUsage]] = {}
+    for dev in devices:
+        groups.setdefault(owner_of.get(dev.host, ""), []).append(dev)
+    people = [
+        PersonUsage(
+            key=key,
+            label=_person_label(cfg, key),
+            devices=tuple(group),
+            moved_out=sum(given.get(d.host, 0) for d in group),
+        )
+        for key, group in groups.items()
+    ]
+    return tuple(sorted(people, key=lambda p: p.used, reverse=True))
+
+
+def _person_label(cfg: QuotasConfig, key: str) -> str:
+    if not key:
+        return "Unassigned devices"
+    person = cfg.people.get(key)
+    if person and person.label:
+        return person.label
+    return key.replace("-", " ").replace("_", " ").title()
 
 
 def _fallback_bucket():

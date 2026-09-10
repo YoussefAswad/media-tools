@@ -208,6 +208,11 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 .y-com { color: var(--muted); font-style: italic; }
 .y-punc { color: var(--muted); }
 
+/* Horizontal scroll for anything wider than its card. Tables used to get this only inside the
+   small-screen media query, so a table that grew a column overflowed its card on desktop
+   instead — which is exactly what the ledger did when it gained "downloaded by"/"counts toward". */
+.scroll { overflow-x: auto; }
+
 /* --- downloads ledger --- */
 .badge.type { background: var(--skip); }
 .badge.manual { background: #c678dd; }
@@ -220,6 +225,11 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
   background: var(--card); color: var(--fg); font-size: 14px;
 }
 .entry-form .row-actions { grid-column: 1 / -1; }
+.ledger form.assign select {
+  max-width: 150px; padding: 3px 6px; font-size: 12px;
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px;
+}
 .ledger details.edit { display: inline; }
 /* the summary toggle is styled to match the mini ghost buttons beside it (button.mini/.ghost
    are scoped to <button>, so a <summary> needs the box styles restated here) */
@@ -515,6 +525,11 @@ table.roots { max-width: 560px; margin-top: 10px; }
   border-bottom: 1px dashed var(--border); font-variant-numeric: tabular-nums;
 }
 .devlist li:last-child { border-bottom: none; }
+.devlist li.person { font-weight: 600; border-bottom-style: solid; }
+.devlist li.person.unowned { font-weight: 500; color: var(--muted); }
+/* Devices sit under the person who owns them; the rule is a containment cue, not a box. */
+.devlist li.under { padding-left: 16px; border-bottom: none; color: var(--muted); }
+.devlist li.under + li.person { margin-top: 6px; }
 .devlist .gain { color: var(--ok); }
 .devlist .loss { color: var(--fail); }
 

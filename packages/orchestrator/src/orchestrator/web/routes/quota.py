@@ -45,13 +45,14 @@ def _period_bounds(
     if which == "previous":
         prev = periods.previous()
         if prev is None:
-            return None, f"{latest.start_date}T00:00:00+00:00", f"before {latest.start_date}"
-        return (
-            f"{prev.start_date}T00:00:00+00:00",
-            f"{latest.start_date}T00:00:00+00:00",
-            f"{prev.start_date} to {latest.start_date}",
-        )
-    return f"{latest.start_date}T00:00:00+00:00", None, f"since {latest.start_date}"
+            return None, latest.starts_at, f"before {_when(latest)}"
+        return prev.starts_at, latest.starts_at, f"{_when(prev)} to {_when(latest)}"
+    return latest.starts_at, None, f"since {_when(latest)}"
+
+
+def _when(period) -> str:
+    """A period's start for display — the time only when there is one worth showing."""
+    return period.start_date if not period.mid_day else f"{period.start_date} {period.start_time}"
 
 
 @router.get("/quota", response_class=HTMLResponse)
@@ -181,9 +182,25 @@ def ui_quota_buckets(
                 "tone": q.tone,
                 "share": share,
                 "swatch": i % _SWATCHES,
-                "devices": [
-                    {"host": d.host, "kind": d.kind, "total": d.total, "macs": len(d.macs)}
-                    for d in q.devices
+                # counted here rather than in the template: the template lists *people* now, and
+                # summing their devices there would have to skip the moves mixed into the list
+                "device_count": len(q.devices),
+                "person_count": sum(1 for p in q.people if p.key),
+                "people": [
+                    {
+                        "key": person.key,
+                        "label": person.label,
+                        "used": person.used,
+                        "moved_out": person.moved_out,
+                        "unowned": not person.key,
+                        "share": (person.used / q.used * 100) if q.used > 0 else 0,
+                        "devices": [
+                            {"host": d.host, "kind": d.kind, "total": d.total,
+                             "macs": len(d.macs)}
+                            for d in person.devices
+                        ],
+                    }
+                    for person in q.people
                 ],
                 "moves": [
                     {
@@ -217,8 +234,28 @@ def ui_quota_buckets(
             "before_record": result.before_record,
             "unknown_targets": result.unknown_targets,
             "wan_first_day": services.wan.first_day(),
+            # A quota renewed partway through a day cannot be resolved against wan_usage, which
+            # stores one row per device per DAY. The ledger is filtered to the minute; the
+            # router's counters cannot be split, so the start day sits in both periods. Say so
+            # and show the size of the uncertainty rather than implying a precision the store
+            # does not have.
+            **_boundary(services, period),
         },
     )
+
+
+def _boundary(services: Services, period: str | None) -> dict:
+    """What the tab needs to say about a period that starts partway through a day."""
+    current = services.quota_periods.latest()
+    if period == "all" or current is None or not current.mid_day:
+        return {"split_day": None, "split_day_total": 0}
+    day = current.start_date
+    totals = services.wan.totals(start=day, end=day)
+    return {
+        "split_day": day,
+        "split_day_time": current.start_time,
+        "split_day_total": totals["total"],
+    }
 
 
 @router.get("/ui/quota-reassignments", response_class=HTMLResponse)
