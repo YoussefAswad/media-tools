@@ -1,27 +1,27 @@
 {% if not rows %}
-  <p class="muted empty">No cutoffs yet. Add one to start a quota period.</p>
+  <p class="muted empty">No quota periods yet. Add one to start tracking against a limit.</p>
 {% else %}
 <table class="actions ledger">
-  <thead><tr><th>Cutoff date</th><th>Limit</th><th>Note</th><th>Added</th><th></th></tr></thead>
+  <thead><tr><th>Starts</th><th>Limit</th><th>Note</th><th>Added</th><th></th></tr></thead>
   <tbody>
   {% for c in rows %}
     <tr>
-      <td class="nowrap"><strong>{{ c.cutoff_date }}</strong></td>
+      <td class="nowrap"><strong>{{ c.start_date }}</strong></td>
       <td class="nowrap">{{ c.limit_bytes|bytes if c.limit_bytes else "—" }}</td>
       <td>{{ c.note or "" }}</td>
       <td class="muted nowrap">{{ (c.created_at or "")[:10] }}</td>
       <td class="row-actions nowrap">
         <details class="edit">
           <summary class="mini ghost">edit</summary>
-          <form method="post" action="/cutoffs/{{ c.id }}/edit" class="entry-form inline">
-            <label>Cutoff date<input name="cutoff_date" type="date" value="{{ c.cutoff_date }}" required></label>
+          <form method="post" action="/quota-periods/{{ c.id }}/edit" class="entry-form inline">
+            <label>Starts<input name="start_date" type="date" value="{{ c.start_date }}" required></label>
             <label>Limit<input name="limit" value="{{ c.limit_bytes|bytes if c.limit_bytes else '' }}" placeholder="blank = none"></label>
             <label class="wide">Note<input name="note" value="{{ c.note or '' }}"></label>
             <div class="row-actions"><button type="submit" class="mini">save</button></div>
           </form>
         </details>
-        <form method="post" action="/cutoffs/{{ c.id }}/delete"
-              onsubmit="return confirm('Delete this cutoff?')">
+        <form method="post" action="/quota-periods/{{ c.id }}/delete"
+              onsubmit="return confirm('Delete this quota period?')">
           <button class="mini ghost danger" title="Delete">✕</button>
         </form>
       </td>

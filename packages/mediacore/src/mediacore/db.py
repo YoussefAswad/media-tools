@@ -1,7 +1,7 @@
 """The shared SQLite connection, and the one way tables gain columns.
 
 One file (``/state/orchestrator.db``, WAL) holds every table the service keeps: jobs, actions,
-downloads, cutoffs, metrics, alert state/events, the library index, and a small meta key/value
+downloads, quota periods, metrics, alert state/events, the library index, and a small meta key/value
 store. They share a single connection, which is why :class:`_SerializedConnection` exists — see
 its docstring, and never open a raw ``sqlite3.connect`` alongside it.
 """

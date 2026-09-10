@@ -185,7 +185,7 @@ class Worker(threading.Thread):
         if revived:
             log.info("auto-revived %d dead job(s)", revived)
 
-        # 3. quota alert: one ntfy per usage threshold crossed this cutoff period.
+        # 3. quota alert: one ntfy per usage threshold crossed this quota period.
         self._check_quota()
 
     def _maybe_vacuum(self) -> None:
@@ -199,30 +199,82 @@ class Worker(threading.Thread):
             self.services.queue.set_meta("last_vacuum", today)
 
     def _check_quota(self) -> None:
+        """Alert on the household's plan, and on any quota that has an allocation.
+
+        **Measured from the router, not from the ledger.** This used to read
+        ``ledger.totals()``, which counts what the pipeline downloaded and nothing else — over one
+        real period that read 409.05 GB against 505.36 GB actually consumed, so the alert would
+        have reported 81% of a 500 GB plan while the household was already over it. The ledger
+        is a record of downloads; the link is what a quota is about.
+
+        Thresholds fire once each per period: the household's high-water mark lives on the period
+        row, each quota's in ``quota_alerts``. A quota with no allocation raises nothing — it is
+        tracked, not bounded, and inventing a threshold for it would page about a pot whose size
+        nobody has decided.
+        """
         cfg = self.services.config
-        cutoffs = self.services.cutoffs
-        c = cutoffs.latest()
-        if c is None or c.limit_bytes <= 0 or not cfg.worker.quota_alert_pcts:
+        periods = self.services.quota_periods
+        period = periods.latest()
+        pcts = sorted(cfg.worker.quota_alert_pcts)
+        if period is None or not pcts:
             return
-        used = self.services.ledger.totals(
-            start=f"{c.cutoff_date}T00:00:00+00:00", end=None
-        )["total"]
-        pct = (used / c.limit_bytes * 100) if c.limit_bytes else 0
-        crossed = [t for t in sorted(cfg.worker.quota_alert_pcts) if pct >= t]
-        if not crossed:
-            return
-        level = crossed[-1]
-        if level <= c.alerted_pct:
-            return  # already alerted at this (or a higher) level this period
-        over = used > c.limit_bytes
+        start = f"{period.start_date}T00:00:00+00:00"
+        result = self.services.attribution(start, None)
+
+        if period.limit_bytes > 0:
+            level = self._crossed(result.household, period.limit_bytes, pcts, period.alerted_pct)
+            if level is not None:
+                self._send_quota_alert(
+                    name="Household",
+                    used=result.household,
+                    limit=period.limit_bytes,
+                    since=period.start_date,
+                    event="quota",
+                )
+                periods.set_alerted(period.id, level)
+
+        already = periods.alerted_quotas(period.id)
+        for quota in result.quotas:
+            if quota.allocation <= 0:
+                continue
+            level = self._crossed(
+                quota.used, quota.allocation, pcts, already.get(quota.key, 0)
+            )
+            if level is None:
+                continue
+            self._send_quota_alert(
+                name=quota.label,
+                used=quota.used,
+                limit=quota.allocation,
+                since=period.start_date,
+                event="quota-person",
+            )
+            periods.set_quota_alerted(period.id, quota.key, level)
+
+    @staticmethod
+    def _crossed(used: int, limit: int, pcts: list[int], already: int) -> int | None:
+        """The highest threshold this usage crosses, or None if none is newly crossed."""
+        if limit <= 0:
+            return None
+        pct = used / limit * 100
+        crossed = [t for t in pcts if pct >= t]
+        if not crossed or crossed[-1] <= already:
+            return None
+        return crossed[-1]
+
+    def _send_quota_alert(
+        self, *, name: str, used: int, limit: int, since: str, event: str
+    ) -> None:
+        pct = round(used / limit * 100) if limit else 0
+        over = used > limit
+        # ASCII hyphen deliberately: ntfy header text is latin-1, and an em dash arrives as "?".
         self.services.notify.send(
-            "quota",
-            title=f"Bandwidth quota {round(pct)}% used",
+            event,
+            title=f"{name} quota {pct}% used",
             body=(
-                f"Since {c.cutoff_date}: {human_bytes(used)} of {human_bytes(c.limit_bytes)}"
-                f" ({round(pct)}%){' - OVER LIMIT' if over else ''}."
+                f"Since {since}: {human_bytes(used)} of {human_bytes(limit)}"
+                f" ({pct}%){' - OVER LIMIT' if over else ''}."
             ),
             tags=["chart_with_upwards_trend", "rotating_light" if over else "warning"],
             priority=PRIORITY_FAILURE if over else PRIORITY_STATUS,
         )
-        cutoffs.set_alerted(c.id, level)

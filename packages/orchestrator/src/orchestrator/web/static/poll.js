@@ -12,7 +12,7 @@
 // No external libraries, by design: the CSP forbids them and the whole UI is server-rendered.
 (function () {
   var searchEl = document.getElementById("search");
-  // default range comes from the server-marked active chip (e.g. "cutoff" when one exists)
+  // default range comes from the server-marked active chip (e.g. "period" when one exists)
   var _rf = document.getElementById("range-filter");
   var _active = _rf && _rf.querySelector(".chip.active");
   // display-unit preference (GB vs GiB) is remembered per browser

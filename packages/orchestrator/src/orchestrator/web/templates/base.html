@@ -11,10 +11,11 @@
   <header class="topbar">
     <a class="brand" href="/">🎞️ Media Orchestrator</a>
     <nav>
-      {# Six flat tabs are really three pairs: what the pipeline is doing now and what is on
-         disk; then host health and bandwidth accounting; then settings. Grouping them so the
-         pairs adjoin costs nothing and stops "Downloads" reading as a download client — it is
-         a bandwidth ledger, so it says so. #}
+      {# Seven flat tabs are really three groups: what the pipeline is doing now and what is
+         on disk; then host health and the two halves of bandwidth accounting; then settings.
+         Grouping them so the related ones adjoin costs nothing and stops "Downloads" reading as
+         a download client — it is a bandwidth ledger, so it says so. Bandwidth answers "how
+         much, and which device"; Quota answers "whose", so they sit together. #}
       <a href="/" class="{% block nav_dash %}{% endblock %}">Dashboard</a>
       <span class="nav-group">
         <a href="/jobs" class="{% block nav_jobs %}{% endblock %}">Jobs</a>
@@ -23,6 +24,7 @@
       <span class="nav-group">
         <a href="/monitoring" class="{% block nav_mon %}{% endblock %}">Monitoring</a>
         <a href="/downloads" class="{% block nav_dl %}{% endblock %}">Bandwidth</a>
+        <a href="/quota" class="{% block nav_quota %}{% endblock %}">Quota</a>
       </span>
       <a href="/config" class="{% block nav_cfg %}{% endblock %}">Config</a>
     </nav>

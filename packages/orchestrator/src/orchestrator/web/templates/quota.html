@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block nav_quota %}active{% endblock %}
+{% block title %}Quota — Media Orchestrator{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <div class="filters" id="period-filter" role="group" aria-label="Quota period">
+    <button data-period="current" class="chip active">This period</button>
+    {% if has_previous %}<button data-period="previous" class="chip">Previous</button>{% endif %}
+    <button data-period="all" class="chip">All time</button>
+  </div>
+  <div class="filters" id="unit-filter" role="group" aria-label="Display units"
+       title="Display units: GB = decimal (1000), GiB = binary (1024)">
+    <button data-units="" class="chip active">GB</button>
+    <button data-units="iec" class="chip">GiB</button>
+  </div>
+  <a class="chip" href="/downloads">Bandwidth tab →</a>
+</div>
+
+{% if not wan_on %}
+<section class="card">
+  <p class="muted empty">
+    Quotas are measured from the router's per-device counters, and that source is off. Enable
+    <code>monitoring.router</code> and set the router password; until then there is nothing to
+    attribute — the downloads ledger is a record of what was downloaded, not a measurement of
+    the link.
+  </p>
+</section>
+{% endif %}
+
+<div class="summary" data-src="/ui/quota-summary" data-interval="0" data-unit-aware
+     data-chip-filters="period-filter">Loading…</div>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Quotas <span class="muted">— where the household's bandwidth counted</span></h2>
+  </div>
+  <div data-src="/ui/quota-buckets" data-interval="0" data-unit-aware
+       data-chip-filters="period-filter">Loading…</div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Reassignments <span class="muted">— downloads counted against another quota</span></h2>
+  </div>
+  <div data-src="/ui/quota-reassignments" data-interval="0" data-unit-aware
+       data-chip-filters="period-filter">Loading…</div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Devices with no owner</h2>
+  </div>
+  <div data-src="/ui/quota-unassigned" data-interval="0" data-unit-aware
+       data-chip-filters="period-filter">Loading…</div>
+</section>
+{% endblock %}

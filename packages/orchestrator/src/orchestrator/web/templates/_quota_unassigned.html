@@ -1,0 +1,40 @@
+{% if not rows %}
+  <p class="muted empty">Every device that used bandwidth this period has an owner.</p>
+{% else %}
+<p class="muted note-line">
+  These count to <strong>{{ default_label }}</strong>. That is the right answer for a shared TV or
+  a guest phone — assign the ones it is wrong for.
+</p>
+<div class="scroll">
+<table class="actions ledger">
+  <thead><tr><th>Device</th><th>Link</th><th>This period</th><th>Owner</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td class="path">{{ r.host }}{% if r.macs > 1 %} <span class="muted">({{ r.macs }} MACs)</span>{% endif %}</td>
+      <td class="nowrap">
+        {% if r.kind == "wired" %}<span class="badge type">🔌 Wired</span>
+        {% elif r.kind %}<span class="badge type">📶 {{ r.kind }}</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="nowrap"><strong>{{ r.total|bytes }}</strong></td>
+      <td class="row-actions nowrap">
+        {% if people %}
+        <form method="post" action="/quota/assign" class="assign">
+          <input type="hidden" name="device" value="{{ r.host }}">
+          <select name="person" onchange="this.form.submit()">
+            <option value="">{{ default_label }} (unowned)</option>
+            {% for p in people %}<option value="{{ p.key }}">{{ p.label }}</option>{% endfor %}
+          </select>
+          <noscript><button class="mini" type="submit">Assign</button></noscript>
+        </form>
+        {% else %}
+          <span class="muted">Add people under <code>quotas.people</code> first</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}

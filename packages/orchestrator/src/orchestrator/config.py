@@ -15,7 +15,7 @@ from typing import Any, Literal
 from mediacore.config import find_default_config, load_config
 from mediacore.models import CoreConfig
 from mediacore.renumber.models import ShowConfig
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ServerConfig(BaseModel):
@@ -246,6 +246,149 @@ class LibraryConfig(BaseModel):
 
 
 
+#: The quota unassigned devices and unassigned people fall back to. Auto-created when no
+#: ``quotas:`` map declares it, so the minimal config — nothing at all — still resolves.
+DEFAULT_QUOTA = "household"
+
+
+class QuotaBucket(BaseModel):
+    """One quota: the bucket a person's traffic counts against.
+
+    ``allocation`` is this quota's slice of the period's limit, written the way every other size
+    in this config is ("300 GB"). Left unset the quota is still *tracked* — it just has no bar to
+    fill and raises no alert, which is the right default for a household pot whose size is
+    whatever is left over.
+    """
+
+    label: str | None = None
+    allocation: str = ""
+    #: a pot several people (or nobody in particular) count against, rather than one person's own.
+    shared: bool = False
+
+    @field_validator("allocation", mode="before")
+    @classmethod
+    def _size_as_text(cls, v: object) -> object:
+        return str(v) if isinstance(v, int | float) else v
+
+    @property
+    def allocation_bytes(self) -> int:
+        from orchestrator.util import parse_bytes
+
+        return parse_bytes(self.allocation)
+
+
+class Person(BaseModel):
+    """Someone who owns devices.
+
+    ``quota`` is the escape hatch, not the norm: **a person with no quota named is their own
+    quota**, auto-created by :meth:`QuotasConfig.resolved_quotas`. Naming one is how two people
+    share a pot ("the kids") or how someone's traffic counts to the household instead of to
+    themselves. That keeps the middle level of device -> person -> quota free in the common case,
+    where every person is exactly one quota and repeating the name in two maps would be noise.
+    """
+
+    label: str | None = None
+    quota: str | None = None
+
+
+class QuotasConfig(BaseModel):
+    """Who bandwidth counts for.
+
+    Three maps, each answering one question, and all three hand-maintained here rather than in
+    the database: they are policy about the household, not observations about it, so they belong
+    in the file you can read, diff and revert.
+
+    * ``quotas`` — the buckets, and what each is allowed.
+    * ``people`` — who exists, and which bucket they count against.
+    * ``devices`` — which person a device belongs to, keyed by the device's *folded identity*
+      (its alias, else the hostname the router reported), never by MAC. The Xiaomi TV box already
+      reaches this router under three addresses; keying on identity means a newly randomised one
+      inherits the assignment instead of appearing as an unowned device, and matches how
+      :func:`orchestrator.wan_usage.fold_identities` groups the stored rows it is joined to.
+
+    A device with no entry counts to :attr:`default_quota` — which is the answer for the TV box
+    and the guest phones, not a gap to be filled.
+    """
+
+    #: Validate on assignment, so setting a field on an already-built config really rebuilds
+    #: the models under it. Without this ``cfg.quotas.people = {"a": {}}`` stores raw dicts that
+    #: blow up at read time — the same trap as ``ntfy.status_granularity``, which silently did
+    #: nothing when set after load and cost three tests before anyone noticed.
+    model_config = ConfigDict(validate_assignment=True)
+
+    enabled: bool = True
+    #: the device that performs this server's own downloads. Ledger rows with no device recorded
+    #: resolve to it, which is why it is a name here and not written into 38 historical rows:
+    #: renaming the server re-attributes its whole history rather than stranding it.
+    server_device: str = ""
+    #: the device that pulled the ledger's historical ``kind: game`` rows, applied once at
+    #: startup (``services._backfill_game_downloads``). Everything this ledger holds was
+    #: downloaded either by the server or, for games, by the household's gaming PC — a fact about
+    #: rows that already exist, not a rule for new ones, which is why it is a one-shot migration
+    #: and not a classifier. Blank switches it off.
+    games_device: str = ""
+    #: where devices and people with no assignment count.
+    default_quota: str = DEFAULT_QUOTA
+    quotas: dict[str, QuotaBucket] = Field(default_factory=dict)
+    people: dict[str, Person] = Field(default_factory=dict)
+    #: folded device identity -> person key.
+    devices: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _references_resolve(self) -> QuotasConfig:
+        """A name that points at nothing is a startup error, not a silently dropped assignment.
+
+        Same rail as ``pipeline.steps``: the failure mode of ignoring it is a device quietly
+        counting to the household for weeks because its owner's key was misspelled, which looks
+        exactly like a device nobody has got round to assigning yet.
+        """
+        known = self.resolved_quotas()
+        for key, person in self.people.items():
+            if person.quota and person.quota not in known:
+                raise ValueError(
+                    f"person {key!r} counts to unknown quota {person.quota!r}; "
+                    f"known quotas are: {', '.join(sorted(known))}"
+                )
+        for device, person_key in self.devices.items():
+            if person_key not in self.people:
+                raise ValueError(
+                    f"device {device!r} is owned by unknown person {person_key!r}; "
+                    f"known people are: {', '.join(sorted(self.people)) or '(none)'}"
+                )
+        return self
+
+    def resolved_quotas(self) -> dict[str, QuotaBucket]:
+        """Every quota that exists: the declared ones, plus one per person who named none, plus
+        :attr:`default_quota`. Declared always wins, so adding an allocation to a person's own
+        quota is just declaring it by their key."""
+        out = dict(self.quotas)
+        out.setdefault(self.default_quota, QuotaBucket(shared=True))
+        for key, person in self.people.items():
+            if not person.quota:
+                out.setdefault(key, QuotaBucket(label=person.label))
+        return out
+
+    def quota_of_person(self, person_key: str) -> str:
+        person = self.people.get(person_key)
+        if person is None:
+            return self.default_quota
+        return person.quota or person_key
+
+    def quota_of_device(self, identity: str) -> str:
+        """The quota a device's traffic counts against by default. Unowned -> the shared pot."""
+        person_key = self.devices.get(identity)
+        return self.quota_of_person(person_key) if person_key else self.default_quota
+
+    def label_of(self, quota_key: str) -> str:
+        bucket = self.resolved_quotas().get(quota_key)
+        if bucket and bucket.label:
+            return bucket.label
+        person = self.people.get(quota_key)
+        if person and person.label:
+            return person.label
+        return quota_key.replace("-", " ").replace("_", " ").title()
+
+
 class WorkerConfig(BaseModel):
     """How the single worker retries, defers, and tidies up after itself."""
 
@@ -258,7 +401,7 @@ class WorkerConfig(BaseModel):
     #: delete finished jobs + audit action rows older than this many days (0 = keep forever).
     #: JSONL audit files are always kept.
     retention_days: int = 90
-    #: quota-usage percentages that trigger a one-shot ntfy alert per cutoff period.
+    #: quota-usage percentages that trigger a one-shot ntfy alert per quota period.
     quota_alert_pcts: list[int] = Field(default_factory=lambda: [85, 100])
     #: auto-requeue a dead job once it has sat idle this long (0 disables via dead_revive_max).
     dead_revive_cooldown_s: int = 3600
@@ -347,8 +490,12 @@ class NotificationsConfig(BaseModel):
     job_deferred: NotifyRule = NotifyRule(once_per="job")
     #: A library scan finished (one summary for the whole walk).
     library_scan: NotifyRule = NotifyRule(priority=2)
-    #: A bandwidth-quota threshold was crossed.
+    #: The household crossed a threshold of the plan's limit.
     quota: NotifyRule = NotifyRule()
+    #: One person's (or one shared pot's) quota crossed a threshold of its allocation. Separate
+    #: from ``quota`` because a household nearing its plan is everyone's problem while one
+    #: person nearing their allocation is one person's, and you may well want only one of them.
+    quota_person: NotifyRule = NotifyRule()
     #: Monitoring alert transitions (disk / container / temperature / SMART).
     monitoring: NotifyRule = NotifyRule()
 
@@ -397,6 +544,8 @@ class OrchestratorConfig(CoreConfig):
     library: LibraryConfig = LibraryConfig()
     #: seasonal-shift show offsets (matched to a Sonarr series by ``name``).
     shows: list[ShowConfig] = Field(default_factory=list)
+    #: who the household's bandwidth counts for (the Quota tab).
+    quotas: QuotasConfig = QuotasConfig()
 
     #: how the worker retries, defers and tidies up.
     worker: WorkerConfig = WorkerConfig()

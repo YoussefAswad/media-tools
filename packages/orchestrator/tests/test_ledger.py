@@ -141,20 +141,20 @@ def test_range_bounds_custom_dates_override_preset():
     assert lo is not None and hi is not None
 
 
-def test_cutoffs_crud_and_latest(tmp_path):
+def test_quota_periods_crud_and_latest(tmp_path):
     from mediacore.db import open_db
-    from orchestrator.ledger import Cutoffs
-    cf = Cutoffs(open_db(tmp_path))
+    from orchestrator.ledger import QuotaPeriods
+    cf = QuotaPeriods(open_db(tmp_path))
     assert cf.latest() is None and cf.latest_date() is None
-    a = cf.add(cutoff_date="2026-08-01", limit_bytes=1024**4, note="Aug")
-    cf.add(cutoff_date="2026-09-01", limit_bytes=0, note="Sep")
+    a = cf.add(start_date="2026-08-01", limit_bytes=1024**4, note="Aug")
+    cf.add(start_date="2026-09-01", limit_bytes=0, note="Sep")
     latest = cf.latest()
-    assert latest.cutoff_date == "2026-09-01"  # most recent
+    assert latest.start_date == "2026-09-01"  # most recent
     assert cf.latest_date() == "2026-09-01"
     assert len(cf.list()) == 2
-    assert cf.update(a, cutoff_date="2026-08-02", limit_bytes=2 * 1024**4, note="Aug2") is True
+    assert cf.update(a, start_date="2026-08-02", limit_bytes=2 * 1024**4, note="Aug2") is True
     got = next(c for c in cf.list() if c.id == a)
-    assert got.cutoff_date == "2026-08-02" and got.limit_bytes == 2 * 1024**4
+    assert got.start_date == "2026-08-02" and got.limit_bytes == 2 * 1024**4
     assert cf.delete(a) is True and len(cf.list()) == 1
 
 

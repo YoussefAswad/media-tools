@@ -57,17 +57,23 @@ def test_a_not_null_column_without_a_default_only_fails_once_there_is_data() -> 
 
 
 def test_every_added_column_map_defaults_its_not_null_columns() -> None:
-    """Guards the rule above across all four tables at once, so a new entry can't reintroduce
+    """Guards the rule above across every table at once, so a new entry can't reintroduce
     the dev-passes/production-fails bug."""
     from mediacore.audit import _ACTIONS_ADDED
-    from orchestrator.ledger import _CUTOFFS_ADDED
+    from orchestrator.ledger import (
+        _DOWNLOADS_ADDED,
+        _QUOTA_ALERTS_ADDED,
+        _QUOTA_PERIODS_ADDED,
+    )
     from orchestrator.library.index import _LIBRARY_ADDED
     from orchestrator.queue import _JOBS_ADDED
 
     for name, spec in {
         "actions": _ACTIONS_ADDED,
         "jobs": _JOBS_ADDED,
-        "cutoffs": _CUTOFFS_ADDED,
+        "quota_periods": _QUOTA_PERIODS_ADDED,
+        "quota_alerts": _QUOTA_ALERTS_ADDED,
+        "downloads": _DOWNLOADS_ADDED,
         "library_files": _LIBRARY_ADDED,
     }.items():
         for col, decl in spec.items():

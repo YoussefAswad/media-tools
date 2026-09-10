@@ -7,6 +7,7 @@ time rather than caching sub-objects.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from dataclasses import dataclass, field
@@ -22,7 +23,7 @@ from mediacore.qbit import QbitClient
 
 from orchestrator.alerts import AlertEngine, Channel, InAppChannel, NtfyChannel
 from orchestrator.config import OrchestratorConfig, load_orchestrator_config
-from orchestrator.ledger import Cutoffs, Ledger
+from orchestrator.ledger import Ledger, QuotaPeriods
 from orchestrator.library import LibraryIndex
 from orchestrator.metrics import Metrics
 from orchestrator.monitor import (
@@ -34,8 +35,11 @@ from orchestrator.monitor import (
 )
 from orchestrator.notifications import Notifications
 from orchestrator.queue import JobQueue
+from orchestrator.quota import Attribution, attribute
 from orchestrator.titles import TitleIndex
-from orchestrator.wan_usage import WanUsage
+from orchestrator.wan_usage import WanUsage, fold_identities
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -47,7 +51,7 @@ class Services:
     notifier: Notifier
     queue: JobQueue
     ledger: Ledger
-    cutoffs: Cutoffs
+    quota_periods: QuotaPeriods
     metrics: Metrics
     alerts: AlertEngine
     #: per-device WAN usage, built by differencing the router's cumulative counters.
@@ -85,6 +89,21 @@ class Services:
     def source_enabled(self, name: str) -> bool:
         src = self.source(name)
         return bool(src and src.enabled)
+
+    def attribution(self, start: str | None, end: str | None = None) -> Attribution:
+        """Who the household's bandwidth counted for over a window.
+
+        One seam, so the Quota tab and the worker's alert cannot answer the same question two
+        ways — the failure that made ``ntfy.status_granularity`` gate two emitters and not the
+        other six. Bounds are ISO timestamps, matching :meth:`Ledger.list`; only the date part
+        reaches the WAN store.
+        """
+        aliases = self.config.monitoring.router.device_aliases
+        devices = fold_identities(self.wan.by_device(start=start, end=end), aliases)
+        rows = self.ledger.list(start=start, end=end, limit=100_000)
+        return attribute(
+            devices, rows, self.config.quotas, wan_first_day=self.wan.first_day()
+        )
 
     def arr_instance(self, app: str) -> ArrInstance | None:
         return getattr(self.config.arr, app, None)
@@ -132,7 +151,7 @@ def build_services(config_path: Path) -> Services:
     )
     queue.requeue_stuck()
     ledger = Ledger(db)
-    cutoffs = Cutoffs(db)
+    quota_periods = QuotaPeriods(db)
     library = LibraryIndex(db)
     metrics = Metrics(db)
     alerts = AlertEngine(db)
@@ -147,7 +166,7 @@ def build_services(config_path: Path) -> Services:
         notifier=notifier,
         queue=queue,
         ledger=ledger,
-        cutoffs=cutoffs,
+        quota_periods=quota_periods,
         metrics=metrics,
         library=library,
         alerts=alerts,
@@ -156,4 +175,29 @@ def build_services(config_path: Path) -> Services:
         jellyfin=jellyfin,
     )
     services.sources = build_sources(config.monitoring, wan=services._wan_deps())
+    _backfill_game_downloads(services)
     return services
+
+
+#: ``meta`` key marking the one-shot historical attribution as done.
+_GAMES_BACKFILL_KEY = "ledger_games_backfilled"
+
+
+def _backfill_game_downloads(services: Services) -> None:
+    """Attribute historical game downloads to the device that actually pulled them.
+
+    Everything the ledger holds was downloaded either by this server or, for games, by the
+    household's gaming PC — a fact about the past that no future row will need, so it is a
+    one-shot migration rather than a rule. Every other row is left NULL, which resolves to
+    ``quotas.server_device`` and so follows a rename instead of freezing the name of the day.
+
+    Guarded by a ``meta`` key rather than by "are any rows NULL", so clearing a row's device by
+    hand is not undone by the next restart.
+    """
+    device = services.config.quotas.games_device.strip()
+    if not device or services.queue.get_meta(_GAMES_BACKFILL_KEY):
+        return
+    touched = services.ledger.backfill_devices(kind="game", device=device)
+    services.queue.set_meta(_GAMES_BACKFILL_KEY, device)
+    if touched:
+        log.info("ledger: attributed %d historical game download(s) to %s", touched, device)

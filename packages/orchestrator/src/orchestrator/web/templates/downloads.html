@@ -4,9 +4,9 @@
 {% block content %}
 <div class="toolbar">
   <div class="filters" id="range-filter" role="group" aria-label="Time range">
-    <button data-range="cutoff" class="chip {{ 'active' if has_cutoff else '' }}">Since cutoff</button>
+    <button data-range="period" class="chip {{ 'active' if has_period else '' }}">This period</button>
     <button data-range="7d" class="chip">7d</button>
-    <button data-range="30d" class="chip {{ '' if has_cutoff else 'active' }}">30d</button>
+    <button data-range="30d" class="chip {{ '' if has_period else 'active' }}">30d</button>
     <button data-range="90d" class="chip">90d</button>
     <button data-range="1y" class="chip">1y</button>
     <button data-range="all" class="chip">All</button>
@@ -28,7 +28,7 @@
     <button data-units="iec" class="chip">GiB</button>
   </div>
   <button class="ghost" type="button" onclick="var e=document.getElementById('add-entry');e.hidden=!e.hidden">+ Add entry</button>
-  <button class="ghost" type="button" onclick="var e=document.getElementById('manage-cutoffs');e.hidden=!e.hidden">Manage cutoffs</button>
+  <button class="ghost" type="button" onclick="var e=document.getElementById('manage-periods');e.hidden=!e.hidden">Manage quota periods</button>
   <div data-src="/ui/wan-pause" data-interval="30000"></div>
 </div>
 
@@ -50,15 +50,15 @@
   </form>
 </section>
 
-<section class="card" id="manage-cutoffs" hidden>
-  <h2>Manage cutoffs <span class="muted">— period markers &amp; quota limits</span></h2>
-  <form method="post" action="/cutoffs/add" class="entry-form">
-    <label>Cutoff date<input name="cutoff_date" type="date" required></label>
+<section class="card" id="manage-periods" hidden>
+  <h2>Manage quota periods <span class="muted">— when each period starts, and the plan's cap</span></h2>
+  <form method="post" action="/quota-periods/add" class="entry-form">
+    <label>Starts<input name="start_date" type="date" required></label>
     <label>Bandwidth limit<input name="limit" placeholder="e.g. 1 TB (blank = none)"></label>
     <label>Note<input name="note" placeholder="e.g. August quota"></label>
-    <div class="row-actions"><button type="submit">Add cutoff</button></div>
+    <div class="row-actions"><button type="submit">Add period</button></div>
   </form>
-  <div data-src="/ui/cutoffs" data-interval="0">Loading…</div>
+  <div data-src="/ui/quota-periods" data-interval="0">Loading…</div>
 </section>
 
 <div data-src="/ui/ledger-remaining" data-interval="0" data-unit-aware></div>

@@ -3,8 +3,10 @@
 {% else %}
 <table class="actions ledger">
   <thead><tr>
-    <th>Name</th><th>Type</th><th>Source</th><th>Down</th><th>Up</th><th>Total</th>
-    <th>Completed</th><th></th>
+    <th>Name</th><th>Type</th><th>Source</th>
+    <th title="Which device's measured WAN usage these bytes come out of">Downloaded by</th>
+    <th title="Which quota these bytes count against. Blank follows the device's owner.">Counts toward</th>
+    <th>Down</th><th>Up</th><th>Total</th><th>Completed</th><th></th>
   </tr></thead>
   <tbody>
   {% for r in rows %}
@@ -17,6 +19,31 @@
         {% elif r.app == "sonarr" %}<span class="app sonarr">📺 Episode</span>
         {% else %}<span class="muted">auto</span>{% endif %}
         {% if r.edited and r.source != "manual" %}<span class="muted" title="hand-edited">✎</span>{% endif %}
+      </td>
+      {# Attribution posts on its own, never through the edit form beside it: changing whose
+         bytes these were must not mark the row hand-edited and stop qBittorrent refreshing how
+         many there were. #}
+      <td class="nowrap">
+        <form method="post" action="/quota/attribute/{{ r.id }}" class="assign">
+          <select name="device" onchange="this.form.submit()">
+            <option value="" {{ 'selected' if not r.device else '' }}>
+              {{ server_device or "server" }} (default)</option>
+            {% for d in devices %}<option value="{{ d }}" {{ 'selected' if r.device == d else '' }}>{{ d }}</option>{% endfor %}
+            {% if r.device and r.device not in devices %}<option value="{{ r.device }}" selected>{{ r.device }}</option>{% endif %}
+          </select>
+          <input type="hidden" name="quota" value="{{ r.quota or '' }}">
+          <noscript><button class="mini" type="submit">set</button></noscript>
+        </form>
+      </td>
+      <td class="nowrap">
+        <form method="post" action="/quota/attribute/{{ r.id }}" class="assign">
+          <input type="hidden" name="device" value="{{ r.device or '' }}">
+          <select name="quota" onchange="this.form.submit()">
+            <option value="" {{ 'selected' if not r.quota else '' }}>the device's owner</option>
+            {% for q in quotas %}<option value="{{ q.key }}" {{ 'selected' if r.quota == q.key else '' }}>{{ q.label }}</option>{% endfor %}
+          </select>
+          <noscript><button class="mini" type="submit">set</button></noscript>
+        </form>
       </td>
       <td class="nowrap">{{ r.downloaded_bytes|bytes }}</td>
       <td class="nowrap">{{ r.uploaded_bytes|bytes }}</td>
