@@ -71,11 +71,26 @@ def quota_page(request: Request) -> HTMLResponse:
 
 
 def _people_options(services: Services) -> list[dict]:
+    """People, labelled by their own name — never by the quota they count to.
+
+    Labelling them by quota collapsed every person pointed at the shared pot into the same
+    entry: three people all reading "Household" in a dropdown you pick an owner from. Where the
+    quota differs from the person it is shown *alongside* the name, because "this device becomes
+    Joury's, and Joury counts to Household" is the thing being decided.
+    """
     cfg = services.config.quotas
-    return [
-        {"key": key, "label": person.label or cfg.label_of(cfg.quota_of_person(key))}
-        for key, person in sorted(cfg.people.items())
-    ]
+    options = []
+    for key, person in sorted(cfg.people.items()):
+        name = person.label or key.replace("-", " ").replace("_", " ").title()
+        quota = cfg.quota_of_person(key)
+        options.append(
+            {
+                "key": key,
+                "label": name if quota == key else f"{name} \u2192 {cfg.label_of(quota)}",
+                "name": name,
+            }
+        )
+    return options
 
 
 def _attribution(request: Request, period: str | None) -> tuple[Attribution, str, Services]:

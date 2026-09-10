@@ -121,6 +121,26 @@ def test_an_unowned_device_is_listed_for_assignment(client) -> None:
     assert '<form method="post" action="/quota/assign"' in html
 
 
+def test_people_are_listed_by_name_not_by_their_quota(client) -> None:
+    """Labelling people by quota collapsed everyone pointed at the shared pot into one entry.
+
+    Three people all reading "Household" in a dropdown you pick an *owner* from is unusable, and
+    it shipped once — spotted on the live tab, not in a test.
+    """
+    services = _services(client)
+    services.config.quotas.people = {
+        "logain": {"quota": "household"},      # type: ignore[dict-item]
+        "joury": {"quota": "household"},       # type: ignore[dict-item]
+        "youssef": {},                          # type: ignore[dict-item]
+    }
+    _record_wan(client, **{"Xiaomi-TV-Box": GB})
+    html = client.get("/ui/quota-unassigned").text
+    assert "Logain &#8594; Household" in html or "Logain \u2192 Household" in html
+    assert "Joury" in html
+    # the person who is their own quota needs no arrow
+    assert ">Youssef</option>" in html
+
+
 def test_the_summary_shows_the_plan_limit_when_a_period_has_one(client) -> None:
     _services(client).quota_periods.add(start_date="2020-01-01", limit_bytes=500 * GB)
     _record_wan(client, **{"Linux-G15": 100 * GB})
