@@ -684,6 +684,13 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
       the whole cost. `QuotasConfig` sets `validate_assignment=True` so setting a field on an
       already-built config really rebuilds the models under it — the `status_granularity` trap
       from pitfall 22, closed at the model this time.
+    - **A period's `end` is an exclusive instant, and `wan_usage` stores days.** Truncating the
+      end to a date made it inclusive, so a boundary at midnight put that whole day in *both*
+      windows — the current period asking `day >= '2026-09-11'` and its predecessor
+      `day <= '2026-09-11'`. Each window still reconciled internally, which is why nothing
+      flagged it: the day was simply counted twice, once on each side. `_range_where` now takes
+      the day containing `end - 1s`, leaving a bare `YYYY-MM-DD` end alone because that names a
+      day rather than an instant (`totals(start=day, end=day)` asks for exactly that day).
     - **A mid-day renewal is exact only if the start day was snapshot at the renewal instant.**
       `wan_usage` accumulates into one row per device per day, so *at that instant* the day's row
       holds exactly the traffic that predates the new period — and one poll later it does not.

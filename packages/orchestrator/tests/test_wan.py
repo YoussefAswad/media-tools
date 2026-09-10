@@ -416,3 +416,37 @@ def test_settings_are_checked_once_per_process(usage: WanUsage) -> None:
     for _ in range(3):
         mon.collect()
     assert len(checks) == 1
+
+
+def test_an_exclusive_end_instant_does_not_include_its_own_day(usage: WanUsage) -> None:
+    """One period ends exactly where the next begins; the boundary day must not land in both.
+
+    Truncating an exclusive end instant to a date made it inclusive, so a period starting
+    2026-09-11T00:00 and its predecessor ending there overlapped by a full day. Each window
+    still reconciled on its own, so nothing flagged it — the day was just counted twice.
+    """
+    usage.apply([_dev(rx=0)], link_max_bytes_s=LINK, now=_T0)
+    usage.apply([_dev(rx=1_000_000)], link_max_bytes_s=LINK,
+                now=_dt.datetime(2026, 9, 11, 6, 0, tzinfo=_dt.UTC))
+
+    before = usage.totals(start=None, end="2026-09-11T00:00:00+00:00")
+    after = usage.totals(start="2026-09-11T00:00:00+00:00", end=None)
+    assert before["total"] == 0          # 11 Sep belongs to the later window only
+    assert after["total"] == 1_000_000
+    assert before["total"] + after["total"] == usage.totals()["total"]
+
+
+def test_a_bare_date_end_still_names_that_whole_day(usage: WanUsage) -> None:
+    """`totals(start=day, end=day)` asks for one day, not for the day before it."""
+    usage.apply([_dev(rx=0)], link_max_bytes_s=LINK, now=_T0)
+    usage.apply([_dev(rx=5_000)], link_max_bytes_s=LINK,
+                now=_dt.datetime(2026, 8, 29, 23, 0, tzinfo=_dt.UTC))
+    assert usage.totals(start="2026-08-29", end="2026-08-29")["total"] == 5_000
+
+
+def test_an_inclusive_end_of_day_bound_is_unchanged(usage: WanUsage) -> None:
+    """The UI's custom date range ends at 23:59:59, which must still mean that day."""
+    usage.apply([_dev(rx=0)], link_max_bytes_s=LINK, now=_T0)
+    usage.apply([_dev(rx=7_000)], link_max_bytes_s=LINK,
+                now=_dt.datetime(2026, 8, 29, 12, 0, tzinfo=_dt.UTC))
+    assert usage.totals(end="2026-08-29T23:59:59+00:00")["total"] == 7_000

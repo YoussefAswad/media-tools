@@ -257,8 +257,19 @@ class WanUsage:
     # --- reads ------------------------------------------------------------------------
 
     def _range_where(self, start: str | None, end: str | None) -> tuple[str, list]:
-        """``start``/``end`` are ISO timestamps (as the ledger uses); only their date part
-        matters here, so the caller can pass the same bounds to both."""
+        """``start``/``end`` are ISO timestamps (as the ledger uses), reduced to whole days here.
+
+        ``end`` is an **exclusive instant**, and truncating it to a date silently made it an
+        inclusive day. One quota period ends exactly where the next begins, so a period boundary
+        at midnight put that whole day in *both* windows: with the current period starting
+        ``2026-09-11T00:00`` the previous one asked for ``day <= '2026-09-11'`` and the two
+        overlapped by a full day. Each window still reconciled internally, so nothing flagged it
+        — the day was simply counted twice, once on each side.
+
+        So the last day included is the one containing ``end - 1s``. A bare ``YYYY-MM-DD`` end is
+        left alone: it names a day rather than an instant (``totals(start=day, end=day)`` asks
+        for exactly that day), and shifting it would move the answer back by one.
+        """
         where: list[str] = []
         params: list = []
         if start:
@@ -266,7 +277,7 @@ class WanUsage:
             params.append(start[:10])
         if end:
             where.append("day <= ?")
-            params.append(end[:10])
+            params.append(_last_day(end))
         return " AND ".join(where), params
 
     def totals(self, *, start: str | None = None, end: str | None = None) -> dict[str, int]:
@@ -397,6 +408,17 @@ def fold_identities(
             )
         )
     return sorted(folded.values(), key=lambda d: d.total, reverse=True)
+
+
+def _last_day(end: str) -> str:
+    """The last whole day an exclusive ``end`` instant covers. A bare date is that date."""
+    if len(end) <= 10 or "T" not in end:
+        return end[:10]
+    try:
+        moment = _dt.datetime.fromisoformat(end)
+    except ValueError:
+        return end[:10]
+    return (moment - _dt.timedelta(seconds=1)).date().isoformat()
 
 
 def subtract(
