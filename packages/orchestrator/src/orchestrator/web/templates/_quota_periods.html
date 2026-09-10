@@ -7,7 +7,12 @@
   {% for c in rows %}
     <tr>
       <td class="nowrap"><strong>{{ c.start_date }}</strong>{% if c.mid_day %}
-        <span class="muted">{{ c.start_time }} UTC</span>{% endif %}</td>
+        <span class="muted">{{ c.start_time }} UTC</span>
+        {% if c.split_captured %}<span class="badge ok"
+          title="The start day was snapshot at the renewal instant, so it divides exactly between this period and the previous one.">exact</span>
+        {% else %}<span class="badge warn"
+          title="No snapshot: the start day counts entirely toward the previous period, and this one is measured from the next midnight.">day given to previous</span>
+        {% endif %}{% endif %}</td>
       <td class="nowrap">{{ c.limit_bytes|bytes if c.limit_bytes else "—" }}</td>
       <td>{{ c.note or "" }}</td>
       <td class="muted nowrap">{{ (c.created_at or "")[:10] }}</td>

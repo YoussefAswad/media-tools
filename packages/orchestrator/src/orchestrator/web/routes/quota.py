@@ -13,6 +13,8 @@ panel that polls a snapshot it does not need is the stale-as-live trap in a diff
 
 from __future__ import annotations
 
+import datetime as _dt
+
 from fastapi import APIRouter, Depends, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from mediacore.config import replace_mapping_block, save_text
@@ -44,14 +46,23 @@ def _period_bounds(
         return None, None, "all recorded usage"
     if which == "previous":
         prev = periods.previous()
-        if prev is None:
-            return None, latest.effective_start, f"before {_when(latest)}"
-        return (
-            prev.effective_start,
-            latest.effective_start,
-            f"{_when(prev)} to {_when(latest)}",
-        )
+        start = prev.effective_start if prev else None
+        label = f"{_when(prev)} to {_when(latest)}" if prev else f"before {_when(latest)}"
+        return start, latest.effective_start, label
     return latest.effective_start, None, f"since {_when(latest)}"
+
+
+def _subtraction(services: Services, which: str | None) -> dict:
+    """The per-MAC amount to take off this window so a split start day lands on one side.
+
+    The current period keeps its start day minus the snapshot; the previous one keeps only the
+    snapshot. Both are driven by the *same* period's split — the boundary belongs to the newer
+    period, and its predecessor simply ends there.
+    """
+    latest = services.quota_periods.latest()
+    if which == "all" or latest is None:
+        return {}
+    return services.period_subtraction(latest, side="before" if which == "previous" else "after")
 
 
 def _selected_period(services: Services, which: str | None):
@@ -120,7 +131,8 @@ def _people_options(services: Services) -> list[dict]:
 def _attribution(request: Request, period: str | None) -> tuple[Attribution, str, Services]:
     services = services_of(request)
     lo, hi, label = _period_bounds(services, period)
-    return services.attribution(lo, hi), label or "", services
+    result = services.attribution(lo, hi, subtract=_subtraction(services, period))
+    return result, label or "", services
 
 
 @router.get("/ui/quota-summary", response_class=HTMLResponse)
@@ -273,11 +285,15 @@ def _boundary(services: Services, period: str | None) -> dict:
     if period == "all" or current is None or not current.mid_day:
         return {"split_day": None, "split_day_total": 0}
     day = current.boundary_day
+    snapshot = services.quota_periods.split(current.id) if current.split_captured else {}
     return {
         "split_day": day,
         "split_day_time": current.start_time,
         "split_day_total": services.wan.totals(start=day, end=day)["total"],
         "counts_from": current.effective_start[:10],
+        "split_exact": bool(current.split_captured),
+        # what the snapshot says predates the renewal — the other period's half of that day
+        "split_before": sum(rx + tx for rx, tx in snapshot.values()),
     }
 
 
@@ -331,6 +347,32 @@ def ui_quota_unassigned(
             "iec": use_iec(units),
         },
     )
+
+
+@router.post("/quota/renew")
+def quota_renew(request: Request, limit: str = Form(""), note: str = Form("")) -> Response:
+    """Start a quota period *now*, dividing today exactly.
+
+    This exists rather than a time field because the two have to agree: the snapshot is a reading
+    of a running accumulator, so it is only the pre-period traffic at the instant it is taken. By
+    creating the period from that same instant, the start time and the snapshot describe the same
+    moment by construction — which a typed time set hours after the fact cannot.
+
+    A period entered by hand still works and falls back to giving its whole start day to the
+    previous period; this is the path that does not have to.
+    """
+    from orchestrator.util import parse_bytes
+
+    services = services_of(request)
+    now = _dt.datetime.now(_dt.UTC)
+    period_id = services.quota_periods.add(
+        start_date=now.date().isoformat(),
+        start_time=f"{now:%H:%M}",
+        limit_bytes=parse_bytes(limit),
+        note=(note.strip() or None),
+    )
+    services.capture_period_split(period_id)
+    return RedirectResponse("/quota", status_code=303)
 
 
 @router.post("/quota/assign")

@@ -64,6 +64,7 @@ def test_every_added_column_map_defaults_its_not_null_columns() -> None:
         _DOWNLOADS_ADDED,
         _QUOTA_ALERTS_ADDED,
         _QUOTA_PERIODS_ADDED,
+        _QUOTA_SPLITS_ADDED,
     )
     from orchestrator.library.index import _LIBRARY_ADDED
     from orchestrator.queue import _JOBS_ADDED
@@ -73,6 +74,7 @@ def test_every_added_column_map_defaults_its_not_null_columns() -> None:
         "jobs": _JOBS_ADDED,
         "quota_periods": _QUOTA_PERIODS_ADDED,
         "quota_alerts": _QUOTA_ALERTS_ADDED,
+        "quota_period_splits": _QUOTA_SPLITS_ADDED,
         "downloads": _DOWNLOADS_ADDED,
         "library_files": _LIBRARY_ADDED,
     }.items():

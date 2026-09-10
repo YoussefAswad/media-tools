@@ -387,3 +387,119 @@ def test_all_time_is_held_to_no_single_limit(client) -> None:
     _record_wan(client, **{"Linux-G15": 10 * GB})
     html = client.get("/ui/quota-summary?period=all").text
     assert "Plan limit" not in html and "Of plan" not in html
+
+
+# --- the start-day snapshot ----------------------------------------------------------------
+
+
+def _wan_add(client, host: str, extra: int) -> None:
+    """Add traffic to a device that has already been seen, so the day's row accumulates."""
+    _record_wan(client, **{host: extra})
+
+
+def test_renew_now_divides_today_exactly(client) -> None:
+    """The mechanism, end to end.
+
+    wan_usage accumulates into one row per device per day, so at the renewal instant that row is
+    exactly the traffic that predates the period. Snapshotting it there is what makes a mid-day
+    renewal exact instead of costing the whole day.
+    """
+    _record_wan(client, **{"Linux-G15": 10 * GB})          # before the renewal
+    client.post("/quota/renew", data={"limit": "500 GB"}, follow_redirects=False)
+    _wan_add(client, "Linux-G15", 4 * GB)                   # after it
+
+    services = _services(client)
+    period = services.quota_periods.latest()
+    assert period.split_captured == 1 and period.exact is True
+    assert period.effective_start == period.starts_at      # no next-midnight fallback
+
+    result = services.attribution(
+        period.effective_start, None, subtract=services.period_subtraction(period, side="after")
+    )
+    assert result.household == 4 * GB
+
+
+def test_the_two_halves_of_a_divided_day_add_up(client) -> None:
+    """Dividing a day must not create or destroy bytes, same invariant as everything else here."""
+    _record_wan(client, **{"Linux-G15": 10 * GB, "PC-114": 3 * GB})
+    client.post("/quota/renew", data={}, follow_redirects=False)
+    _wan_add(client, "Linux-G15", 4 * GB)
+
+    services = _services(client)
+    period = services.quota_periods.latest()
+    after = services.attribution(
+        period.effective_start, None, subtract=services.period_subtraction(period, side="after")
+    ).household
+    before = services.attribution(
+        None, period.effective_start,
+        subtract=services.period_subtraction(period, side="before"),
+    ).household
+    assert before + after == 17 * GB
+    assert (before, after) == (13 * GB, 4 * GB)
+
+
+def test_a_period_typed_after_the_fact_gets_no_snapshot(client) -> None:
+    """The instant cannot be recovered, so the honest fallback stands."""
+    _record_wan(client, **{"Linux-G15": 10 * GB})
+    _services(client).quota_periods.add(start_date="2020-01-05", start_time="16:37")
+    period = _services(client).quota_periods.latest()
+    assert _services(client).capture_period_split(period.id) is False
+    assert period.split_captured == 0 and period.exact is False
+
+
+def test_moving_a_periods_start_discards_its_snapshot(client) -> None:
+    """A snapshot describes one instant; move the start and it describes the wrong one.
+
+    A precise answer to the wrong question is worse than the honest fallback.
+    """
+    _record_wan(client, **{"Linux-G15": 10 * GB})
+    client.post("/quota/renew", data={}, follow_redirects=False)
+    services = _services(client)
+    period = services.quota_periods.latest()
+    assert period.split_captured == 1
+
+    services.quota_periods.update(
+        period.id, start_date=period.start_date, start_time="03:00"
+    )
+    moved = services.quota_periods.get(period.id)
+    assert moved.split_captured == 0
+    assert services.quota_periods.split(period.id) == {}
+
+
+def test_editing_only_the_limit_keeps_the_snapshot(client) -> None:
+    """The start did not move, so the snapshot still describes it."""
+    _record_wan(client, **{"Linux-G15": 10 * GB})
+    client.post("/quota/renew", data={}, follow_redirects=False)
+    services = _services(client)
+    period = services.quota_periods.latest()
+    services.quota_periods.update(
+        period.id, start_date=period.start_date, start_time=period.start_time,
+        limit_bytes=900 * GB,
+    )
+    assert services.quota_periods.get(period.id).split_captured == 1
+
+
+def test_a_snapshot_of_nothing_still_counts_as_captured(client) -> None:
+    """"No device had used anything yet today" is a real answer, not a missing one."""
+    client.post("/quota/renew", data={}, follow_redirects=False)
+    services = _services(client)
+    period = services.quota_periods.latest()
+    assert period.split_captured == 1 and services.quota_periods.split(period.id) == {}
+
+
+def test_deleting_a_period_takes_its_snapshot_with_it(client) -> None:
+    _record_wan(client, **{"Linux-G15": 10 * GB})
+    client.post("/quota/renew", data={}, follow_redirects=False)
+    services = _services(client)
+    pid = services.quota_periods.latest().id
+    services.quota_periods.delete(pid)
+    assert services.quota_periods.split(pid) == {}
+
+
+def test_the_tab_says_the_day_was_divided_exactly(client) -> None:
+    _record_wan(client, **{"Linux-G15": 10 * GB})
+    client.post("/quota/renew", data={}, follow_redirects=False)
+    _wan_add(client, "Linux-G15", 4 * GB)
+    html = client.get("/ui/quota-buckets").text
+    assert "divided exactly" in html
+    assert "counts entirely toward the previous period" not in html

@@ -684,7 +684,19 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
       the whole cost. `QuotasConfig` sets `validate_assignment=True` so setting a field on an
       already-built config really rebuilds the models under it — the `status_granularity` trap
       from pitfall 22, closed at the model this time.
-    - **A quota period renewed mid-day surrenders its whole start day to the previous period.**
+    - **A mid-day renewal is exact only if the start day was snapshot at the renewal instant.**
+      `wan_usage` accumulates into one row per device per day, so *at that instant* the day's row
+      holds exactly the traffic that predates the new period — and one poll later it does not.
+      That is why `quota_period_splits` is **captured, never derived**, and why the UI's
+      "Renew now" exists instead of a second time field: the snapshot and the start time have to
+      describe the same moment, which a time typed hours later cannot. Moving a period's start
+      discards its snapshot (`clear_split`) — a precise answer to the wrong question is worse
+      than the honest fallback. An empty snapshot still counts as captured: "nothing had been
+      used yet today" is a real answer. `Services.period_subtraction(period, side=...)` is what
+      divides the day — `after` keeps the day minus the snapshot, `before` keeps only it — and
+      a test asserts the two halves still sum to the whole.
+    - **Without a snapshot, a quota period renewed mid-day surrenders its whole start day to the
+      previous period.**
       `wan_usage` is one row per device per *day* and nothing in this database records per-device
       usage more finely — `metrics` is timestamped but household-aggregate and a calibrated
       estimate, so apportioning it per device would invent exactly the kind of number pitfall 23

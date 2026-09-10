@@ -326,6 +326,18 @@ CREATE TABLE IF NOT EXISTS quota_periods (
 );
 CREATE INDEX IF NOT EXISTS idx_quota_periods_date ON quota_periods(start_date);
 
+-- The pre-period portion of a period's start day, per MAC, captured at the instant the period
+-- was created. wan_usage accumulates into one row per device per day, so at the moment of
+-- renewal that row holds exactly the traffic that predates the new period — and one poll later
+-- it does not. That is why this is captured, never derived.
+CREATE TABLE IF NOT EXISTS quota_period_splits (
+    period_id INTEGER NOT NULL,
+    mac       TEXT NOT NULL,
+    rx        INTEGER NOT NULL DEFAULT 0,
+    tx        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (period_id, mac)
+);
+
 CREATE TABLE IF NOT EXISTS quota_alerts (
     period_id   INTEGER NOT NULL,
     quota       TEXT NOT NULL,
@@ -339,7 +351,13 @@ CREATE TABLE IF NOT EXISTS quota_alerts (
 #: NOT NULL carries a DEFAULT, which is not optional: SQLite accepts a bare NOT NULL on an empty
 #: table and rejects it on a populated one, so the mistake passes in dev and fails at startup in
 #: production. '00:00' also means an existing period keeps behaving exactly as it did.
-_QUOTA_PERIODS_ADDED: dict[str, str] = {"start_time": "TEXT NOT NULL DEFAULT '00:00'"}
+_QUOTA_PERIODS_ADDED: dict[str, str] = {
+    "start_time": "TEXT NOT NULL DEFAULT '00:00'",
+    #: 1 when the start day's traffic was snapshot at the moment this period began, so the day
+    #: can be divided exactly instead of being surrendered whole to the previous period.
+    "split_captured": "INTEGER NOT NULL DEFAULT 0",
+}
+_QUOTA_SPLITS_ADDED: dict[str, str] = {}
 _QUOTA_ALERTS_ADDED: dict[str, str] = {}
 
 
@@ -373,6 +391,9 @@ class QuotaPeriod:
     note: str | None
     created_at: str
     alerted_pct: int = 0
+    #: 1 when the start day was snapshot at the renewal instant — see
+    #: :meth:`QuotaPeriods.capture_split` and :attr:`effective_start`.
+    split_captured: int = 0
     #: HH:MM (UTC) the period begins. A quota renewed at midday leaves that day split between
     #: two periods, and the downloads either side of it belong to different ones.
     start_time: str = "00:00"
@@ -407,15 +428,27 @@ class QuotaPeriod:
         :attr:`start_time` is not decorative under this rule — it is what decides that the start
         day belongs to the previous period at all.
         """
-        if not self.mid_day:
+        if not self.mid_day or self.split_captured:
+            # Either the period starts cleanly, or the start day was snapshot at the renewal
+            # instant and can therefore be divided exactly. Both cases mean the period really
+            # begins when it says it does.
             return self.starts_at
         nxt = _dt.date.fromisoformat(self.start_date) + _dt.timedelta(days=1)
         return f"{nxt.isoformat()}T00:00:00+00:00"
 
     @property
     def boundary_day(self) -> str | None:
-        """The day this period surrenders to the previous one, or None when it starts cleanly."""
+        """The day this period shares with the previous one, or None when it starts cleanly.
+
+        Shared, not surrendered, once :attr:`split_captured` is set: with a snapshot the day is
+        divided at the renewal instant and both periods get their real half.
+        """
         return self.start_date if self.mid_day else None
+
+    @property
+    def exact(self) -> bool:
+        """True when this period's start needs no approximation at all."""
+        return not self.mid_day or bool(self.split_captured)
 
 
 class QuotaPeriods:
@@ -436,6 +469,7 @@ class QuotaPeriods:
             self.db.executescript(_QUOTA_PERIODS_SCHEMA)
             add_columns(self.db, "quota_periods", _QUOTA_PERIODS_ADDED)
             add_columns(self.db, "quota_alerts", _QUOTA_ALERTS_ADDED)
+            add_columns(self.db, "quota_period_splits", _QUOTA_SPLITS_ADDED)
             self.db.commit()
 
     def set_alerted(self, period_id: int, pct: int) -> None:
@@ -458,6 +492,48 @@ class QuotaPeriods:
                 "INSERT INTO quota_alerts (period_id, quota, alerted_pct) VALUES (?,?,?) "
                 "ON CONFLICT(period_id, quota) DO UPDATE SET alerted_pct=excluded.alerted_pct",
                 (period_id, quota, pct),
+            )
+            self.db.commit()
+
+    # --- the start-day split ---------------------------------------------------------
+
+    def capture_split(self, period_id: int, rows: dict[str, tuple[int, int]]) -> None:
+        """Record the pre-period portion of this period's start day, per MAC.
+
+        ``rows`` must be the start day's ``wan_usage`` totals *as of the renewal instant* — the
+        caller reads them; this only stores them. Storing an empty mapping still marks the period
+        as split: "no device had used anything yet today" is a real and useful answer, and
+        treating it as "not captured" would silently fall back to surrendering the whole day.
+        """
+        with self._lock:
+            self.db.execute("DELETE FROM quota_period_splits WHERE period_id=?", (period_id,))
+            self.db.executemany(
+                "INSERT INTO quota_period_splits (period_id, mac, rx, tx) VALUES (?,?,?,?)",
+                [(period_id, mac, rx, tx) for mac, (rx, tx) in rows.items()],
+            )
+            self.db.execute(
+                "UPDATE quota_periods SET split_captured=1 WHERE id=?", (period_id,)
+            )
+            self.db.commit()
+
+    def split(self, period_id: int) -> dict[str, tuple[int, int]]:
+        """The stored pre-period portion of the start day, per MAC. Empty when none was taken."""
+        rows = self.db.execute(
+            "SELECT mac, rx, tx FROM quota_period_splits WHERE period_id=?", (period_id,)
+        ).fetchall()
+        return {r["mac"]: (r["rx"], r["tx"]) for r in rows}
+
+    def clear_split(self, period_id: int) -> None:
+        """Drop a snapshot. Called whenever a period's start moves.
+
+        A snapshot describes one instant. Move the start and it no longer describes it, so
+        keeping it would divide the day at a moment the period no longer claims — a precise
+        answer to the wrong question, which is worse than the honest fallback.
+        """
+        with self._lock:
+            self.db.execute("DELETE FROM quota_period_splits WHERE period_id=?", (period_id,))
+            self.db.execute(
+                "UPDATE quota_periods SET split_captured=0 WHERE id=?", (period_id,)
             )
             self.db.commit()
 
@@ -487,6 +563,7 @@ class QuotaPeriods:
         note: str | None = None,
         start_time: str = "00:00",
     ) -> bool:
+        before = self.get(period_id)
         with self._lock:
             cur = self.db.execute(
                 "UPDATE quota_periods SET start_date=?, start_time=?, limit_bytes=?, note=? "
@@ -494,11 +571,22 @@ class QuotaPeriods:
                 (start_date, start_time or "00:00", limit_bytes, note, period_id),
             )
             self.db.commit()
-            return cur.rowcount > 0
+        # A snapshot describes one instant. If the start moved, it no longer describes it.
+        moved = before is not None and (
+            before.start_date != start_date or before.start_time != (start_time or "00:00")
+        )
+        if moved and before and before.split_captured:
+            self.clear_split(period_id)
+        return cur.rowcount > 0
+
+    def get(self, period_id: int) -> QuotaPeriod | None:
+        r = self.db.execute("SELECT * FROM quota_periods WHERE id=?", (period_id,)).fetchone()
+        return QuotaPeriod(**dict(r)) if r else None
 
     def delete(self, period_id: int) -> bool:
         with self._lock:
             self.db.execute("DELETE FROM quota_alerts WHERE period_id=?", (period_id,))
+            self.db.execute("DELETE FROM quota_period_splits WHERE period_id=?", (period_id,))
             cur = self.db.execute("DELETE FROM quota_periods WHERE id=?", (period_id,))
             self.db.commit()
             return cur.rowcount > 0

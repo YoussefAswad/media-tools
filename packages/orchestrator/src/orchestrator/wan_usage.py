@@ -327,6 +327,19 @@ class WanUsage:
             for r in self.db.execute(sql, params).fetchall()
         ]
 
+    def day_totals(self, day: str) -> dict[str, tuple[int, int]]:
+        """One day's accumulated (rx, tx) per MAC, as of right now.
+
+        Read at the instant a quota period is created, this *is* the traffic that predates it:
+        :meth:`apply` accumulates into the day's row, so before the next poll the row holds
+        exactly what has happened since midnight. One poll later it does not, which is why the
+        caller stores the answer rather than recomputing it.
+        """
+        rows = self.db.execute(
+            "SELECT mac, rx, tx FROM wan_usage WHERE day=?", (day,)
+        ).fetchall()
+        return {r["mac"]: (r["rx"], r["tx"]) for r in rows}
+
     def daily_series(
         self, *, start: str | None = None, end: str | None = None
     ) -> list[tuple[str, int, int]]:
@@ -384,6 +397,29 @@ def fold_identities(
             )
         )
     return sorted(folded.values(), key=lambda d: d.total, reverse=True)
+
+
+def subtract(
+    rows: Iterable[DeviceUsage], adjust: Mapping[str, tuple[int, int]]
+) -> list[DeviceUsage]:
+    """Remove a per-MAC amount from per-MAC usage rows, clamped at zero.
+
+    Used to divide a quota period's start day between the period and its predecessor, from the
+    snapshot taken at the renewal instant. Pure and keyed by MAC because that is what
+    :meth:`WanUsage.by_device` returns before :func:`fold_identities` groups it — subtracting
+    after folding would need the snapshot to be folded too, by the same alias table, at the same
+    moment, and the two would drift apart the first time an alias changed.
+
+    Clamped because a snapshot can legitimately exceed a later window's total: the day it belongs
+    to may have been re-counted, or the row deleted. Zero is the floor, never a negative.
+    """
+    out = []
+    for row in rows:
+        d_rx, d_tx = adjust.get(row.macs[0], (0, 0))
+        rx, tx = max(0, row.rx - d_rx), max(0, row.tx - d_tx)
+        if rx or tx:
+            out.append(DeviceUsage(macs=row.macs, host=row.host, kind=row.kind, rx=rx, tx=tx))
+    return sorted(out, key=lambda d: d.total, reverse=True)
 
 
 def _delta(dev: DeviceStats, prev: tuple[int, int, str] | None) -> tuple[int, int, str]:

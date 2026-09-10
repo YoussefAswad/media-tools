@@ -7,6 +7,7 @@ time rather than caching sub-objects.
 
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import sqlite3
 import threading
@@ -38,6 +39,7 @@ from orchestrator.queue import JobQueue
 from orchestrator.quota import Attribution, attribute
 from orchestrator.titles import TitleIndex
 from orchestrator.wan_usage import WanUsage, fold_identities
+from orchestrator.wan_usage import subtract as wan_subtract
 
 log = logging.getLogger(__name__)
 
@@ -90,20 +92,77 @@ class Services:
         src = self.source(name)
         return bool(src and src.enabled)
 
-    def attribution(self, start: str | None, end: str | None = None) -> Attribution:
+    def attribution(
+        self,
+        start: str | None,
+        end: str | None = None,
+        *,
+        subtract: dict[str, tuple[int, int]] | None = None,
+    ) -> Attribution:
         """Who the household's bandwidth counted for over a window.
 
         One seam, so the Quota tab and the worker's alert cannot answer the same question two
         ways — the failure that made ``ntfy.status_granularity`` gate two emitters and not the
         other six. Bounds are ISO timestamps, matching :meth:`Ledger.list`; only the date part
-        reaches the WAN store.
+        reaches the WAN store, which is why ``subtract`` exists.
+
+        ``subtract`` removes a per-MAC amount from the window's WAN totals. It is how a quota
+        period's start day is divided at the renewal instant rather than surrendered whole: the
+        WAN window still spans the full day, and the half belonging to the other period is taken
+        off. Applied before folding, because the snapshot is keyed by MAC.
         """
         aliases = self.config.monitoring.router.device_aliases
-        devices = fold_identities(self.wan.by_device(start=start, end=end), aliases)
+        raw = self.wan.by_device(start=start, end=end)
+        if subtract:
+            raw = wan_subtract(raw, subtract)
+        devices = fold_identities(raw, aliases)
         rows = self.ledger.list(start=start, end=end, limit=100_000)
         return attribute(
             devices, rows, self.config.quotas, wan_first_day=self.wan.first_day()
         )
+
+    def capture_period_split(self, period_id: int) -> bool:
+        """Snapshot a period's start day at the instant it begins, so the day divides exactly.
+
+        Only meaningful *now*: :meth:`WanUsage.day_totals` reads a running accumulator, so it
+        answers "what has happened today so far" and one poll later it answers something else.
+        That is why this is called from the create path and never recomputed, and why a period
+        whose start is edited afterwards has its snapshot discarded rather than reinterpreted.
+
+        Returns False when there is nothing to capture — a period that starts at midnight needs
+        no division, and one dated in the past cannot have its instant recovered.
+        """
+        period = self.quota_periods.get(period_id)
+        if period is None or not period.mid_day:
+            return False
+        today = _dt.datetime.now(_dt.UTC).date().isoformat()
+        if period.start_date != today:
+            return False
+        self.quota_periods.capture_split(period_id, self.wan.day_totals(period.start_date))
+        log.info(
+            "quota: captured the start-day split for period %d at %s UTC",
+            period_id, period.start_time,
+        )
+        return True
+
+    def period_subtraction(self, period, *, side: str) -> dict[str, tuple[int, int]]:
+        """What to remove from a window's WAN totals so a split start day lands on one side.
+
+        ``side='after'`` is the period that *begins* on the boundary day: it keeps the day minus
+        the snapshot. ``side='before'`` is its predecessor, which ends there: it keeps only the
+        snapshot, so what comes off is everything else that day.
+        """
+        if period is None or not period.split_captured:
+            return {}
+        snapshot = self.quota_periods.split(period.id)
+        if side == "after":
+            return snapshot
+        totals = self.wan.day_totals(period.start_date)
+        return {
+            mac: (max(0, rx - snapshot.get(mac, (0, 0))[0]),
+                  max(0, tx - snapshot.get(mac, (0, 0))[1]))
+            for mac, (rx, tx) in totals.items()
+        }
 
     def arr_instance(self, app: str) -> ArrInstance | None:
         return getattr(self.config.arr, app, None)

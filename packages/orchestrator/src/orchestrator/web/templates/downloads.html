@@ -61,6 +61,15 @@
     <label>Note<input name="note" placeholder="e.g. August quota"></label>
     <div class="row-actions"><button type="submit">Add period</button></div>
   </form>
+  {# "Renew now" rather than another time field: the start-day snapshot is a reading of a
+     running accumulator, so it only means "what predates this period" at the instant it is
+     taken. Creating the period from that same instant makes the two agree by construction. #}
+  <form method="post" action="/quota/renew" class="entry-form"
+        onsubmit="return confirm('Start a new quota period right now? Today is divided at this moment, exactly.')">
+    <label>Bandwidth limit<input name="limit" placeholder="e.g. 500 GB (blank = none)"></label>
+    <label>Note<input name="note" placeholder="e.g. October quota"></label>
+    <div class="row-actions"><button type="submit">Renew now — divides today exactly</button></div>
+  </form>
   <div data-src="/ui/quota-periods" data-interval="0">Loading…</div>
 </section>
 

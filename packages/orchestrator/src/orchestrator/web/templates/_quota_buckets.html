@@ -104,14 +104,21 @@
     real, not a rounding error.
   </p>
 {% endif %}
-{% if split_day %}
+{% if split_day and split_exact %}
   <p class="muted note-line">
-    Renewed at {{ split_day_time }} UTC on {{ split_day }}. The router records usage one row per
-    device per <em>day</em> and there is no per-device sub-day record to split one with, so
+    Renewed at {{ split_day_time }} UTC on {{ split_day }}, and that day was snapshot at the
+    moment it happened — so it is divided exactly: {{ split_before|bytes }} of it predates the
+    renewal and counts toward the previous period, and the rest counts here. No approximation.
+  </p>
+{% elif split_day %}
+  <p class="muted note-line">
+    Renewed at {{ split_day_time }} UTC on {{ split_day }}, after the fact. The router records
+    usage one row per device per <em>day</em>, and a day can only be divided by a snapshot taken
+    at the renewal instant — there is none for this one, so
     <strong>{{ split_day }} counts entirely toward the previous period</strong>
     ({{ split_day_total|bytes }}) and this one is measured from {{ counts_from }}. Whatever ran
-    between {{ split_day_time }} and midnight is therefore counted in neither — an under-count,
-    chosen over crediting this period with a day of traffic that mostly predates it.
+    between {{ split_day_time }} and midnight is counted in neither. Use <em>Renew now</em> next
+    time and this is exact.
   </p>
 {% endif %}
 {% if before_record %}
