@@ -13,6 +13,7 @@ from orchestrator.web.routes import (
     jobs,
     library,
     monitoring,
+    quota,
     webhooks,
 )
 
@@ -24,6 +25,7 @@ ROUTERS = [
     jobs.router,
     library.router,
     downloads.router,
+    quota.router,
     monitoring.router,
     config.router,
 ]

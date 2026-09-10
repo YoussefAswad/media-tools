@@ -1,4 +1,4 @@
-"""The Bandwidth tab: the download ledger, quota cutoffs, and household per-device WAN usage.
+"""The Bandwidth tab: the download ledger, quota periods, and household per-device WAN usage.
 
 Two measurements live here on purpose. The ledger records what qBittorrent consumed for a
 download; the WAN panels record what every device in the house actually pulled from the internet.
@@ -15,7 +15,16 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from orchestrator.ledger import MANUAL, QBITTORRENT
 from orchestrator.monitor.wan import PAUSE_KEY, paused_until
 from orchestrator.services import Services
-from orchestrator.util import _DATE_RE, RANGES, human_bytes, parse_bytes, parse_range, range_bounds
+from orchestrator.util import (
+    _DATE_RE,
+    RANGES,
+    human_bytes,
+    parse_bytes,
+    parse_moment,
+    parse_range,
+    parse_time,
+    range_bounds,
+)
 from orchestrator.wan_usage import display_name, fold_identities
 from orchestrator.web.deps import KINDS, page, partial, require_ui_auth, services_of, use_iec
 
@@ -24,21 +33,23 @@ router = APIRouter(dependencies=[Depends(require_ui_auth)])
 def _ledger_bounds(
     services: Services, range: str | None, start: str | None, end: str | None
 ) -> tuple[str | None, str | None]:
-    """Resolve time-frame bounds. Explicit start/end win; else 'since the latest cutoff' (the
-    default when a cutoff exists, or when range=='cutoff'); else the preset range key (30d)."""
+    """Resolve time-frame bounds. Explicit start/end win; else 'since the current quota period'
+    (the default when one exists, or range=='period'); else the preset range key (30d)."""
     if start or end:
         return range_bounds(range, start, end)
-    latest = services.cutoffs.latest_date()
-    if range in (None, "", "cutoff") and latest:
-        return f"{latest}T00:00:00+00:00", None
+    # The period's exact start, not midnight of its start date: a quota renewed at midday leaves
+    # the downloads either side of it in different periods, and the ledger records a real time.
+    latest = services.quota_periods.latest_start()
+    if range in (None, "", "period") and latest:
+        return latest, None
     return parse_range(range or "30d")
 
 
 @router.get("/downloads", response_class=HTMLResponse)
 def downloads_page(request: Request) -> HTMLResponse:
-    has_cutoff = services_of(request).cutoffs.latest_date() is not None
+    has_period = services_of(request).quota_periods.latest_date() is not None
     return page(request, "downloads.html",
-        {"kinds": KINDS, "ranges": list(RANGES.keys()), "has_cutoff": has_cutoff},
+        {"kinds": KINDS, "ranges": list(RANGES.keys()), "has_period": has_period},
     )
 
 
@@ -53,14 +64,41 @@ def ui_ledger(
     q: str | None = None,
     units: str | None = None,
 ) -> HTMLResponse:
-    lo, hi = _ledger_bounds(services_of(request), range, start, end)
+    services = services_of(request)
+    lo, hi = _ledger_bounds(services, range, start, end)
     src = source if source in (QBITTORRENT, MANUAL) else None
-    rows = services_of(request).ledger.list(
-        start=lo, end=hi, kind=type or None, source=src, q=q
-    )
+    rows = services.ledger.list(start=lo, end=hi, kind=type or None, source=src, q=q)
+    cfg = services.config.quotas
     return partial(
-        request, "_ledger.html", {"rows": rows, "kinds": KINDS, "iec": use_iec(units)}
+        request,
+        "_ledger.html",
+        {
+            "rows": rows,
+            "kinds": KINDS,
+            "iec": use_iec(units),
+            # Attribution is edited per row, not through the byte-editing form beside it — see
+            # Ledger.set_attribution for why the two must not share the `edited` flag.
+            "devices": _device_options(services),
+            "quotas": [
+                {"key": k, "label": cfg.label_of(k)} for k in sorted(cfg.resolved_quotas())
+            ],
+            "server_device": cfg.server_device,
+        },
     )
+
+
+def _device_options(services: Services) -> list[str]:
+    """Device identities a download could plausibly have come from.
+
+    Everything the router has seen, plus the two named in config — so the list is right on a
+    fresh install (nothing seen yet) and on a household whose gaming PC has been off all period.
+    """
+    cfg = services.config.quotas
+    seen = [d.host for d in fold_identities(
+        services.wan.by_device(), services.config.monitoring.router.device_aliases
+    )]
+    named = [n for n in (cfg.server_device, cfg.games_device) if n]
+    return sorted(dict.fromkeys(seen + named + list(cfg.devices)))
 
 
 @router.get("/ui/ledger-summary", response_class=HTMLResponse)
@@ -107,13 +145,13 @@ def ui_ledger_chart(
 
 @router.get("/ui/ledger-remaining", response_class=HTMLResponse)
 def ui_ledger_remaining(request: Request, units: str | None = None) -> HTMLResponse:
-    """Remaining bandwidth for the current quota period (since the latest cutoff). Independent of
-    the selected range; only rendered when the latest cutoff carries a limit."""
+    """Remaining bandwidth for the current quota period. Independent of the selected range;
+    only rendered when the current period carries a limit."""
     services = services_of(request)
-    c = services.cutoffs.latest()
+    c = services.quota_periods.latest()
     if c is None or c.limit_bytes <= 0:
         return HTMLResponse("")  # no card
-    used = services.ledger.totals(start=f"{c.cutoff_date}T00:00:00+00:00", end=None)["total"]
+    used = services.ledger.totals(start=c.effective_start, end=None)["total"]
     remaining = c.limit_bytes - used
     pct = (used / c.limit_bytes * 100) if c.limit_bytes else 0
     tone = "over" if remaining < 0 else ("warn" if pct >= 85 else "ok")
@@ -126,50 +164,55 @@ def ui_ledger_remaining(request: Request, units: str | None = None) -> HTMLRespo
         "pct": min(pct, 100),
         "pct_label": round(pct),
         "tone": tone,
-        "cutoff_date": c.cutoff_date,
+        "start_date": c.effective_start[:10],
+        "start_time": c.start_time,
+        "mid_day": c.mid_day,
     }
     return partial(request, "_remaining.html", ctx)
 
 
-@router.get("/ui/cutoffs", response_class=HTMLResponse)
-def ui_cutoffs(request: Request) -> HTMLResponse:
-    rows = services_of(request).cutoffs.list()
-    return partial(request, "_cutoffs.html", {"rows": rows})
+@router.get("/ui/quota-periods", response_class=HTMLResponse)
+def ui_quota_periods(request: Request) -> HTMLResponse:
+    rows = services_of(request).quota_periods.list()
+    return partial(request, "_quota_periods.html", {"rows": rows})
 
 
-@router.post("/cutoffs/add")
-def cutoffs_add(
+@router.post("/quota-periods/add")
+def quota_periods_add(
     request: Request,
-    cutoff_date: str = Form(...),
+    start_date: str = Form(...),
+    start_time: str = Form("00:00"),
     limit: str = Form("0"),
     note: str = Form(""),
 ) -> Response:
-    if _DATE_RE.match(cutoff_date):
-        services_of(request).cutoffs.add(
-            cutoff_date=cutoff_date, limit_bytes=parse_bytes(limit), note=(note.strip() or None)
+    if _DATE_RE.match(start_date):
+        services_of(request).quota_periods.add(
+            start_date=start_date, start_time=parse_time(start_time),
+            limit_bytes=parse_bytes(limit), note=(note.strip() or None),
         )
     return RedirectResponse("/downloads", status_code=303)
 
 
-@router.post("/cutoffs/{cutoff_id}/edit")
-def cutoffs_edit(
+@router.post("/quota-periods/{period_id}/edit")
+def quota_periods_edit(
     request: Request,
-    cutoff_id: int,
-    cutoff_date: str = Form(...),
+    period_id: int,
+    start_date: str = Form(...),
+    start_time: str = Form("00:00"),
     limit: str = Form("0"),
     note: str = Form(""),
 ) -> Response:
-    if _DATE_RE.match(cutoff_date):
-        services_of(request).cutoffs.update(
-            cutoff_id, cutoff_date=cutoff_date, limit_bytes=parse_bytes(limit),
-            note=(note.strip() or None),
+    if _DATE_RE.match(start_date):
+        services_of(request).quota_periods.update(
+            period_id, start_date=start_date, start_time=parse_time(start_time),
+            limit_bytes=parse_bytes(limit), note=(note.strip() or None),
         )
     return RedirectResponse("/downloads", status_code=303)
 
 
-@router.post("/cutoffs/{cutoff_id}/delete")
-def cutoffs_delete(request: Request, cutoff_id: int) -> Response:
-    services_of(request).cutoffs.delete(cutoff_id)
+@router.post("/quota-periods/{period_id}/delete")
+def quota_periods_delete(request: Request, period_id: int) -> Response:
+    services_of(request).quota_periods.delete(period_id)
     return RedirectResponse("/downloads", status_code=303)
 
 
@@ -190,7 +233,7 @@ def downloads_add(
         downloaded_bytes=parse_bytes(downloaded),
         uploaded_bytes=parse_bytes(uploaded),
         size_bytes=parse_bytes(size),
-        completed_at=(completed_at or None),
+        completed_at=parse_moment(completed_at),
         notes=(notes.strip() or None),
     )
     return RedirectResponse("/downloads", status_code=303)
@@ -215,7 +258,7 @@ def downloads_edit(
         downloaded_bytes=parse_bytes(downloaded),
         uploaded_bytes=parse_bytes(uploaded),
         size_bytes=parse_bytes(size),
-        completed_at=(completed_at or None),
+        completed_at=parse_moment(completed_at),
         notes=(notes.strip() or None),
     )
     return RedirectResponse("/downloads", status_code=303)

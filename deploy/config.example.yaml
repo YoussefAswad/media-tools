@@ -51,7 +51,8 @@ notifications:
   # a prune deferred for disk space (it retries itself).
   job_deferred: { once_per: job }
   library_scan: { priority: 2 }
-  quota: {}
+  quota: {}          # the household crossed a threshold of the plan's limit
+  quota_person: {}   # one person's (or one pot's) quota crossed its allocation
   monitoring: {}
 
 # qBittorrent connection for the Downloads bandwidth ledger (omit to disable auto-capture).
@@ -142,12 +143,60 @@ worker:
   maintenance_interval_s: 300       # how often retention / dead-revive / quota checks run
   retention_days: 90                # delete finished jobs + audit rows older than this
                                     # (0 = keep; the JSONL audit files are always kept)
-  quota_alert_pcts: [85, 100]       # ntfy once per level crossed (needs a cutoff limit)
+  quota_alert_pcts: [85, 100]       # ntfy once per level crossed, per quota period and per
+                                    # quota (needs a limit or an allocation to measure against)
   dead_revive_cooldown_s: 3600      # auto-requeue a dead job once it has sat idle this long
   dead_revive_max: 1                # times a dead job may be auto-revived (0 disables)
 
 # The fifteen loose keys these replaced (max_attempts, enable_prune, prune_scratch_dir, ...) are
 # still read from the root of an existing file, so an older config.yaml keeps working as-is.
+
+# Who the household's bandwidth counts for (the Quota tab).
+#
+# Quotas are measured from the ROUTER's per-device counters, never from the downloads ledger.
+# The ledger records what the pipeline downloaded; it is not a measurement of the link. Measured
+# on this household over one period: the ledger read 409.05 GB while the link carried 505.36 GB,
+# so a quota alert reading the ledger would have said 81% of a 500 GB plan while it was already
+# over. That means `monitoring.router` must be on for any of this to have numbers.
+#
+# Three maps, each answering one question:
+#   quotas   the buckets, and what each is allowed
+#   people   who exists, and which bucket they count against
+#   devices  which person owns a device
+#
+# A person with NO `quota` named is their own quota — you only name one to share a pot ("kids")
+# or to make someone count to the household. A device with no owner counts to `default_quota`,
+# which is the right answer for a TV or a guest phone, not a gap to be filled.
+#
+# `devices` keys are the device's FOLDED IDENTITY — its `monitoring.router.device_aliases` name
+# if it has one, else the hostname the router reported — never a MAC. Phones and the TV box
+# randomise their MAC (one box here reached the router under three), so keying on identity means
+# a newly randomised address inherits the assignment instead of showing up unowned.
+#
+# The Quota tab's dropdowns write the `devices:` block back into this file. Only that block is
+# rewritten; comments in it are not preserved, and nothing else in the file is touched.
+quotas:
+  enabled: true
+  server_device: ""            # the device this orchestrator downloads on; a ledger row with no
+                               # device recorded resolves to it. Blank = no default.
+  games_device: ""             # ONE-SHOT: attribute existing `kind: game` ledger rows to this
+                               # device at first startup. A fact about rows that already exist,
+                               # not a rule for new ones. Blank switches it off.
+  default_quota: household     # where unowned devices and unassigned people count
+  quotas:
+    household:
+      label: Household
+      shared: true             # a pot several people (or nobody in particular) count against
+    # youssef:
+    #   allocation: 300 GB     # this quota's slice of the period limit. Unset = tracked but
+    #                          # unbounded: no bar, no alert, which is right for a pot whose size
+    #                          # is "whatever is left over".
+  people: {}
+    # youssef: {}                     # no quota named -> youssef IS a quota
+    # joury:   {quota: household}     # counts to the shared pot instead
+  devices: {}
+    # "Linux-G15": youssef
+    # "PC-114": youssef
 
 # System monitoring (Monitoring tab). Disk usage is read in-container via statvfs, so each watched
 # `path` must be one this container can see. With the default mounts, /data = the media disk and

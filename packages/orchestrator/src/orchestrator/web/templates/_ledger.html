@@ -1,10 +1,13 @@
 {% if not rows %}
   <p class="muted empty">No downloads in this range.</p>
 {% else %}
+<div class="scroll">
 <table class="actions ledger">
   <thead><tr>
-    <th>Name</th><th>Type</th><th>Source</th><th>Down</th><th>Up</th><th>Total</th>
-    <th>Completed</th><th></th>
+    <th>Name</th><th>Type</th><th>Source</th>
+    <th title="Which device's measured WAN usage these bytes come out of">Downloaded by</th>
+    <th title="Which quota these bytes count against. Blank follows the device's owner.">Counts toward</th>
+    <th>Down</th><th>Up</th><th>Total</th><th>Completed</th><th></th>
   </tr></thead>
   <tbody>
   {% for r in rows %}
@@ -18,10 +21,40 @@
         {% else %}<span class="muted">auto</span>{% endif %}
         {% if r.edited and r.source != "manual" %}<span class="muted" title="hand-edited">✎</span>{% endif %}
       </td>
+      {# Attribution posts on its own, never through the edit form beside it: changing whose
+         bytes these were must not mark the row hand-edited and stop qBittorrent refreshing how
+         many there were. #}
+      <td class="nowrap">
+        <form method="post" action="/quota/attribute/{{ r.id }}" class="assign">
+          <select name="device" onchange="this.form.submit()">
+            <option value="" {{ 'selected' if not r.device else '' }}>
+              {{ server_device or "server" }} (default)</option>
+            {% for d in devices %}<option value="{{ d }}" {{ 'selected' if r.device == d else '' }}>{{ d }}</option>{% endfor %}
+            {% if r.device and r.device not in devices %}<option value="{{ r.device }}" selected>{{ r.device }}</option>{% endif %}
+          </select>
+          <input type="hidden" name="quota" value="{{ r.quota or '' }}">
+          <noscript><button class="mini" type="submit">set</button></noscript>
+        </form>
+      </td>
+      <td class="nowrap">
+        <form method="post" action="/quota/attribute/{{ r.id }}" class="assign">
+          <input type="hidden" name="device" value="{{ r.device or '' }}">
+          <select name="quota" onchange="this.form.submit()">
+            <option value="" {{ 'selected' if not r.quota else '' }}>the device's owner</option>
+            {% for q in quotas %}<option value="{{ q.key }}" {{ 'selected' if r.quota == q.key else '' }}>{{ q.label }}</option>{% endfor %}
+          </select>
+          <noscript><button class="mini" type="submit">set</button></noscript>
+        </form>
+      </td>
       <td class="nowrap">{{ r.downloaded_bytes|bytes }}</td>
       <td class="nowrap">{{ r.uploaded_bytes|bytes }}</td>
       <td class="nowrap"><strong>{{ r.total_bytes|bytes }}</strong></td>
-      <td class="muted nowrap">{{ (r.completed_at or r.recorded_at)[:10] }}</td>
+      {# the time is shown only when it is not midnight: every row predating the datetime field
+         stored a bare date, and rendering "00:00" against all of them would imply a precision
+         those rows never had. #}
+      <td class="muted nowrap" title="{{ r.completed_at or r.recorded_at }}">
+        {% set ts = r.completed_at or r.recorded_at %}{{ ts[:10] }}{% if ts[11:16] not in ('', '00:00') %}
+        <span class="muted">{{ ts[11:16] }}</span>{% endif %}</td>
       <td class="row-actions nowrap">
         <details class="edit">
           <summary class="mini ghost" title="Edit">✎</summary>
@@ -35,7 +68,7 @@
             </label>
             <label>Downloaded<input name="downloaded" value="{{ r.downloaded_bytes|bytes }}"></label>
             <label>Uploaded<input name="uploaded" value="{{ r.uploaded_bytes|bytes }}"></label>
-            <label>Completed<input name="completed_at" type="date" value="{{ (r.completed_at or '')[:10] }}"></label>
+            <label>Completed (UTC)<input name="completed_at" type="datetime-local" value="{{ (r.completed_at or '')[:16] }}"></label>
             <label class="wide">Notes<input name="notes" value="{{ r.notes or '' }}"></label>
             <div class="row-actions"><button type="submit" class="mini">save</button></div>
           </form>
@@ -49,4 +82,5 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% endif %}

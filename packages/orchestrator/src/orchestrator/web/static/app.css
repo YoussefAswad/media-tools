@@ -208,6 +208,11 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
 .y-com { color: var(--muted); font-style: italic; }
 .y-punc { color: var(--muted); }
 
+/* Horizontal scroll for anything wider than its card. Tables used to get this only inside the
+   small-screen media query, so a table that grew a column overflowed its card on desktop
+   instead — which is exactly what the ledger did when it gained "downloaded by"/"counts toward". */
+.scroll { overflow-x: auto; }
+
 /* --- downloads ledger --- */
 .badge.type { background: var(--skip); }
 .badge.manual { background: #c678dd; }
@@ -220,6 +225,11 @@ button.ghost.danger { background: transparent; color: var(--fail); border: 1px s
   background: var(--card); color: var(--fg); font-size: 14px;
 }
 .entry-form .row-actions { grid-column: 1 / -1; }
+.ledger form.assign select {
+  max-width: 150px; padding: 3px 6px; font-size: 12px;
+  background: var(--card); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px;
+}
 .ledger details.edit { display: inline; }
 /* the summary toggle is styled to match the mini ghost buttons beside it (button.mini/.ghost
    are scoped to <button>, so a <summary> needs the box styles restated here) */
@@ -465,6 +475,74 @@ table.roots { max-width: 560px; margin-top: 10px; }
   table.library .sub { max-width: 100%; }
   .pager-note { margin-left: 0; flex-basis: 100%; }
 }
+
+/* --- Quota tab --- */
+/* One row per quota. The swatch hues are a *categorical* set — they identify a bucket, they do
+   not rank it — so they stay clear of the ok/warn/fail semantics the bar fill uses. */
+.swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; display: inline-block; }
+.swatch.s0 { background: var(--accent); }
+.swatch.s1 { background: #8b5cf6; }
+.swatch.s2 { background: #0d9488; }
+.swatch.s3 { background: #d97706; }
+.swatch.s4 { background: #db2777; }
+.swatch.s5 { background: var(--skip); }
+
+.quotas { display: flex; flex-direction: column; }
+.quota-row {
+  display: grid; grid-template-columns: minmax(140px, 180px) 1fr minmax(110px, auto);
+  gap: 16px; align-items: center; padding: 14px 0; border-top: 1px solid var(--border);
+}
+.quota-row:first-child { border-top: none; padding-top: 4px; }
+@media (max-width: 700px) { .quota-row { grid-template-columns: 1fr; gap: 8px; } }
+.quota-who { min-width: 0; }
+.quota-name { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.quota-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.quota-bar { min-width: 0; }
+.quota-cap {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: 11px; color: var(--muted); margin-top: 5px;
+}
+/* A quota with no allocation has no percentage to show, so its bar carries share-of-household
+   in a neutral hue: a green "healthy" fill would imply a limit it is comfortably inside. */
+.remaining-fill.neutral { background: var(--skip); }
+.remaining-fill.warn { background: var(--warn); }
+.remaining-fill.over { background: var(--fail); }
+.quota-figs { text-align: right; }
+@media (max-width: 700px) { .quota-figs { text-align: left; } }
+.quota-used { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.quota-of { font-size: 12px; color: var(--muted); }
+
+.quota-detail { margin-top: 6px; }
+.quota-detail > summary {
+  cursor: pointer; font-size: 12px; color: var(--accent); width: fit-content; list-style: none;
+}
+.quota-detail > summary::-webkit-details-marker { display: none; }
+.quota-detail > summary::before { content: "\25b8  "; }
+.quota-detail[open] > summary::before { content: "\25be  "; }
+.devlist { margin: 8px 0 2px; padding: 0; list-style: none; font-size: 13px; }
+.devlist li {
+  display: flex; justify-content: space-between; gap: 12px; padding: 3px 0;
+  border-bottom: 1px dashed var(--border); font-variant-numeric: tabular-nums;
+}
+.devlist li:last-child { border-bottom: none; }
+.devlist li.person { font-weight: 600; border-bottom-style: solid; }
+.devlist li.person.unowned { font-weight: 500; color: var(--muted); }
+/* Devices sit under the person who owns them; the rule is a containment cue, not a box. */
+.devlist li.under { padding-left: 16px; border-bottom: none; color: var(--muted); }
+.devlist li.under + li.person { margin-top: 6px; }
+.devlist .gain { color: var(--ok); }
+.devlist .loss { color: var(--fail); }
+
+/* The reconciliation line. It is on the page and not only in a test because the one failure
+   this design cannot tolerate is a total that looks reasonable and is wrong. */
+.reconcile { font-size: 12px; margin: 14px 0 0; color: var(--muted); }
+.reconcile.bad {
+  color: var(--fail); font-weight: 600;
+  border-left: 3px solid var(--fail); padding-left: 10px;
+}
+.note-line { font-size: 12.5px; margin: 8px 0 0; }
+form.assign { display: inline-flex; gap: 6px; }
+form.assign select { max-width: 200px; }
 
 /* never let the page itself scroll sideways */
 body { overflow-x: hidden; }

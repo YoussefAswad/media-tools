@@ -1,0 +1,136 @@
+{# One row per quota: who it is, how full, which devices, and what moved in or out.
+
+   `pct` is None for a quota with no allocation and must NOT be read as zero — unbounded is not
+   empty. Such a row shows its share of the household instead, which is a true statement about a
+   pot whose size is "whatever is left over". #}
+{% if not rows %}
+  <p class="muted empty">Nothing recorded for this period yet.</p>
+{% else %}
+<div class="quotas">
+  {% for r in rows %}
+  <div class="quota-row">
+    <div class="quota-who">
+      <span class="quota-name"><i class="swatch s{{ r.swatch }}"></i>{{ r.label }}</span>
+      <span class="quota-sub">
+        {# "active", because a device (or person) that used nothing this period has no row to
+           show — these count what consumed bandwidth, not what is assigned here. #}
+        {% if r.person_count %}{{ r.person_count }} {{ 'person' if r.person_count == 1 else 'people' }} ·
+        {% endif %}{{ r.device_count }} active device{{ '' if r.device_count == 1 else 's' }}{% if r.shared %} · shared{% endif %}
+      </span>
+    </div>
+    <div class="quota-bar">
+      {% if r.pct is not none %}
+        <div class="remaining-bar" title="{{ r.pct|round|int }}% of {{ r.allocation|bytes }}">
+          <div class="remaining-fill {{ r.tone }}" style="width: {{ r.pct_capped }}%"></div>
+        </div>
+        <div class="quota-cap">
+          <span>{{ r.pct|round|int }}% of {{ r.allocation|bytes }}</span>
+          <span class="muted">{{ r.share|round|int }}% of household</span>
+        </div>
+      {% else %}
+        <div class="remaining-bar" title="{{ r.share|round|int }}% of household usage">
+          <div class="remaining-fill neutral" style="width: {{ r.share }}%"></div>
+        </div>
+        <div class="quota-cap">
+          <span class="muted">no allocation set</span>
+          <span class="muted">{{ r.share|round|int }}% of household</span>
+        </div>
+      {% endif %}
+      <details class="quota-detail">
+        {# People, not devices, are the top level here. Someone who counts to the shared pot
+           still has a usage worth reading — "how much did Logain use" is a question about a
+           person, not about a limit — so this breakdown does not depend on an allocation. #}
+        <summary>Who used it{% if r.moves %} &amp; what moved{% endif %}</summary>
+        <ul class="devlist people">
+          {% for p in r.people %}
+          <li class="person{{ ' unowned' if p.unowned }}">
+            <span>{{ p.label }}
+              <span class="muted">· {{ p.devices|length }} device{{ '' if p.devices|length == 1 else 's' }}</span>
+            </span>
+            <span class="nowrap">
+              <strong>{{ p.used|bytes }}</strong>
+              <span class="muted">{{ p.share|round|int }}%</span>
+            </span>
+          </li>
+            {% for d in p.devices %}
+            <li class="under">
+              <span>{{ d.host }}{% if d.macs > 1 %} <span class="muted">({{ d.macs }} MACs)</span>{% endif %}
+                {% if d.kind %}<span class="muted">· {{ d.kind }}</span>{% endif %}</span>
+              <span class="nowrap">{{ d.total|bytes }}</span>
+            </li>
+            {% endfor %}
+            {% if p.moved_out %}
+            <li class="under">
+              <span class="muted">moved to another quota</span>
+              <span class="nowrap loss">−{{ p.moved_out|bytes }}</span>
+            </li>
+            {% endif %}
+          {% else %}
+          <li><span class="muted">Nothing used this quota in this period.</span><span></span></li>
+          {% endfor %}
+          {% for m in r.moves if m.into %}
+          <li class="move">
+            <span class="muted">+ {{ m.name }} ← {{ m.other }}</span>
+            <span class="nowrap gain">+{{ m.bytes|bytes }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+    </div>
+    <div class="quota-figs">
+      <div class="quota-used">{{ r.used|bytes }}</div>
+      <div class="quota-of">
+        {% if r.allocation %}of {{ r.allocation|bytes }}{% else %}<span class="muted">no allocation</span>{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{# The invariant, rendered rather than merely asserted in a test: moving bytes between quotas
+   must never change their sum. The one failure this design cannot tolerate is a total that
+   looks reasonable and is wrong, so it says so on the page. #}
+<p class="reconcile {{ 'ok' if reconciles else 'bad' }}">
+  {% if reconciles %}
+    Σ quotas = {{ attributed|bytes }} = household WAN{% if period_label %} {{ period_label }}{% endif %} · nothing unattributed
+  {% else %}
+    Attribution mismatch: quotas sum to {{ attributed|bytes }} against {{ household|bytes }} measured.
+  {% endif %}
+</p>
+{% if dropped %}
+  <p class="muted note-line">
+    {{ dropped|bytes }} could not be reassigned: a download was booked against more bandwidth than
+    the device that pulled it used this period. Reported rather than absorbed — the shortfall is
+    real, not a rounding error.
+  </p>
+{% endif %}
+{% if split_day and split_exact %}
+  <p class="muted note-line">
+    Renewed at {{ split_day_time }} UTC on {{ split_day }}, and that day was snapshot at the
+    moment it happened — so it is divided exactly: {{ split_before|bytes }} of it predates the
+    renewal and counts toward the previous period, and the rest counts here. No approximation.
+  </p>
+{% elif split_day %}
+  <p class="muted note-line">
+    Renewed at {{ split_day_time }} UTC on {{ split_day }}, after the fact. The router records
+    usage one row per device per <em>day</em>, and a day can only be divided by a snapshot taken
+    at the renewal instant — there is none for this one, so
+    <strong>{{ split_day }} counts entirely toward the previous period</strong>
+    ({{ split_day_total|bytes }}) and this one is measured from {{ counts_from }}. Whatever ran
+    between {{ split_day_time }} and midnight is counted in neither. Use <em>Renew now</em> next
+    time and this is exact.
+  </p>
+{% endif %}
+{% if before_record %}
+  <p class="muted note-line">
+    {{ before_record|bytes }} of reassignments predate the WAN record{% if wan_first_day %} (which begins
+    {{ wan_first_day }}){% endif %}, so they move nothing. There is no measured traffic there to move.
+  </p>
+{% endif %}
+{% if unknown_targets %}
+  <p class="muted note-line">
+    Some downloads point at quotas that no longer exist ({{ unknown_targets|join(', ') }}); they
+    count where their device counts.
+  </p>
+{% endif %}
+{% endif %}

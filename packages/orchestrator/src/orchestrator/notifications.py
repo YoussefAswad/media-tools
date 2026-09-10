@@ -42,6 +42,7 @@ EVENTS = (
     "job-deferred",
     "library-scan",
     "quota",
+    "quota-person",
     "monitoring",
 )
 

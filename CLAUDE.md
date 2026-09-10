@@ -138,7 +138,8 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
   references in the YAML (expanded at load, never written back resolved) so the config file is safe
   to edit in the web UI. Env vars are injected by compose from `.env`.
 - **Audit = JSONL (source of truth) + SQLite mirror (queryable index).** One SQLite file
-  (`/state/orchestrator.db`, WAL) holds jobs, actions, downloads (ledger), and cutoffs.
+  (`/state/orchestrator.db`, WAL) holds jobs, actions, downloads (ledger), per-device WAN
+  usage, and quota periods.
 - **Web UI is server-rendered** (Jinja2) with vanilla-JS `data-src` polling. **No vendored CDN
   libraries** (CSP-safe). Theme-aware CSS. Byte values via a context-aware `bytes` Jinja filter.
   One router per tab in `web/routes/`; shared template env + auth in `web/deps.py` (use
@@ -632,6 +633,93 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
       playback clock. Real timing regressions are caught by `_check_duration` and the track
       composition count. This is the same shape as the `uid`/`default_duration` skip two lines
       below it — **a non-Matroska source simply has no Matroska answer to compare against**.
+
+26. **Quotas are attributed from the router; the ledger only moves bytes between them, and it
+    could never have measured them.** The Quota tab (`orchestrator/quota.py`, pure and
+    DB-free like `fold_identities` and `library/estimate.py`) answers "whose" on top of the two
+    stores that already answer "how much" and "which device": every figure starts as a device's
+    WAN total, config maps device → person → quota, and a ledger row with a `quota` set moves
+    *its own* bytes to another bucket. **Σ over quotas therefore always equals what the router
+    measured**, which is rendered on the page and not merely asserted in a test, because the one
+    failure this design cannot tolerate is a total that looks reasonable and is wrong.
+    - **The old quota alert read `ledger.totals()`, and that is the bug the feature exists to
+      fix.** Over one real period the ledger held 409.05 GB while the link carried 505.36 GB, so
+      the household was told 81% of its 500 GB plan while already over it. The ledger is a
+      partial record of one host's torrents; it is not a measurement of the link and never was.
+      `worker._check_quota` now reads `services.attribution(...)`, the single seam the tab uses
+      too — two answers to the same question is how `ntfy.status_granularity` came to gate two
+      emitters and not the other six.
+    - **Reassignment is period-level arithmetic, never day-level.** A ledger row is stamped with
+      the day the download *completed* while its bytes crossed the link over however many days it
+      ran. Nine `[BO3]` rows are stamped 8 Sep 2026 totalling 54.94 GB against PC-114's 31.86 GB
+      of WAN *that day*; over 5-8 Sep the same device moved 62.20 GB and it reconciles. Carving
+      per day would have driven a device negative and invented the difference somewhere else.
+      A carve-out bigger than the source device's period total is clamped **and the shortfall
+      reported** (`Attribution.dropped`) — absorbing it quietly would keep the totals adding up
+      while telling the wrong story about a device.
+    - **A row older than the WAN record moves nothing.** Recording began 29 Aug 2026 and the
+      ledger reaches back to 23 Aug; eleven rows sit in that gap. Moving them anyway would carve
+      bytes out of a device's *later* days to pay for a download nothing was watching. Same rail
+      as the Bandwidth tab's "tracked as downloads" tile (pitfall 23).
+    - **`downloads.device`/`.quota` are nullable and NULL means *derive it*, not *unknown*.** A
+      NULL device resolves to `quotas.server_device` and a NULL quota to that device's own, so
+      renaming the server or moving a person between quotas re-attributes history already stored
+      — the same reason `fold_identities` resolves identity at read time. That is also why the
+      one-shot backfill only writes the games rule (`kind='game'` → `quotas.games_device`,
+      11 rows / 59.02 GB here) and leaves the other 27 rows alone. Ownership in
+      `quotas.devices` is likewise keyed to the **folded identity**, never a MAC: the TV box
+      already reaches this router under three.
+    - **Attribution goes through `Ledger.set_attribution`, not `update`.** `update` marks a row
+      `edited`, which permanently stops qBittorrent refreshing it. Attribution says *whose* bytes
+      these were, not *how many* — freezing the byte count because someone corrected the
+      bookkeeping is the wrong trade in the wrong direction.
+    - **A quota with no allocation has `pct is None`, and None is not zero.** It is tracked but
+      unbounded, so it shows share-of-household in a neutral hue and raises no alert. A green bar
+      would imply a limit it is comfortably inside; an alert would page about a pot whose size
+      nobody has decided.
+    - **The Quota tab writes config, so it writes exactly one block.** `quotas.devices` is
+      rewritten by `mediacore.config.replace_mapping_block`; dumping the validated model would
+      resolve every `${VAR}` into the file and flatten every comment, which is what
+      `config_schema.py` already refuses to let the UI do. Comments *inside* that one block are
+      the whole cost. `QuotasConfig` sets `validate_assignment=True` so setting a field on an
+      already-built config really rebuilds the models under it — the `status_granularity` trap
+      from pitfall 22, closed at the model this time.
+    - **A period's `end` is an exclusive instant, and `wan_usage` stores days.** Truncating the
+      end to a date made it inclusive, so a boundary at midnight put that whole day in *both*
+      windows — the current period asking `day >= '2026-09-11'` and its predecessor
+      `day <= '2026-09-11'`. Each window still reconciled internally, which is why nothing
+      flagged it: the day was simply counted twice, once on each side. `_range_where` now takes
+      the day containing `end - 1s`, leaving a bare `YYYY-MM-DD` end alone because that names a
+      day rather than an instant (`totals(start=day, end=day)` asks for exactly that day).
+    - **A mid-day renewal is exact only if the start day was snapshot at the renewal instant.**
+      `wan_usage` accumulates into one row per device per day, so *at that instant* the day's row
+      holds exactly the traffic that predates the new period — and one poll later it does not.
+      That is why `quota_period_splits` is **captured, never derived**, and why the UI's
+      "Renew now" exists instead of a second time field: the snapshot and the start time have to
+      describe the same moment, which a time typed hours later cannot. Moving a period's start
+      discards its snapshot (`clear_split`) — a precise answer to the wrong question is worse
+      than the honest fallback. An empty snapshot still counts as captured: "nothing had been
+      used yet today" is a real answer. `Services.period_subtraction(period, side=...)` is what
+      divides the day — `after` keeps the day minus the snapshot, `before` keeps only it — and
+      a test asserts the two halves still sum to the whole.
+    - **Without a snapshot, a quota period renewed mid-day surrenders its whole start day to the
+      previous period.**
+      `wan_usage` is one row per device per *day* and nothing in this database records per-device
+      usage more finely — `metrics` is timestamped but household-aggregate and a calibrated
+      estimate, so apportioning it per device would invent exactly the kind of number pitfall 23
+      forbids. So a day belonging to two periods goes wholly to the older one
+      (`QuotaPeriod.effective_start` is the next midnight), which under-counts the new period by
+      whatever ran between the renewal and midnight. That is the direction to err: crediting the
+      new period with the whole day hands it traffic that mostly predates it. `start_time` is
+      not decorative under this rule — it is what decides the start day belongs to the previous
+      period at all. Use `effective_start` everywhere a period defines a window; `starts_at` is
+      the renewal moment and is for display only.
+    Note `cutoffs` was renamed to `quota_periods` (`cutoff_date` → `start_date`) by a guarded
+    `ALTER TABLE` in `QuotaPeriods.__init__`. **It has to run before the schema script**: a
+    `CREATE TABLE IF NOT EXISTS quota_periods` first would make an empty table, the guard would
+    see the destination present and skip, and every existing period would sit orphaned in
+    `cutoffs` while the UI showed none — data loss wearing the costume of a clean install.
+
 
 ## Origin note
 

@@ -1,0 +1,33 @@
+{% if not rows %}
+  <p class="muted empty">
+    No reassignments this period. A download counts against whoever owns the device that pulled
+    it until an entry on the Bandwidth tab says otherwise.
+  </p>
+{% else %}
+<div class="scroll">
+<table class="actions ledger">
+  <thead><tr>
+    <th>Download</th><th>Downloaded by</th><th>From</th><th>Counts to</th><th>Moved</th><th>When</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td class="path" title="{{ r.name }}">{{ r.name }}</td>
+      <td class="nowrap">{{ r.device }}</td>
+      <td class="nowrap"><span class="badge skip">{{ r.from_label }}</span></td>
+      <td class="nowrap"><span class="badge ok">{{ r.to_label }}</span></td>
+      <td class="nowrap">
+        <strong>{{ r.moved|bytes }}</strong>
+        {% if r.clamped %}
+          <span class="badge warn"
+                title="Asked to move {{ r.requested|bytes }}, but the device only used {{ r.moved|bytes }} this period. The shortfall is reported, never absorbed.">
+            −{{ r.shortfall|bytes }} short</span>
+        {% endif %}
+      </td>
+      <td class="muted nowrap">{{ r.day }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}

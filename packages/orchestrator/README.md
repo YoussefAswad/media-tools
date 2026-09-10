@@ -10,9 +10,10 @@ Composes `mkvprune` (as a subprocess) and `mediacore` (as a library).
 ## Layout
 
 ```
-core            queue, ledger, wan_usage, metrics, alerts, services, runner, titles
+core            queue, ledger, wan_usage, quota, metrics, alerts, services, runner, titles
 steps/          the per-file pipeline, one class per step   (see CLAUDE.md)
 library/        index / estimate / scan / queued            — the Library tab's data
+quota.py        WAN usage -> per-person quotas (pure)       — the Quota tab's arithmetic
 monitor/        disk / docker / system / smart / wan        — one class per monitored source
 web/
   deps.py       template env, services accessor, UI auth, page()/partial()

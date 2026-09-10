@@ -4,9 +4,9 @@
 {% block content %}
 <div class="toolbar">
   <div class="filters" id="range-filter" role="group" aria-label="Time range">
-    <button data-range="cutoff" class="chip {{ 'active' if has_cutoff else '' }}">Since cutoff</button>
+    <button data-range="period" class="chip {{ 'active' if has_period else '' }}">This period</button>
     <button data-range="7d" class="chip">7d</button>
-    <button data-range="30d" class="chip {{ '' if has_cutoff else 'active' }}">30d</button>
+    <button data-range="30d" class="chip {{ '' if has_period else 'active' }}">30d</button>
     <button data-range="90d" class="chip">90d</button>
     <button data-range="1y" class="chip">1y</button>
     <button data-range="all" class="chip">All</button>
@@ -28,7 +28,7 @@
     <button data-units="iec" class="chip">GiB</button>
   </div>
   <button class="ghost" type="button" onclick="var e=document.getElementById('add-entry');e.hidden=!e.hidden">+ Add entry</button>
-  <button class="ghost" type="button" onclick="var e=document.getElementById('manage-cutoffs');e.hidden=!e.hidden">Manage cutoffs</button>
+  <button class="ghost" type="button" onclick="var e=document.getElementById('manage-periods');e.hidden=!e.hidden">Manage quota periods</button>
   <div data-src="/ui/wan-pause" data-interval="30000"></div>
 </div>
 
@@ -44,21 +44,33 @@
     <label>Downloaded<input name="downloaded" placeholder="e.g. 12.3 GB" value="0"></label>
     <label>Uploaded<input name="uploaded" placeholder="e.g. 500 MB" value="0"></label>
     <label>Size (optional)<input name="size" placeholder="e.g. 12 GB"></label>
-    <label>Completed<input name="completed_at" type="date"></label>
+    {# datetime-local, not date: a quota renewed midday splits a day, and a download either side
+       of that belongs to a different period. A bare date still parses as midnight. #}
+    <label>Completed (UTC)<input name="completed_at" type="datetime-local"></label>
     <label class="wide">Notes<input name="notes"></label>
     <div class="row-actions"><button type="submit">Add</button></div>
   </form>
 </section>
 
-<section class="card" id="manage-cutoffs" hidden>
-  <h2>Manage cutoffs <span class="muted">— period markers &amp; quota limits</span></h2>
-  <form method="post" action="/cutoffs/add" class="entry-form">
-    <label>Cutoff date<input name="cutoff_date" type="date" required></label>
+<section class="card" id="manage-periods" hidden>
+  <h2>Manage quota periods <span class="muted">— when each period starts, and the plan's cap</span></h2>
+  <form method="post" action="/quota-periods/add" class="entry-form">
+    <label>Starts<input name="start_date" type="date" required></label>
+    <label>at (UTC)<input name="start_time" type="time" value="00:00"></label>
     <label>Bandwidth limit<input name="limit" placeholder="e.g. 1 TB (blank = none)"></label>
     <label>Note<input name="note" placeholder="e.g. August quota"></label>
-    <div class="row-actions"><button type="submit">Add cutoff</button></div>
+    <div class="row-actions"><button type="submit">Add period</button></div>
   </form>
-  <div data-src="/ui/cutoffs" data-interval="0">Loading…</div>
+  {# "Renew now" rather than another time field: the start-day snapshot is a reading of a
+     running accumulator, so it only means "what predates this period" at the instant it is
+     taken. Creating the period from that same instant makes the two agree by construction. #}
+  <form method="post" action="/quota/renew" class="entry-form"
+        onsubmit="return confirm('Start a new quota period right now? Today is divided at this moment, exactly.')">
+    <label>Bandwidth limit<input name="limit" placeholder="e.g. 500 GB (blank = none)"></label>
+    <label>Note<input name="note" placeholder="e.g. October quota"></label>
+    <div class="row-actions"><button type="submit">Renew now — divides today exactly</button></div>
+  </form>
+  <div data-src="/ui/quota-periods" data-interval="0">Loading…</div>
 </section>
 
 <div data-src="/ui/ledger-remaining" data-interval="0" data-unit-aware></div>

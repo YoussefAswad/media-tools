@@ -114,3 +114,66 @@ def save_text(path: Path, text: str) -> None:
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+def replace_mapping_block(text: str, section: str, key: str, mapping: dict[str, str]) -> str:
+    """Rewrite one ``key:`` mapping nested under one top-level ``section:``, in place.
+
+    A surgical text edit, deliberately, because the obvious alternative is not available: dumping
+    the validated model back to YAML would resolve every ``${VAR}`` reference into the file and
+    flatten every comment in it, which is exactly what
+    :mod:`orchestrator.config_schema` refuses to let the UI do. Rewriting only the lines of one
+    flat ``name: value`` block leaves every other byte — including every secret reference —
+    untouched.
+
+    The block is created if the section exists without it, and the section is created if it does
+    not exist at all. **Comments inside the target block are not preserved** (nothing else is
+    touched); that is the whole cost of letting the UI edit this one map.
+
+    Values are quoted, so a device called ``No`` or ``12:34`` cannot turn into a bool or a
+    sexagesimal int on the next load — YAML's classic own goal.
+    """
+    lines = text.splitlines()
+    body = [f'  {key}:'] + [f'    "{k}": "{v}"' for k, v in mapping.items()]
+    if not mapping:
+        body = [f'  {key}: {{}}']
+
+    sec_at = next(
+        (i for i, ln in enumerate(lines) if ln.rstrip() == f"{section}:" or ln.startswith(f"{section}:")),
+        None,
+    )
+    if sec_at is None:
+        head = (text.rstrip("\n") + "\n\n") if text.strip() else ""
+        return head + f"{section}:\n" + "\n".join(body) + "\n"
+
+    # The section runs until the next line that starts in column 0 and is not blank or a comment.
+    sec_end = len(lines)
+    for i in range(sec_at + 1, len(lines)):
+        ln = lines[i]
+        if ln.strip() and not ln[0].isspace() and not ln.lstrip().startswith("#"):
+            sec_end = i
+            break
+
+    key_at = next(
+        (
+            i
+            for i in range(sec_at + 1, sec_end)
+            if lines[i].startswith("  ") and lines[i].strip().split(":")[0] == key
+            and len(lines[i]) - len(lines[i].lstrip()) == 2
+        ),
+        None,
+    )
+    if key_at is None:
+        insert = sec_end
+        while insert > sec_at + 1 and not lines[insert - 1].strip():
+            insert -= 1
+        return "\n".join(lines[:insert] + body + lines[insert:]) + "\n"
+
+    # The existing block ends at the next line indented two spaces or less that carries content.
+    key_end = sec_end
+    for i in range(key_at + 1, sec_end):
+        ln = lines[i]
+        if ln.strip() and (len(ln) - len(ln.lstrip())) <= 2:
+            key_end = i
+            break
+    return "\n".join(lines[:key_at] + body + lines[key_end:]) + "\n"
