@@ -610,6 +610,29 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
       `mux._compat_stand_in` exactly: flag a file the remux would not actually change and it
       stays "needs work" forever.
 
+25. **A container change re-derives ffprobe's `r_frame_rate`, so an exact compare of it makes
+    `remux_to_mkv` unpassable.** mp4 states its rate in the movie timescale — ffprobe read
+    *The Deer Hunter*'s as `13978/583` — while Matroska stores a nanosecond `default_duration`
+    that mkvmerge snaps to the nearest well-known value (`41708333` ns = `24000/1001`). Same
+    rate, two spellings, **1.6e-6 apart**, and `verify._check_video` compared the strings. The
+    only mp4 import this library has ever had dead-lettered at exit 3 after a 6-minute mux that
+    was provably correct: the output's own mkvmerge statistics tag reported
+    `NUMBER_OF_FRAMES=264007` against the source's ffprobe `nb_frames=264007`, and the duration
+    matched to 42 ms. `r_frame_rate` is now compared numerically within
+    `_FRAME_RATE_TOLERANCE`, falling back to the exact compare when either side is unusable
+    (ffprobe writes `0/0` when it cannot derive a rate).
+    - **The tolerance is set by what must stay fatal, not by what was observed.** The NTSC
+      pulldown pairs (24 vs 24000/1001, 30 vs 30000/1001, 60 vs 60000/1001) sit `1/1001` =
+      **0.0999%** apart and are a real rate change; no genuine change is subtler. 1e-4 leaves
+      10x margin under that and 10x over the widest drift measured here (`2997/100` vs
+      `30000/1001`, 1.0e-5). Set generously it would stop distinguishing 24 from 23.976 —
+      pitfall 23's "a bound set generously is not set at all".
+    - **Loosening it costs nothing, because r_frame_rate was never the check that mattered.**
+      Matroska carries explicit per-block timestamps; `default_duration` is a hint, not the
+      playback clock. Real timing regressions are caught by `_check_duration` and the track
+      composition count. This is the same shape as the `uid`/`default_duration` skip two lines
+      below it — **a non-Matroska source simply has no Matroska answer to compare against**.
+
 ## Origin note
 
 mkvprune and seasonal-shift were **copied** (not `git subtree`-imported) from

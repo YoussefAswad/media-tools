@@ -13,8 +13,10 @@ from mkvprune.probe import ProbeResult
 from mkvprune.verify import (
     _MAX_REPORTED_LINES,
     _check_container_integrity,
+    _check_video,
     _fatal_ffmpeg_lines,
     _format_ffmpeg_lines,
+    _frame_rates_match,
     _is_progress_line,
     _video_stream,
 )
@@ -152,3 +154,60 @@ def test_video_stream_without_video_track() -> None:
         path="x.mka", tracks=[], duration_s=None, chapter_entries=0, attachment_count=0
     )
     assert _video_stream(pr) == {}
+
+
+def _video_probe(**stream) -> ProbeResult:
+    """A ProbeResult whose single video track carries the given ffprobe stream fields."""
+    return ProbeResult(
+        path="x.mkv",
+        tracks=[make_track(kind="video", mkv_id=0, ffprobe_index=0, codec_name="h264")],
+        duration_s=1.0,
+        chapter_entries=0,
+        attachment_count=0,
+        ffprobe_json={
+            "streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", **stream}]
+        },
+    )
+
+
+def test_frame_rate_survives_a_container_change() -> None:
+    # Verbatim from the remux that dead-lettered: ffprobe reads The Deer Hunter's mp4 rate in
+    # the movie timescale, mkvmerge writes Matroska's nearest well-known default_duration.
+    # 23.97599 vs 23.97602 — the same rate spelled two ways, 1.6e-6 apart.
+    assert _frame_rates_match("13978/583", "24000/1001")
+    # The other shape measured on this library: an exact 29.97 against true NTSC, 1.0e-5.
+    assert _frame_rates_match("2997/100", "30000/1001")
+
+
+def test_ntsc_pulldown_pairs_stay_distinct() -> None:
+    # The bound the tolerance is set against: 1/1001 apart is a real rate change, not a
+    # re-derived rational, and must keep failing in both directions.
+    assert not _frame_rates_match("24/1", "24000/1001")
+    assert not _frame_rates_match("24000/1001", "24/1")
+    assert not _frame_rates_match("30/1", "30000/1001")
+    assert not _frame_rates_match("60000/1001", "60/1")
+    # and anything grosser, e.g. a PAL speed-up or a halved rate from dropped frames
+    assert not _frame_rates_match("25/1", "24/1")
+    assert not _frame_rates_match("24000/1001", "12000/1001")
+
+
+def test_unreadable_frame_rate_falls_back_to_an_exact_compare() -> None:
+    # ffprobe's "no rate" spelling divides by zero; nothing is loosened for it.
+    assert _frame_rates_match("0/0", "0/0")
+    assert not _frame_rates_match("0/0", "24000/1001")
+    assert not _frame_rates_match("24000/1001", "0/0")
+    assert _frame_rates_match(None, None)
+    assert not _frame_rates_match(None, "24000/1001")
+
+
+def test_check_video_accepts_the_re_derived_rational() -> None:
+    src = _video_probe(width=1904, height=816, r_frame_rate="13978/583")
+    out = _video_probe(width=1904, height=816, r_frame_rate="24000/1001")
+    _check_video(src, out)  # must not raise
+
+
+def test_check_video_still_fails_a_real_rate_change() -> None:
+    src = _video_probe(width=1904, height=816, r_frame_rate="24000/1001")
+    out = _video_probe(width=1904, height=816, r_frame_rate="24/1")
+    with pytest.raises(VerificationError, match="r_frame_rate"):
+        _check_video(src, out)

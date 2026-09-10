@@ -26,6 +26,19 @@ _DOVI_FIELDS = (
 # mkvmerge video properties that must be identical between source and output
 _STABLE_VIDEO_PROP_KEYS = ("codec_id", "uid", "pixel_dimensions", "default_duration")
 
+# How far two frame rates may differ and still count as the same rate. A container change
+# re-derives the rational: an mp4 states its rate in the movie timescale (ffprobe read The
+# Deer Hunter's as 13978/583) while Matroska stores a nanosecond `default_duration`, which
+# mkvmerge snaps to the nearest well-known value (41708333 ns = 24000/1001). Same rate, two
+# spellings, 1.6e-6 apart — and the exact string compare dead-lettered that remux at exit 3
+# on a mux whose own statistics tag reported the source's frame count to the frame.
+#
+# The bound is set by what must stay fatal: the NTSC pulldown pairs (24 vs 24000/1001, 30 vs
+# 30000/1001, 60 vs 60000/1001) sit 1/1001 = 0.0999% apart, and a real rate change is never
+# subtler than that. 0.01% leaves 10x margin under it and 10x over the widest representation
+# drift measured here (2997/100 vs 30000/1001, 1.0e-5).
+_FRAME_RATE_TOLERANCE = 1e-4
+
 # Muxer-side chatter from the throwaway `-f null` output, not a defect in the file being
 # checked. TrueHD frames are 1/1200s apart while Matroska stores whole-millisecond
 # timestamps, so consecutive frames legitimately land on the same DTS — every passthrough
@@ -105,11 +118,40 @@ def _check_duration(src: ProbeResult, out: ProbeResult) -> None:
         _fail("duration", f"{src.duration_s:.3f}s", f"{out.duration_s:.3f}s")
 
 
+def _parse_frame_rate(value: Any) -> float | None:
+    """``"24000/1001"`` -> 23.976..., or None if it isn't a usable rate.
+
+    ffprobe writes ``0/0`` for a stream it can't derive a rate for; that and anything
+    unparsable answer None, which sends the caller back to an exact compare.
+    """
+    try:
+        num, _, den = str(value).partition("/")
+        rate = float(num) / float(den or 1)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return rate if rate > 0 else None
+
+
+def _frame_rates_match(source: Any, output: Any) -> bool:
+    """Whether two ffprobe ``r_frame_rate`` values name the same rate.
+
+    Compared numerically within `_FRAME_RATE_TOLERANCE` so a re-derived rational survives a
+    cross-container remux; falls back to the exact compare when either side is unusable, so
+    nothing is loosened for the streams ffprobe couldn't read a rate from.
+    """
+    s_rate, o_rate = _parse_frame_rate(source), _parse_frame_rate(output)
+    if s_rate is None or o_rate is None:
+        return source == output
+    return abs(o_rate - s_rate) <= _FRAME_RATE_TOLERANCE * s_rate
+
+
 def _check_video(src: ProbeResult, out: ProbeResult) -> None:
     s, o = _video_stream(src), _video_stream(out)
-    for key in ("codec_name", "width", "height", "r_frame_rate"):
+    for key in ("codec_name", "width", "height"):
         if s.get(key) != o.get(key):
             _fail(f"video {key}", s.get(key), o.get(key))
+    if not _frame_rates_match(s.get("r_frame_rate"), o.get("r_frame_rate")):
+        _fail("video r_frame_rate", s.get("r_frame_rate"), o.get("r_frame_rate"))
     # HDR colour identification must survive (only enforce fields the source reports).
     for key in ("color_range", "color_space", "color_transfer", "color_primaries"):
         if s.get(key) is not None and s.get(key) != o.get(key):
