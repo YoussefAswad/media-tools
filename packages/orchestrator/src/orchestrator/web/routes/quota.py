@@ -54,6 +54,19 @@ def _period_bounds(
     return latest.effective_start, None, f"since {_when(latest)}"
 
 
+def _selected_period(services: Services, which: str | None):
+    """The period the tab is showing, not simply the newest one.
+
+    The summary compares usage against a limit, and the limit belongs to the period being looked
+    at: rendering the current period's cap beside the previous period's usage reported August's
+    507 GB as 101% of a 500 GB plan it was never held to (its own was 900 GB). "All time" spans
+    every period and so is held to none.
+    """
+    if which == "all":
+        return None
+    return services.quota_periods.previous() if which == "previous" else services.quota_periods.latest()
+
+
 def _when(period) -> str:
     """Where a period's accounting begins, for display.
 
@@ -116,8 +129,8 @@ def ui_quota_summary(
 ) -> HTMLResponse:
     result, label, services = _attribution(request, period)
     iec = use_iec(units)
-    current = services.quota_periods.latest()
-    limit = current.limit_bytes if current else 0
+    selected = _selected_period(services, period)
+    limit = selected.limit_bytes if selected else 0
     pct = (result.household / limit * 100) if limit else 0
 
     tiles: list[dict] = [

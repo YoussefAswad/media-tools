@@ -364,3 +364,26 @@ def test_a_bare_date_still_parses_as_midnight(client) -> None:
                 follow_redirects=False)
     row = next(r for r in _services(client).ledger.list() if r.name == "dateonly")
     assert row.completed_at == "2026-09-10T00:00:00+00:00"
+
+
+def test_the_summary_compares_against_the_period_being_viewed(client) -> None:
+    """A limit belongs to its own period.
+
+    Showing the current period's cap beside the previous period's usage reported 507 GB as 101%
+    of a 500 GB plan that period was never held to — its own limit was 900 GB.
+    """
+    periods = _services(client).quota_periods
+    periods.add(start_date="2026-08-22", limit_bytes=900 * GB, note="August")
+    periods.add(start_date="2026-09-10", limit_bytes=500 * GB, note="September")
+    _record_wan(client, **{"Linux-G15": 600 * GB})
+
+    assert "900.00 GB" in client.get("/ui/quota-summary?period=previous").text
+    assert "500.00 GB" in client.get("/ui/quota-summary?period=current").text
+
+
+def test_all_time_is_held_to_no_single_limit(client) -> None:
+    """It spans every period, so no one period's cap applies to it."""
+    _services(client).quota_periods.add(start_date="2026-09-10", limit_bytes=500 * GB)
+    _record_wan(client, **{"Linux-G15": 10 * GB})
+    html = client.get("/ui/quota-summary?period=all").text
+    assert "Plan limit" not in html and "Of plan" not in html
