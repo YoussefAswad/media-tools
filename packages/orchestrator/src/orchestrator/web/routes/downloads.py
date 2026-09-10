@@ -151,7 +151,7 @@ def ui_ledger_remaining(request: Request, units: str | None = None) -> HTMLRespo
     c = services.quota_periods.latest()
     if c is None or c.limit_bytes <= 0:
         return HTMLResponse("")  # no card
-    used = services.ledger.totals(start=c.starts_at, end=None)["total"]
+    used = services.ledger.totals(start=c.effective_start, end=None)["total"]
     remaining = c.limit_bytes - used
     pct = (used / c.limit_bytes * 100) if c.limit_bytes else 0
     tone = "over" if remaining < 0 else ("warn" if pct >= 85 else "ok")
@@ -164,7 +164,7 @@ def ui_ledger_remaining(request: Request, units: str | None = None) -> HTMLRespo
         "pct": min(pct, 100),
         "pct_label": round(pct),
         "tone": tone,
-        "start_date": c.start_date,
+        "start_date": c.effective_start[:10],
         "start_time": c.start_time,
         "mid_day": c.mid_day,
     }

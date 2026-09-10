@@ -278,35 +278,57 @@ def test_an_existing_period_keeps_starting_at_midnight(client) -> None:
     assert period.starts_at == "2026-09-10T00:00:00+00:00"
 
 
-def test_the_ledger_window_honours_the_period_time(client) -> None:
-    """A download before the renewal belongs to the previous period, not this one."""
+def test_a_mid_day_renewal_gives_the_whole_start_day_to_the_previous_period(client) -> None:
+    """The boundary-day rule, and the reason for it.
+
+    wan_usage stores one row per device per DAY and nothing in this database records per-device
+    usage more finely, so a day that belongs to two periods cannot be divided. The whole of it
+    goes to the previous period: that under-counts the new one by whatever ran between the
+    renewal and midnight, which beats crediting it with a day of traffic that mostly predates it.
+    """
     ledger = _services(client).ledger
-    ledger.add_manual(name="before", kind="movie", downloaded_bytes=GB, uploaded_bytes=0,
-                      completed_at="2026-09-10T09:00:00+00:00")
-    ledger.add_manual(name="after", kind="movie", downloaded_bytes=2 * GB, uploaded_bytes=0,
-                      completed_at="2026-09-10T18:00:00+00:00")
+    for name, when in [("before renewal", "2026-09-10T09:00:00+00:00"),
+                       ("after renewal", "2026-09-10T18:00:00+00:00"),
+                       ("next day", "2026-09-11T02:00:00+00:00")]:
+        ledger.add_manual(name=name, kind="movie", downloaded_bytes=GB, uploaded_bytes=0,
+                          completed_at=when)
     _services(client).quota_periods.add(start_date="2026-09-10", start_time="14:30")
 
     html = client.get("/ui/ledger").text
-    assert "after" in html and "before" not in html
+    assert "next day" in html
+    assert "after renewal" not in html   # the start day is the previous period's, in full
+    assert "before renewal" not in html
 
 
-def test_a_mid_day_period_says_the_wan_day_cannot_be_split(client) -> None:
-    """wan_usage stores one row per device per DAY, so the start day sits in both periods.
+def test_the_effective_start_is_the_next_midnight_when_renewed_mid_day(client) -> None:
+    services = _services(client)
+    services.quota_periods.add(start_date="2026-09-10", start_time="16:37")
+    period = services.quota_periods.latest()
+    assert period.starts_at == "2026-09-10T16:37:00+00:00"      # what was actually set
+    assert period.effective_start == "2026-09-11T00:00:00+00:00"  # where accounting begins
+    assert period.boundary_day == "2026-09-10"
 
-    Saying so beats implying a precision the store does not have — the same rail as the
-    Bandwidth tab's "tracked as downloads" tile.
-    """
+
+def test_a_midnight_period_needs_no_boundary_day(client) -> None:
+    services = _services(client)
+    services.quota_periods.add(start_date="2026-09-10")
+    period = services.quota_periods.latest()
+    assert period.effective_start == period.starts_at
+    assert period.boundary_day is None
+
+
+def test_a_mid_day_period_explains_where_the_start_day_went(client) -> None:
     _record_wan(client, **{"Linux-G15": 10 * GB})
     _services(client).quota_periods.add(start_date="2026-09-10", start_time="14:30")
     html = client.get("/ui/quota-buckets").text
-    assert "one row per device per" in html and "14:30" in html
+    assert "counts entirely toward the previous period" in html
+    assert "14:30" in html and "2026-09-11" in html
 
 
 def test_a_midnight_period_says_nothing_about_split_days(client) -> None:
     _record_wan(client, **{"Linux-G15": 10 * GB})
     _services(client).quota_periods.add(start_date="2026-09-10")
-    assert "one row per device per" not in client.get("/ui/quota-buckets").text
+    assert "counts entirely toward the previous period" not in client.get("/ui/quota-buckets").text
 
 
 def test_the_period_form_round_trips_a_time(client) -> None:

@@ -219,7 +219,7 @@ class Worker(threading.Thread):
         if period is None or not pcts:
             return
         # the period's exact start, so a quota renewed midday does not count the whole day
-        result = self.services.attribution(period.starts_at, None)
+        result = self.services.attribution(period.effective_start, None)
 
         if period.limit_bytes > 0:
             level = self._crossed(result.household, period.limit_bytes, pcts, period.alerted_pct)
@@ -281,5 +281,7 @@ class Worker(threading.Thread):
 
 
 def _since(period) -> str:
-    """How a period's start reads in an alert. ASCII only — ntfy header text is latin-1."""
-    return period.start_date if not period.mid_day else f"{period.start_date} {period.start_time}"
+    """The date an alert's figures are measured from — the effective start, not the renewal
+    moment, so the number and the date it quotes come from the same window. ASCII only: ntfy
+    header text is latin-1."""
+    return period.effective_start[:10]

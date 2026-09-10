@@ -684,6 +684,17 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
       the whole cost. `QuotasConfig` sets `validate_assignment=True` so setting a field on an
       already-built config really rebuilds the models under it — the `status_granularity` trap
       from pitfall 22, closed at the model this time.
+    - **A quota period renewed mid-day surrenders its whole start day to the previous period.**
+      `wan_usage` is one row per device per *day* and nothing in this database records per-device
+      usage more finely — `metrics` is timestamped but household-aggregate and a calibrated
+      estimate, so apportioning it per device would invent exactly the kind of number pitfall 23
+      forbids. So a day belonging to two periods goes wholly to the older one
+      (`QuotaPeriod.effective_start` is the next midnight), which under-counts the new period by
+      whatever ran between the renewal and midnight. That is the direction to err: crediting the
+      new period with the whole day hands it traffic that mostly predates it. `start_time` is
+      not decorative under this rule — it is what decides the start day belongs to the previous
+      period at all. Use `effective_start` everywhere a period defines a window; `starts_at` is
+      the renewal moment and is for display only.
     Note `cutoffs` was renamed to `quota_periods` (`cutoff_date` → `start_date`) by a guarded
     `ALTER TABLE` in `QuotaPeriods.__init__`. **It has to run before the schema script**: a
     `CREATE TABLE IF NOT EXISTS quota_periods` first would make an empty table, the guard would

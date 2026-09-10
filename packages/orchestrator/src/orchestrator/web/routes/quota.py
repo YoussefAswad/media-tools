@@ -45,14 +45,24 @@ def _period_bounds(
     if which == "previous":
         prev = periods.previous()
         if prev is None:
-            return None, latest.starts_at, f"before {_when(latest)}"
-        return prev.starts_at, latest.starts_at, f"{_when(prev)} to {_when(latest)}"
-    return latest.starts_at, None, f"since {_when(latest)}"
+            return None, latest.effective_start, f"before {_when(latest)}"
+        return (
+            prev.effective_start,
+            latest.effective_start,
+            f"{_when(prev)} to {_when(latest)}",
+        )
+    return latest.effective_start, None, f"since {_when(latest)}"
 
 
 def _when(period) -> str:
-    """A period's start for display — the time only when there is one worth showing."""
-    return period.start_date if not period.mid_day else f"{period.start_date} {period.start_time}"
+    """Where a period's accounting begins, for display.
+
+    The *renewal* time is deliberately not shown here: under the boundary-day rule the accounting
+    starts the following midnight, and printing "since 10 Sep 16:37" beside numbers that begin on
+    the 11th would be the sort of half-truth this tab exists to avoid. The renewal time is shown
+    in its own sentence, where it can be explained.
+    """
+    return period.effective_start[:10]
 
 
 @router.get("/quota", response_class=HTMLResponse)
@@ -249,12 +259,12 @@ def _boundary(services: Services, period: str | None) -> dict:
     current = services.quota_periods.latest()
     if period == "all" or current is None or not current.mid_day:
         return {"split_day": None, "split_day_total": 0}
-    day = current.start_date
-    totals = services.wan.totals(start=day, end=day)
+    day = current.boundary_day
     return {
         "split_day": day,
         "split_day_time": current.start_time,
-        "split_day_total": totals["total"],
+        "split_day_total": services.wan.totals(start=day, end=day)["total"],
+        "counts_from": current.effective_start[:10],
     }
 
 

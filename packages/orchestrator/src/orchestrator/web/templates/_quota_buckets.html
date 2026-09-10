@@ -106,10 +106,12 @@
 {% endif %}
 {% if split_day %}
   <p class="muted note-line">
-    This period began at {{ split_day_time }} UTC on {{ split_day }}, and the router stores usage
-    one row per device per <em>day</em> — so that day's {{ split_day_total|bytes }} is counted here
-    in full, though part of it belongs to the previous period. Ledger entries are filtered to the
-    minute and are exact; set an entry's time to place it either side of the renewal.
+    Renewed at {{ split_day_time }} UTC on {{ split_day }}. The router records usage one row per
+    device per <em>day</em> and there is no per-device sub-day record to split one with, so
+    <strong>{{ split_day }} counts entirely toward the previous period</strong>
+    ({{ split_day_total|bytes }}) and this one is measured from {{ counts_from }}. Whatever ran
+    between {{ split_day_time }} and midnight is therefore counted in neither — an under-count,
+    chosen over crediting this period with a day of traffic that mostly predates it.
   </p>
 {% endif %}
 {% if before_record %}

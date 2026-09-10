@@ -384,14 +384,38 @@ class QuotaPeriod:
 
     @property
     def mid_day(self) -> bool:
-        """True when the period starts partway through a day.
-
-        Worth knowing because ``wan_usage`` is stored per **day**: the ledger can be filtered to
-        the minute but the router's counters cannot be split, so the start day's WAN total spans
-        both periods and no honest arithmetic divides it. The UI says so rather than implying a
-        precision the store does not have.
-        """
+        """True when the period starts partway through a day."""
         return (self.start_time or "00:00") != "00:00"
+
+    @property
+    def effective_start(self) -> str:
+        """Where this period's accounting actually begins.
+
+        For a period starting at midnight this is :attr:`starts_at`. For one renewed partway
+        through a day it is the **next** midnight, because the start day cannot be divided:
+        ``wan_usage`` stores one row per device per day, and there is no per-device sub-day
+        record anywhere in this database to split it with. (``metrics`` is timestamped but
+        household-aggregate and a calibrated estimate, so apportioning it per device would invent
+        numbers — see pitfall 23.)
+
+        Faced with a day that belongs to two periods, the whole of it goes to the **previous**
+        one. That under-counts the new period by whatever ran between the renewal and midnight,
+        and that is the direction to err: crediting the new period with the whole day would hand
+        it a day of traffic that mostly predates it. An under-count is a gap; an over-count is a
+        fiction that looks like data.
+
+        :attr:`start_time` is not decorative under this rule — it is what decides that the start
+        day belongs to the previous period at all.
+        """
+        if not self.mid_day:
+            return self.starts_at
+        nxt = _dt.date.fromisoformat(self.start_date) + _dt.timedelta(days=1)
+        return f"{nxt.isoformat()}T00:00:00+00:00"
+
+    @property
+    def boundary_day(self) -> str | None:
+        """The day this period surrenders to the previous one, or None when it starts cleanly."""
+        return self.start_date if self.mid_day else None
 
 
 class QuotaPeriods:
@@ -496,10 +520,11 @@ class QuotaPeriods:
         return p.start_date if p else None
 
     def latest_start(self) -> str | None:
-        """The current period's exact start timestamp — use this, not :meth:`latest_date`, for
-        anything filtering the ledger, which records a real time of day."""
+        """Where the current period's accounting begins — :attr:`QuotaPeriod.effective_start`,
+        not the raw renewal moment, so the ledger and the router's day-granular counters sit on
+        one axis instead of disagreeing about who owns the start day."""
         p = self.latest()
-        return p.starts_at if p else None
+        return p.effective_start if p else None
 
     def previous(self) -> QuotaPeriod | None:
         """The period before the current one — what the tab's 'Previous' range covers."""
