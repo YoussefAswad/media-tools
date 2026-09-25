@@ -44,6 +44,7 @@ EVENTS = (
     "quota",
     "quota-person",
     "monitoring",
+    "wan-reconcile",
 )
 
 _SCHEMA = """

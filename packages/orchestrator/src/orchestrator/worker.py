@@ -8,6 +8,7 @@ driven serially. A monotonic heartbeat lets the app report real worker liveness 
 from __future__ import annotations
 
 import contextlib
+import datetime as _dt
 import logging
 import threading
 import time
@@ -19,6 +20,10 @@ from orchestrator.monitor import MonitorSource, SourceSnapshot
 from orchestrator.queue import DEAD
 from orchestrator.services import Services
 from orchestrator.util import human_bytes
+from orchestrator.wan_usage import fold_identities, reconcile
+
+#: meta key holding the last UTC day the WAN record was reconciled against ``metrics``.
+WAN_RECONCILED_KEY = "wan_reconciled_day"
 
 log = logging.getLogger(__name__)
 
@@ -188,6 +193,9 @@ class Worker(threading.Thread):
         # 3. quota alert: one ntfy per usage threshold crossed this quota period.
         self._check_quota()
 
+        # 4. WAN reconciliation: yesterday's recorded total against the router's sampled rate.
+        self._check_wan_reconcile()
+
     def _maybe_vacuum(self) -> None:
         """VACUUM at most once per day (gated by a meta timestamp) to reclaim pruned space."""
         today = time.strftime("%Y-%m-%d", time.gmtime())
@@ -250,6 +258,60 @@ class Worker(threading.Thread):
                 event="quota-person",
             )
             periods.set_quota_alerted(period.id, quota.key, level)
+
+    def _check_wan_reconcile(self, now: _dt.datetime | None = None) -> None:
+        """Once a day, hold yesterday's ``wan_usage`` total against the ``metrics`` samples.
+
+        This is the cross-check from pitfall 23, run automatically. Done by hand it found a
+        duplicated router row that had fabricated ~720 GB across four device-days — twelve days
+        after it started, and against a ``metrics`` table with 30-day retention, so a little later
+        and the evidence would have expired. The message names the day's heaviest device because
+        that is where a bad row has been every time.
+        """
+        cfg = self.services.config
+        router = cfg.monitoring.router
+        if not router.enabled:
+            return
+        q = self.services.queue
+        today = (now or _dt.datetime.now(_dt.UTC)).date()
+        day = (today - _dt.timedelta(days=1)).isoformat()
+        if q.get_meta(WAN_RECONCILED_KEY) == day:
+            return
+        q.set_meta(WAN_RECONCILED_KEY, day)
+
+        rx, samples = self.services.metrics.day_sum("wan.rx", day)
+        tx, _ = self.services.metrics.day_sum("wan.tx", day)
+        recorded = self.services.wan.totals(start=day, end=day)["total"]
+        check = reconcile(day, recorded, rx + tx, samples, router.interval_s)
+        if check is None:
+            log.info("wan: %s not reconciled (too few samples or too little traffic)", day)
+            return
+        log.info(
+            "wan: %s recorded %d B against %d B sampled (ratio %.2f)",
+            day, check.recorded, check.sampled, check.ratio,
+        )
+        if not check.suspect:
+            return
+        heaviest = fold_identities(
+            self.services.wan.by_device(start=day, end=day), router.device_aliases
+        )
+        top = (
+            f" Heaviest device: {heaviest[0].host} ({human_bytes(heaviest[0].total)})."
+            if heaviest else ""
+        )
+        direction = "over" if check.ratio > 1 else "under"
+        # ASCII only: ntfy header text is latin-1.
+        self.services.notify.send(
+            "wan-reconcile",
+            title=f"WAN usage for {day} looks {direction}-counted",
+            body=(
+                f"Recorded {human_bytes(check.recorded)} but the router's own rate samples add up"
+                f" to {human_bytes(check.sampled)} (x{check.ratio:.2f}).{top}"
+                " Check that device's row for the day on the Bandwidth tab."
+            ),
+            tags=["warning", "bar_chart"],
+            priority=PRIORITY_STATUS,
+        )
 
     @staticmethod
     def _crossed(used: int, limit: int, pcts: list[int], already: int) -> int | None:

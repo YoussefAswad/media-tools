@@ -11,7 +11,7 @@ import datetime as _dt
 import pytest
 from mediacore.db import open_db
 from mediacore.router import DeviceStats
-from orchestrator.wan_usage import WanUsage, display_name, fold_identities
+from orchestrator.wan_usage import WanUsage, display_name, fold_identities, reconcile
 
 # The real line rate of the host this was built for (~30 Mbit VDSL, measured 3.78 MB/s). The
 # suite runs at the true bound on purpose: a generously-set one is exactly what let a bogus
@@ -165,7 +165,7 @@ def test_a_cursor_survives_a_missed_poll(usage: WanUsage) -> None:
     """The mechanism the flapping case depends on, asserted where it lives."""
     usage.apply([_dev(mac="CC:DD", rx=8_000)], link_max_bytes_s=LINK, now=_T0)
     usage.apply([], link_max_bytes_s=LINK, now=_T0 + _dt.timedelta(seconds=60))
-    rows = usage.db.execute("SELECT mac, rx FROM wan_cursor").fetchall()
+    rows = usage.db.execute("SELECT mac, rx FROM wan_counters").fetchall()
     assert [(r["mac"], r["rx"]) for r in rows] == [("CC:DD", 8_000)]
 
 
@@ -193,16 +193,122 @@ def test_expiry_never_touches_the_daily_record(usage: WanUsage) -> None:
 
 
 def test_two_rows_for_one_mac_in_a_poll_are_not_double_counted(usage: WanUsage) -> None:
-    """The cursor read at the top of a poll is not the whole story — it has to track what the
-    loop itself writes, or a duplicated row is differenced against the same stale value twice
-    and both halves added to the day."""
+    """The same counter reported twice is one counter: differencing both copies against the same
+    stored value would add the delta to the day twice."""
     usage.apply([_dev(mac="CC:DD", rx=1_000)], link_max_bytes_s=LINK, now=_T0)
-    usage.apply(
+    result = usage.apply(
         [_dev(mac="CC:DD", rx=3_000), _dev(mac="CC:DD", rx=3_000)],
         link_max_bytes_s=LINK,
         now=_T0 + _dt.timedelta(seconds=60),
     )
     assert usage.totals()["downloaded"] == 2_000
+    assert result.resets == 0 and result.duplicates == 0
+
+
+def _duplicated_polls(usage: WanUsage, *, stale: int, live: list[int], stale_first: bool) -> None:
+    """One MAC reported twice per poll: a frozen entry at ``stale`` beside a live counter."""
+    now = _T0
+    usage.apply([_dev(mac="98:59", host="logy", rx=stale)], link_max_bytes_s=LINK, now=now)
+    for value in live:
+        now += _dt.timedelta(seconds=60)
+        frozen = _dev(mac="98:59", host="Unknown", rx=stale)
+        current = _dev(mac="98:59", host="logy", rx=value)
+        rows = [frozen, current] if stale_first else [current, frozen]
+        usage.apply(rows, link_max_bytes_s=LINK, now=now)
+
+
+@pytest.mark.parametrize("stale_first", [True, False])
+def test_a_frozen_duplicate_row_above_the_live_counter_fabricates_nothing(
+    usage: WanUsage, stale_first: bool
+) -> None:
+    """The production bug of 13-18 Sep, in miniature.
+
+    The router kept logy's old host-table entry frozen at rx=199,743,377 beside the live entry
+    it had restarted from 12 MB. One cursor per MAC flipped between the two, so every poll
+    counted ``stale - live`` (90-190 MB, under the per-poll bound) as traffic: 427 GB over two
+    days, when the independent metrics counter put the whole household at 66 GB. Only the live
+    counter's own growth is real.
+    """
+    live = [12_444_194 + 1_000_000 * i for i in range(30)]
+    _duplicated_polls(usage, stale=199_743_377, live=live, stale_first=stale_first)
+    # The first live value has nothing to continue from (the only stored counter is above it),
+    # so it is a restart and counts nothing; every poll after it counts the live growth.
+    assert usage.totals()["downloaded"] == live[-1] - live[0]
+
+
+@pytest.mark.parametrize("stale_first", [True, False])
+def test_a_frozen_duplicate_row_below_the_live_counter_fabricates_nothing(
+    usage: WanUsage, stale_first: bool
+) -> None:
+    live = [5_000_000 + 100_000 * i for i in range(30)]
+    _duplicated_polls(usage, stale=1_000_000, live=live, stale_first=stale_first)
+    # With the frozen row *below*, the live row could also continue it — but the frozen row is
+    # the closer match (delta 0), so the live row starts a new series rather than claiming 4 MB.
+    assert usage.totals()["downloaded"] == live[-1] - live[0]
+
+
+def test_the_duplicate_disappearing_counts_only_the_live_growth(usage: WanUsage) -> None:
+    live = [12_000_000, 13_000_000, 14_000_000]
+    _duplicated_polls(usage, stale=199_743_377, live=live, stale_first=True)
+    usage.apply(
+        [_dev(mac="98:59", host="logy", rx=14_500_000)],
+        link_max_bytes_s=LINK,
+        now=_T0 + _dt.timedelta(minutes=10),
+    )
+    assert usage.totals()["downloaded"] == 2_500_000
+    rows = usage.db.execute("SELECT rx FROM wan_counters WHERE mac='98:59'").fetchall()
+    assert [r["rx"] for r in rows] == [14_500_000]  # the frozen counter is forgotten
+
+
+def test_a_replay_of_the_logged_logy_sequence(usage: WanUsage) -> None:
+    """The values the production log actually printed, ~one poll a minute for 36 hours: a stale
+    199,743,377 beside a live counter that climbed from 12.4 MB and stalled at 111.4 MB."""
+    stale = 199_743_377
+    climb = [12_444_194, 35_935_585, 51_127_819, 58_942_571, 63_700_564, 64_908_851,
+             65_080_369, 75_557_495, 79_651_427, 81_835_379, 85_336_795, 95_848_657,
+             105_035_122, 110_266_355, 111_287_624, 111_364_221]
+    live = climb + [111_364_221] * 1_880
+    _duplicated_polls(usage, stale=stale, live=live, stale_first=True)
+    assert usage.totals()["downloaded"] == 111_364_221 - 12_444_194  # ~99 MB, not ~170 GB
+
+
+def test_a_duplicate_is_reported_in_the_poll_result(usage: WanUsage) -> None:
+    usage.apply([_dev(mac="98:59", rx=100)], link_max_bytes_s=LINK, now=_T0)
+    result = usage.apply(
+        [_dev(mac="98:59", rx=100), _dev(mac="98:59", rx=5)],
+        link_max_bytes_s=LINK,
+        now=_T0 + _dt.timedelta(seconds=60),
+    )
+    assert result.duplicates == 1
+    assert result.devices == 1  # devices are MACs, not rows
+    assert result.resets == 1  # the new, lower series; it counts nothing
+
+
+def test_a_legacy_cursor_table_is_migrated_not_dropped(tmp_path) -> None:
+    """Dropping the old one-per-MAC table would re-baseline every device, and cost an absent
+    device the retained cursor its return is differenced against."""
+    db = open_db(tmp_path)
+    db.executescript(
+        "CREATE TABLE wan_cursor (mac TEXT PRIMARY KEY, rx INTEGER NOT NULL DEFAULT 0, "
+        "tx INTEGER NOT NULL DEFAULT 0, seen_at TEXT NOT NULL DEFAULT '');"
+    )
+    db.execute(
+        "INSERT INTO wan_cursor VALUES ('CC:DD', 8000, 100, ?)",
+        (_T0.isoformat(timespec="seconds"),),
+    )
+    db.commit()
+    usage = WanUsage(db)
+    assert db.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='wan_cursor'"
+    ).fetchone() is None
+    result = usage.apply(
+        [_dev(mac="CC:DD", rx=8_300, tx=100)],
+        link_max_bytes_s=LINK,
+        now=_T0 + _dt.timedelta(seconds=60),
+    )
+    assert result.cold_start is False
+    assert usage.totals()["downloaded"] == 300
+    WanUsage(db)  # idempotent: a second start finds nothing to migrate
 
 
 def test_daily_totals_accumulate_rather_than_overwrite(usage: WanUsage) -> None:
@@ -450,3 +556,35 @@ def test_an_inclusive_end_of_day_bound_is_unchanged(usage: WanUsage) -> None:
     usage.apply([_dev(rx=7_000)], link_max_bytes_s=LINK,
                 now=_dt.datetime(2026, 8, 29, 12, 0, tzinfo=_dt.UTC))
     assert usage.totals(end="2026-08-29T23:59:59+00:00")["total"] == 7_000
+
+
+# --- reconciliation against the router's sampled rate -------------------------------------
+
+_DAY = 1_440  # samples in a day at a 60 s poll
+
+
+def test_a_clean_day_reconciles() -> None:
+    """Numbers from a real clean day (2026-09-16): 31.66 GB recorded, 31.60 GB sampled."""
+    check = reconcile("2026-09-16", 31_660_000_000, 31_600_000_000 / 60, _DAY, 60)
+    assert check is not None and not check.suspect
+
+
+def test_a_poisoned_day_is_flagged() -> None:
+    """2026-09-13: 355.6 GB recorded, 42.95 GB sampled — logy's duplicated row."""
+    check = reconcile("2026-09-13", 355_600_000_000, 42_950_000_000 / 60, _DAY, 60)
+    assert check is not None and check.suspect
+    assert round(check.ratio, 2) == 8.28
+
+
+def test_an_under_count_is_flagged_too() -> None:
+    check = reconcile("2026-09-09", 52_820_000_000, 107_630_000_000 / 60, _DAY, 60)
+    assert check is not None and check.suspect and check.ratio < 1
+
+
+def test_a_day_with_a_sampling_gap_gets_no_verdict() -> None:
+    """Paused or unreachable: metrics has a hole the delta engine differenced straight across."""
+    assert reconcile("2026-09-20", 20_000_000_000, 10_000_000_000 / 60, _DAY // 2, 60) is None
+
+
+def test_a_quiet_day_gets_no_verdict() -> None:
+    assert reconcile("2026-09-20", 300_000_000, 100_000_000 / 60, _DAY, 60) is None

@@ -498,6 +498,9 @@ class NotificationsConfig(BaseModel):
     quota_person: NotifyRule = NotifyRule()
     #: Monitoring alert transitions (disk / container / temperature / SMART).
     monitoring: NotifyRule = NotifyRule()
+    #: Yesterday's recorded WAN total disagreed with the router's own sampled rate — a device-day
+    #: is probably over- or under-counted. At most one a day.
+    wan_reconcile: NotifyRule = NotifyRule()
 
     #: When ``prune`` is in the pipeline it *fixes* what quality-check flags, and the rollup
     #: already restates the finding — measured over a real day, 153 of 153 rollups repeated the

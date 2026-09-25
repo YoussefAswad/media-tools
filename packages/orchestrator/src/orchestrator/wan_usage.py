@@ -16,9 +16,12 @@ Two tables:
 * ``wan_usage`` — ``(day, mac)`` totals. The durable record. **Never pruned**: it is the history
   a quota question is answered from, unlike ``metrics``, whose 30-day retention is right for
   sparklines and fatal here.
-* ``wan_cursor`` — the last counter value seen per MAC. Small, one row per device, and a real
-  table rather than a JSON blob in ``meta`` because it grows with the device count and because a
-  cursor must **outlive** the device's absence from the host table (see :data:`_CURSOR_TTL`).
+* ``wan_counters`` — the counter values seen for each MAC on the poll it was last present. Small,
+  and a real table rather than a JSON blob in ``meta`` because it grows with the device count and
+  because a cursor must **outlive** the device's absence from the host table (see
+  :data:`_CURSOR_TTL`). Usually one row per MAC, but **not always**: the router can report the same
+  MAC twice in one poll — a frozen entry it has not cleaned up beside the live, restarted one — and
+  a single cursor per MAC turned that pair into fabricated traffic (see :func:`_match`).
 
 Storage is keyed by MAC because that is the raw fact the router reports. *Identity* — one row per
 device, however many MACs a phone rotates through — is resolved at read time by
@@ -56,17 +59,18 @@ CREATE TABLE IF NOT EXISTS wan_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_wan_usage_day ON wan_usage(day);
 
-CREATE TABLE IF NOT EXISTS wan_cursor (
-    mac     TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS wan_counters (
+    mac     TEXT NOT NULL,
     rx      INTEGER NOT NULL DEFAULT 0,
     tx      INTEGER NOT NULL DEFAULT 0,
     seen_at TEXT NOT NULL DEFAULT ''
 );
+CREATE INDEX IF NOT EXISTS idx_wan_counters_mac ON wan_counters(mac);
 """
 
 #: columns added after each table's first release — see :func:`mediacore.db.add_columns`.
 _WAN_USAGE_ADDED: dict[str, str] = {}
-_WAN_CURSOR_ADDED: dict[str, str] = {}
+_WAN_COUNTERS_ADDED: dict[str, str] = {}
 
 #: How long a cursor is kept after the device was last seen in the router's host table.
 #:
@@ -83,6 +87,9 @@ _WAN_CURSOR_ADDED: dict[str, str] = {}
 #: produced 20 MACs in 12 days) and to bound how long a stale baseline can sit against a counter
 #: that may have wrapped meanwhile.
 _CURSOR_TTL = _dt.timedelta(days=7)
+
+#: One stored counter: (rx, tx, seen_at ISO stamp).
+_Counter = tuple[int, int, str]
 
 
 def _now() -> _dt.datetime:
@@ -125,6 +132,8 @@ class PollResult:
     baselined: int = 0
     #: Cursors dropped because their device has not been seen for :data:`_CURSOR_TTL`.
     expired: int = 0
+    #: MACs the router reported more than once, with different counters, in this poll.
+    duplicates: int = 0
     #: True when this poll only established a baseline and deliberately counted nothing.
     cold_start: bool = False
 
@@ -140,8 +149,28 @@ class WanUsage:
         with self._lock:
             self.db.executescript(_SCHEMA)
             add_columns(self.db, "wan_usage", _WAN_USAGE_ADDED)
-            add_columns(self.db, "wan_cursor", _WAN_CURSOR_ADDED)
+            add_columns(self.db, "wan_counters", _WAN_COUNTERS_ADDED)
+            self._migrate_cursor()
             self.db.commit()
+
+    def _migrate_cursor(self) -> None:
+        """Carry the one-per-MAC ``wan_cursor`` table over into ``wan_counters``, once.
+
+        Copied rather than dropped, because dropping it would re-baseline every device — and a
+        device that is absent right now would lose the retained cursor that lets its return be
+        differenced instead of baselined.
+        """
+        legacy = self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='wan_cursor'"
+        ).fetchone()
+        if not legacy:
+            return
+        self.db.execute(
+            "INSERT INTO wan_counters (mac, rx, tx, seen_at) "
+            "SELECT mac, rx, tx, seen_at FROM wan_cursor"
+        )
+        self.db.execute("DROP TABLE wan_cursor")
+        log.info("wan: migrated wan_cursor into wan_counters")
 
     # --- the delta engine -------------------------------------------------------------
 
@@ -172,70 +201,90 @@ class WanUsage:
         stamp = now or _now()
         iso = stamp.isoformat(timespec="seconds")
         day = iso[:10]
-        with self._lock:
-            cursor = {
-                r["mac"]: (r["rx"], r["tx"], r["seen_at"])
-                for r in self.db.execute("SELECT mac, rx, tx, seen_at FROM wan_cursor")
-            }
-            cold = not cursor
-            counted_rx = counted_tx = resets = rejected = baselined = 0
+        by_mac: dict[str, list[DeviceStats]] = {}
+        for dev in devices:
+            rows = by_mac.setdefault(dev.mac, [])
+            # The same counter reported twice is one counter, not two: collapse exact repeats so
+            # neither copy is mistaken for a second series that "restarted".
+            if not any(r.rx == dev.rx and r.tx == dev.tx for r in rows):
+                rows.append(dev)
 
-            for dev in devices:
-                prev = cursor.get(dev.mac)
-                d_rx, d_tx, outcome = _delta(dev, prev)
-                if outcome == "reset":
-                    resets += 1
+        with self._lock:
+            stored: dict[str, list[_Counter]] = {}
+            for r in self.db.execute("SELECT mac, rx, tx, seen_at FROM wan_counters"):
+                stored.setdefault(r["mac"], []).append((r["rx"], r["tx"], r["seen_at"]))
+            cold = not stored
+            counted_rx = counted_tx = resets = rejected = baselined = duplicates = 0
+
+            for mac, rows in by_mac.items():
+                prevs = stored.get(mac, [])
+                if len(rows) > 1:
+                    duplicates += 1
+                if len(rows) != max(len(prevs), 1) and (len(rows) > 1 or len(prevs) > 1):
+                    # Logged on the transition only: a duplicated entry can persist for days, and
+                    # one line a minute would bury everything else in the log.
                     log.info(
-                        "wan: counter for %s (%s) restarted (rx %d -> %d) — re-baselined, "
-                        "counted nothing",
-                        dev.host, dev.mac, prev[0] if prev else 0, dev.rx,
+                        "wan: %s (%s) now reports %d counter(s), was %d",
+                        rows[0].host, mac, len(rows), len(prevs),
                     )
-                elif outcome == "baseline":
-                    baselined += 1
-                    if not cold:
+                for dev, prev in _match(rows, prevs):
+                    # No counter to difference against: a restart if the MAC had any, else new.
+                    d_rx, d_tx, outcome = (
+                        _delta(dev, prev) if prev is not None or not prevs else (0, 0, "reset")
+                    )
+                    if outcome == "reset":
+                        resets += 1
                         log.info(
-                            "wan: first sight of %s (%s) — baselined at rx=%d tx=%d, "
+                            "wan: counter for %s (%s) restarted (rx %s -> %d) — re-baselined, "
                             "counted nothing",
-                            dev.host, dev.mac, dev.rx, dev.tx,
+                            dev.host, mac, "/".join(str(p[0]) for p in prevs), dev.rx,
                         )
-                if d_rx or d_tx:
-                    allowance = _allowance(prev, stamp, link_max_bytes_s)
-                    if d_rx > allowance or d_tx > allowance:
-                        log.warning(
-                            "wan: implausible delta for %s (%s): rx=%d tx=%d > %d — re-baselining",
-                            dev.host, dev.mac, d_rx, d_tx, allowance,
+                    elif outcome == "baseline":
+                        baselined += 1
+                        if not cold:
+                            log.info(
+                                "wan: first sight of %s (%s) — baselined at rx=%d tx=%d, "
+                                "counted nothing",
+                                dev.host, mac, dev.rx, dev.tx,
+                            )
+                    if d_rx or d_tx:
+                        allowance = _allowance(prev, stamp, link_max_bytes_s)
+                        if d_rx > allowance or d_tx > allowance:
+                            log.warning(
+                                "wan: implausible delta for %s (%s): rx=%d tx=%d > %d — "
+                                "re-baselining",
+                                dev.host, mac, d_rx, d_tx, allowance,
+                            )
+                            d_rx = d_tx = 0
+                            rejected += 1
+                    if d_rx or d_tx:
+                        self.db.execute(
+                            "INSERT INTO wan_usage (day, mac, host, kind, rx, tx) "
+                            "VALUES (?,?,?,?,?,?) "
+                            "ON CONFLICT(day, mac) DO UPDATE SET "
+                            "rx = rx + excluded.rx, tx = tx + excluded.tx, "
+                            "host = excluded.host, kind = excluded.kind",
+                            (day, mac, dev.host, dev.kind, d_rx, d_tx),
                         )
-                        d_rx = d_tx = 0
-                        rejected += 1
-                if d_rx or d_tx:
-                    self.db.execute(
-                        "INSERT INTO wan_usage (day, mac, host, kind, rx, tx) VALUES (?,?,?,?,?,?) "
-                        "ON CONFLICT(day, mac) DO UPDATE SET "
-                        "rx = rx + excluded.rx, tx = tx + excluded.tx, "
-                        "host = excluded.host, kind = excluded.kind",
-                        (day, dev.mac, dev.host, dev.kind, d_rx, d_tx),
-                    )
-                    counted_rx += d_rx
-                    counted_tx += d_tx
-                self.db.execute(
-                    "INSERT INTO wan_cursor (mac, rx, tx, seen_at) VALUES (?,?,?,?) "
-                    "ON CONFLICT(mac) DO UPDATE SET "
-                    "rx=excluded.rx, tx=excluded.tx, seen_at=excluded.seen_at",
-                    (dev.mac, dev.rx, dev.tx, iso),
+                        counted_rx += d_rx
+                        counted_tx += d_tx
+
+                # A MAC present this poll is described by exactly the counters it reported: every
+                # one of them is now the value to difference against, and a counter that did not
+                # reappear is gone. A MAC *absent* this poll is not touched — see _CURSOR_TTL.
+                self.db.execute("DELETE FROM wan_counters WHERE mac=?", (mac,))
+                self.db.executemany(
+                    "INSERT INTO wan_counters (mac, rx, tx, seen_at) VALUES (?,?,?,?)",
+                    [(mac, dev.rx, dev.tx, iso) for dev in rows],
                 )
-                # Keep the in-memory cursor in step with what was just written, so ``prev`` means
-                # "the most recent value seen for this MAC" even within one poll. Without this a
-                # duplicated row would be differenced against the same stale value twice and both
-                # halves added; with it the second row differences against the first, and every
-                # outcome is safe because _delta refuses to count an undifferenced counter.
-                cursor[dev.mac] = (dev.rx, dev.tx, iso)
 
             # A cursor is retired by age, never because its device missed a poll — see _CURSOR_TTL.
             # Legacy rows carrying the old empty-string default sort below any ISO stamp and are
             # swept here, which is right: an unknown age should baseline rather than difference.
             cutoff = (stamp - _CURSOR_TTL).isoformat(timespec="seconds")
             expired = max(
-                0, self.db.execute("DELETE FROM wan_cursor WHERE seen_at < ?", (cutoff,)).rowcount
+                0,
+                self.db.execute("DELETE FROM wan_counters WHERE seen_at < ?", (cutoff,)).rowcount,
             )
             self.db.commit()
 
@@ -246,11 +295,12 @@ class WanUsage:
         return PollResult(
             counted_rx=counted_rx,
             counted_tx=counted_tx,
-            devices=len(devices),
+            devices=len(by_mac),
             resets=resets,
             rejected=rejected,
             baselined=baselined,
             expired=expired,
+            duplicates=duplicates,
             cold_start=cold,
         )
 
@@ -363,6 +413,60 @@ class WanUsage:
         return [(r["day"], r["rx"], r["tx"]) for r in self.db.execute(sql, params).fetchall()]
 
 
+# --- reconciliation ---------------------------------------------------------------------
+
+#: How far a day's recorded total may stray from the router's own sampled rate before it is
+#: flagged. Measured here: clean days read 0.99-1.04, while the days a duplicated router row
+#: poisoned read 4.50-8.28. 15% sits well clear of both.
+RECONCILE_TOLERANCE = 0.15
+#: Below this neither side is worth a verdict — a quiet day's ratio is mostly sampling noise.
+_RECONCILE_MIN_BYTES = 1_000_000_000
+#: A day with fewer samples than this share of the polls it should have had is not compared: while
+#: the router is paused or unreachable ``metrics`` has a hole, but the delta engine differences
+#: across the gap and records the traffic anyway, so the ratio would read high for no fault.
+_RECONCILE_MIN_COVERAGE = 0.9
+
+
+@dataclass(frozen=True)
+class Reconciliation:
+    """One day's recorded total held against an independent measurement of the same link."""
+
+    day: str
+    recorded: int
+    sampled: int
+
+    @property
+    def ratio(self) -> float:
+        return self.recorded / self.sampled if self.sampled else float("inf")
+
+    @property
+    def suspect(self) -> bool:
+        return abs(self.ratio - 1.0) > RECONCILE_TOLERANCE
+
+
+def reconcile(
+    day: str, recorded: int, sampled_sum: float, samples: int, interval_s: int
+) -> Reconciliation | None:
+    """Check a day of ``wan_usage`` against the sum of the ``wan.rx``/``wan.tx`` samples.
+
+    The samples come from ``currBytes``, a *different* field of the same router rows, read as a
+    per-second rate over the router's own 60 s window, so one sample times the poll interval is
+    roughly one poll's traffic (the factor measured against trusted days was 60.36 for a 60 s
+    poll). They never pass through the delta engine, which is what makes them an independent
+    check on it: this comparison is how both over-counting bugs were found — by hand, and the
+    second one 12 days late. None means "no verdict": too little coverage, or too little traffic.
+    """
+    if interval_s <= 0:
+        return None
+    expected = 86_400 / interval_s
+    if samples < expected * _RECONCILE_MIN_COVERAGE:
+        return None
+    sampled = int(sampled_sum * interval_s)
+    if max(recorded, sampled) < _RECONCILE_MIN_BYTES:
+        return None
+    return Reconciliation(day=day, recorded=recorded, sampled=sampled)
+
+
 # --- identity ---------------------------------------------------------------------------
 
 
@@ -444,7 +548,43 @@ def subtract(
     return sorted(out, key=lambda d: d.total, reverse=True)
 
 
-def _delta(dev: DeviceStats, prev: tuple[int, int, str] | None) -> tuple[int, int, str]:
+def _match(
+    rows: list[DeviceStats], prevs: list[_Counter]
+) -> list[tuple[DeviceStats, _Counter | None]]:
+    """Pair this poll's rows for one MAC with that MAC's stored counters, one to one.
+
+    **One MAC can be two counters.** The router sometimes reports a MAC twice in one poll — a
+    frozen entry it has not cleaned up (hostname ``Unknown`` or the bare MAC) beside the live,
+    restarted one — and keeps doing so for days. Measured on logy: a stale ``rx=199743377`` next
+    to a live counter climbing from 12 MB, every minute for 36 hours. With one cursor per MAC the
+    two rows took turns overwriting it, so each poll differenced the stale row against the live
+    value and counted the gap: 427 GB in two days for a phone that used under 1 GB. The
+    plausibility bound caught only the devices whose gap happened to exceed one poll's allowance.
+
+    So each row is differenced against the stored counter it *continues*: a pair is eligible only
+    when neither direction went backwards, and the smallest delta wins. The frozen row then always
+    pairs with itself (delta 0) and the live row with its own previous value. A row left without a
+    partner counts nothing — :meth:`WanUsage.apply` treats it as a restart or a first sighting.
+
+    For the usual single row per MAC this is exactly one comparison, the same as before.
+    """
+    eligible = sorted(
+        ((dev.rx - p[0]) + (dev.tx - p[1]), i, j)
+        for i, dev in enumerate(rows)
+        for j, p in enumerate(prevs)
+        if p[0] <= dev.rx and p[1] <= dev.tx
+    )
+    paired: dict[int, _Counter] = {}
+    used: set[int] = set()
+    for _, i, j in eligible:
+        if i in paired or j in used:
+            continue
+        paired[i] = prevs[j]
+        used.add(j)
+    return [(dev, paired.get(i)) for i, dev in enumerate(rows)]
+
+
+def _delta(dev: DeviceStats, prev: _Counter | None) -> tuple[int, int, str]:
     """(rx delta, tx delta, outcome) for one device, outcome ``delta``/``baseline``/``reset``.
 
     **Only a difference between two observed values is ever counted.** A counter this engine cannot
@@ -469,7 +609,7 @@ def _delta(dev: DeviceStats, prev: tuple[int, int, str] | None) -> tuple[int, in
 
 
 def _allowance(
-    prev: tuple[int, int, str] | None, now: _dt.datetime, link_max_bytes_s: int
+    prev: _Counter | None, now: _dt.datetime, link_max_bytes_s: int
 ) -> int:
     """The most bytes the link could have carried since this device was last seen.
 

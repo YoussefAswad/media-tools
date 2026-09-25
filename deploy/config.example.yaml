@@ -54,6 +54,8 @@ notifications:
   quota: {}          # the household crossed a threshold of the plan's limit
   quota_person: {}   # one person's (or one pot's) quota crossed its allocation
   monitoring: {}
+  # yesterday's recorded WAN total disagreed with the router's own sampled rate (daily check).
+  wan_reconcile: {}
 
 # qBittorrent connection for the Downloads bandwidth ledger (omit to disable auto-capture).
 qbit:

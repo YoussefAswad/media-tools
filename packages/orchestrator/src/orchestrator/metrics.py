@@ -93,6 +93,20 @@ class Metrics:
         ).fetchall()
         return [(r["d"], r["v"]) for r in rows]
 
+    def day_sum(self, name: str, day: str) -> tuple[float, int]:
+        """(sum of values, number of samples) for ``name`` over one UTC day ``YYYY-MM-DD``.
+
+        The count is returned beside the sum because a sum over a day with gaps in it is not a
+        day's worth of anything — the caller decides whether there is enough coverage to trust it.
+        """
+        nxt = (_dt.date.fromisoformat(day) + _dt.timedelta(days=1)).isoformat()
+        r = self.db.execute(
+            "SELECT COALESCE(SUM(value), 0) s, COUNT(*) n FROM metrics "
+            "WHERE name=? AND ts>=? AND ts<?",
+            (name, day, nxt),
+        ).fetchone()
+        return float(r["s"]), int(r["n"])
+
     def prune_old(self, days: int) -> int:
         """Delete samples older than ``days``. Returns rows removed; non-positive disables."""
         if days <= 0:
