@@ -515,6 +515,27 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
       where that assertion says nothing; that is safe because a wrap across such a gap either
       reads as backwards (baseline) or under-counts by 4.29 GB, and both err downwards. **An
       under-count is a gap; an over-count is a fiction that looks like data.**
+    - **One MAC can be two counters.** `STAT_ENTRY` sometimes lists a MAC twice in one poll:
+      a frozen host-table entry the router never cleaned up (hostname `Unknown` or the bare
+      MAC) beside the live, restarted one, and the pair persists for a day or more. With one
+      cursor per MAC the two rows took turns overwriting it, so every poll differenced the
+      stale row against the live value and counted the gap. The old code even carried a comment
+      calling that "safe", because it had only been tested with an *identical* duplicate. logy
+      recorded **427 GB over 13-14 Sep** with a stale `rx=199743377` beside a live counter that
+      only moved 99 MB, and Redmi-Note-11 recorded 292 GB over 17-18 Sep. About 720 GB was
+      fabricated, and it fired a false 100% quota alert. The plausibility bound caught only the
+      devices whose stale row sat *above* the live one by more than one poll's allowance (the
+      TV box, rejected 7,907 times). The same failure landed on either side of the bar, which
+      is exactly the "generous bound" lesson below. Stored counters are now a *set* per MAC
+      (`wan_counters`), and `wan_usage._match` pairs each row with the counter it continues
+      (never backwards, smallest delta), so the frozen row always pairs with itself.
+    - **The metrics cross-check now runs itself.** `worker._check_wan_reconcile` compares
+      yesterday's `wan_usage` total against Σ `wan.rx`+`wan.tx` × `interval_s` once a day. It
+      sends a `wan-reconcile` ntfy when the ratio is outside ±15% and names the heaviest device,
+      which is where the bad row has been every time. Done by hand, the duplicate-row bug was
+      found 12 days late, with `metrics`' 30-day retention already running down the evidence.
+      Days with <90% sample coverage (router paused or unreachable) get no verdict, because the
+      delta engine differences across the gap while `metrics` has a hole.
     - **A plausibility bound set generously is not set at all.** A delta larger than the link
       could physically have carried is dropped and re-baselined — the router emits exactly that
       after a settings change (**a measured 27 GB in one minute**). But `link_max_bytes_s` was

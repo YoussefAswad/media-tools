@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as _dt
 import time
 import types
 
@@ -107,6 +108,63 @@ def test_a_quota_with_no_allocation_never_alerts(tmp_path):
     services.quota_periods.add(start_date="2020-01-01", limit_bytes=0)
     _wan(services, "Xiaomi-TV-Box", 10**12)
     Worker(services)._check_quota()
+    assert services.notifier.sent == []
+
+
+def _reconcile_day(services, *, recorded: int, sampled: int, samples: int = 1_440) -> None:
+    """Yesterday relative to _NOW: ``recorded`` in wan_usage, ``sampled`` spread over samples."""
+    from orchestrator.metrics import Sample
+
+    services.db.execute(
+        "INSERT INTO wan_usage (day, mac, host, kind, rx, tx) VALUES (?,?,?,?,?,?)",
+        ("2026-09-13", "98:59", "logy", "2.4g", recorded, 0),
+    )
+    per = sampled / 60 / samples
+    services.metrics.record_many([
+        Sample("wan.rx", per, ts=f"2026-09-13T{i // 60:02d}:{i % 60:02d}:00+00:00")
+        for i in range(samples)
+    ])
+
+
+_NOW = _dt.datetime(2026, 9, 14, 1, 0, tzinfo=_dt.UTC)
+
+
+def _router_on(tmp_path):
+    from orchestrator.config import OrchestratorConfig
+
+    cfg = OrchestratorConfig()
+    cfg.monitoring.router.enabled = True
+    services = build_test_services(tmp_path, cfg)
+    services.notifier = FakeNotifier()
+    return services
+
+
+def test_a_poisoned_wan_day_is_reported_once(tmp_path):
+    services = _router_on(tmp_path)
+    _reconcile_day(services, recorded=355_600_000_000, sampled=42_950_000_000)
+    w = Worker(services)
+    w._check_wan_reconcile(now=_NOW)
+    assert [m.title for m in services.notifier.sent] == [
+        "WAN usage for 2026-09-13 looks over-counted"
+    ]
+    assert "logy" in services.notifier.sent[0].body
+    w._check_wan_reconcile(now=_NOW)  # once per day
+    assert len(services.notifier.sent) == 1
+
+
+def test_a_clean_wan_day_is_quiet(tmp_path):
+    services = _router_on(tmp_path)
+    _reconcile_day(services, recorded=31_660_000_000, sampled=31_600_000_000)
+    Worker(services)._check_wan_reconcile(now=_NOW)
+    assert services.notifier.sent == []
+    assert services.queue.get_meta("wan_reconciled_day") == "2026-09-13"
+
+
+def test_no_reconciliation_without_the_router_source(tmp_path):
+    services = build_test_services(tmp_path)
+    services.notifier = FakeNotifier()
+    _reconcile_day(services, recorded=355_600_000_000, sampled=42_950_000_000)
+    Worker(services)._check_wan_reconcile(now=_NOW)
     assert services.notifier.sent == []
 
 
