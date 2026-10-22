@@ -317,6 +317,106 @@ def test_seasonal_shift_uses_original_episode_numbers(tmp_path, monkeypatch):
     assert not src.exists()
 
 
+
+def _shift_setup(tmp_path, monkeypatch, *, series_path: str | None = None):
+    """A Sonarr-configured service with MyShow S02 -> S01 (+25), the S02E03 file on disk, and
+    the Sonarr calls recorded. ``series_path`` is the folder Sonarr reports for series 42."""
+    from mediacore.arr.client import SonarrClient
+    from mediacore.models import ArrInstance, CoreConfig
+    from mediacore.renumber.models import SeasonConfig, ShowConfig
+    from orchestrator.config import OrchestratorConfig
+
+    show_dir = tmp_path / "shows" / "MyShow"
+    (show_dir / "Season 2").mkdir(parents=True)
+    src = show_dir / "Season 2" / "MyShow - S02E03 - Title.mkv"
+    src.write_bytes(b"new")
+
+    cfg = OrchestratorConfig(enable_quality_check=False, enable_prune=False)
+    cfg.arr = CoreConfig().arr
+    cfg.arr.sonarr = ArrInstance(base_url="http://sonarr", api_key="k")
+    cfg.notifications.enabled = False
+    cfg.shows = [
+        ShowConfig(
+            name="MyShow",
+            path=show_dir,
+            seasons={2: SeasonConfig(season_offset=-1, episode_offset=25)},
+        )
+    ]
+    services = build_test_services(tmp_path, cfg)
+
+    calls: dict = {}
+
+    def rec_get_episode_id(self, sid, s, e):
+        calls["get_episode_id"] = (sid, s, e)
+        return 555
+
+    series = [{"id": 42, "title": "MyShow", "path": str(series_path or show_dir)}]
+    monkeypatch.setattr(SonarrClient, "titles", lambda self: series)
+    monkeypatch.setattr(SonarrClient, "get_episode_id", rec_get_episode_id)
+    monkeypatch.setattr(SonarrClient, "get_episode_file", lambda self, ep: None)
+    monkeypatch.setattr(SonarrClient, "refresh", lambda self, i: {"id": 1})
+    monkeypatch.setattr(SonarrClient, "wait_for_command", lambda self, cid, **k: None)
+    monkeypatch.setattr(SonarrClient, "detect_file", lambda self, *a, **k: {"c": 1})
+    monkeypatch.setattr(SonarrClient, "import_file",
+                        lambda self, sid, ep, cand: calls.setdefault("import_file", (sid, ep)))
+    return services, show_dir, src, calls
+
+
+def _rerun(services, src):
+    """What the Library tab enqueues for a file already on disk: no series title, no id."""
+    from orchestrator.web.routes.library import _rerun_payload
+
+    disp = Dispatcher(services, probe_fn=lambda p: None, prune_runner=lambda a, **k: None)
+    outcome = disp.dispatch("jrerun", _rerun_payload("sonarr", str(src)))
+    return next(s for s in outcome.steps if s.tool == "seasonal-shift")
+
+
+def test_seasonal_shift_reruns_a_file_already_imported(tmp_path, monkeypatch):
+    """Regression: a re-run carries no title and no series id, so the step skipped every
+    already-imported file as "no offset config for show" — adding an offset to the config could
+    never fix an episode that had landed before it. The show is found by its folder and the
+    series id by the path Sonarr reports, and the re-import still uses the original numbers."""
+    services, show_dir, src, calls = _shift_setup(tmp_path, monkeypatch)
+
+    shift = _rerun(services, src)
+
+    assert shift.result == OK, shift.error
+    assert (show_dir / "Season 1" / "MyShow - S01E28 - Title.mkv").exists()
+    assert not src.exists()
+    assert calls["get_episode_id"] == (42, 2, 3)
+    assert calls["import_file"] == (42, 555)
+
+
+def test_seasonal_shift_rerun_skips_a_path_no_series_owns(tmp_path, monkeypatch):
+    """Without a series id the move can't be re-registered, and Sonarr would mark the episode
+    missing and grab it again — so the file stays where it is."""
+    services, _show_dir, src, calls = _shift_setup(
+        tmp_path, monkeypatch, series_path=str(tmp_path / "elsewhere")
+    )
+
+    shift = _rerun(services, src)
+
+    assert shift.result == SKIP
+    assert src.exists()
+    assert "import_file" not in calls
+
+
+def test_seasonal_shift_refuses_to_overwrite_an_existing_destination(tmp_path, monkeypatch):
+    """``Path.rename`` replaces its target silently on POSIX; an episode already at the shifted
+    name must survive, and the step must say why it did nothing."""
+    services, show_dir, src, calls = _shift_setup(tmp_path, monkeypatch)
+    dest = show_dir / "Season 1" / "MyShow - S01E28 - Title.mkv"
+    dest.parent.mkdir()
+    dest.write_bytes(b"old")
+
+    shift = _rerun(services, src)
+
+    assert shift.result == FAIL
+    assert "already exists" in (shift.error or "")
+    assert dest.read_bytes() == b"old"
+    assert src.read_bytes() == b"new"
+    assert "import_file" not in calls
+
 class _StubQbit:
     def __init__(self, torrent):
         self._t = torrent

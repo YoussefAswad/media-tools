@@ -11,7 +11,14 @@ def execute_operations(operations: list[FileOperation], undo_file: Path) -> None
     The undo file is written by the caller's chosen path (the orchestrator keeps one per item
     under its state dir) — there is no implicit XDG location, because the only caller is a
     service with its own state directory.
+
+    Refuses, before moving anything, when a destination is already taken: ``Path.rename``
+    silently replaces it on POSIX, and the file it would replace is another episode's import.
     """
+    for op in operations:
+        if op.destination.exists() and op.destination != op.source:
+            raise FileExistsError(f"destination already exists: {op.destination}")
+
     undo_entries: list[UndoEntry] = []
 
     for op in operations:
