@@ -33,6 +33,8 @@ class TitleInfo:
     original_language: str | None
     #: ISO-639-2 codes for that language. Empty = unknown, which means "keep every audio track".
     original_isos: frozenset[str]
+    #: the arr's movie/series id — what a re-run, which has no webhook, needs to talk to the arr.
+    item_id: int | None = None
 
 
 class TitleIndex:
@@ -72,6 +74,7 @@ class TitleIndex:
                             title=item.get("title") or "",
                             original_language=name if isos else None,
                             original_isos=frozenset(isos),
+                            item_id=item.get("id"),
                         ),
                     )
                 )

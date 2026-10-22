@@ -226,6 +226,11 @@ filters, and queueing any subset of it is a separate click that enqueues the sam
    original numbering. Known limits: `EPISODE_PATTERN` (now in `mediacore.renumber.planner`) is
    2-digit `SxxExx` only — multi-episode files (`S01E01-E02`) and >99-episode seasons don't match
    and are skipped.
+   A re-run (Library tab, `/rerun`) has no series title or id, so `RenumberStep` matches the show
+   by its `path` and takes the series id from `services.titles` (`TitleInfo.item_id`); with no
+   id it skips rather than move a file Sonarr can't be told about. That is how an episode that
+   landed before its offset was configured gets shifted: add the offset, re-run the file. The
+   executor refuses an occupied destination — `Path.rename` would silently replace it.
 
 7. **GB vs GiB are different magnitudes, and both are stored as raw bytes.** `human_bytes(n, iec=)`
    formats decimal (÷1000, "GB") or binary (÷1024, "GiB"); `parse_bytes` matches the suffix. The
