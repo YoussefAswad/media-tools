@@ -122,3 +122,10 @@ def test_a_file_jellyfin_does_not_have_refetches_at_most_once_per_interval() -> 
     for _ in range(5):
         assert c.find_item("/data/Shows/Nope/Season 1/nope.mkv") is None
     assert calls["n"] == 2  # initial build + a single forced rebuild
+
+
+def test_auth_uses_the_authorization_scheme_not_the_legacy_header() -> None:
+    """Jellyfin 12 answers 401 to X-Emby-Token; only `Authorization: MediaBrowser Token=` works."""
+    headers = JellyfinClient("http://jf", "key")._headers()
+    assert headers == {"Authorization": 'MediaBrowser Token="key"'}
+    assert "X-Emby-Token" not in headers
