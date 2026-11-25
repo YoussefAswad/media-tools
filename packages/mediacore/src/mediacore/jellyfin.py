@@ -70,7 +70,8 @@ class JellyfinClient:
 
     # --- http ------------------------------------------------------------------------
     def _headers(self) -> dict[str, str]:
-        return {"X-Emby-Token": self.api_key}
+        # Jellyfin 12 dropped the legacy X-Emby-Token header; only the Authorization scheme works.
+        return {"Authorization": f'MediaBrowser Token="{self.api_key}"'}
 
     def _get(self, path: str, **params):
         r = requests.get(
